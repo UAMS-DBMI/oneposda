@@ -8,3 +8,10 @@ api.env
 exodus.env
 .rediscli_history
 tags
+
+.vs
+*.sln
+*.pyproj
+
+posda.env
+.gitignore
