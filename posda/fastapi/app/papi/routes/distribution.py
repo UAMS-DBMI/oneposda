@@ -3,12 +3,15 @@ from typing import Optional
 from pydantic import BaseModel
 from datetime import datetime
 import asyncpg
+import csv
 import hashlib
+import io
 import os
 import secrets
 from .auth import logged_in_user, User
 
 from ..util import Database
+from ..util.wp import wp_get, wp_url
 
 FILE_STORAGE_PATH = os.getenv("FILE_STORAGE_PATH", "/home/posda/cache/created")
 FILE_STORAGE_ROOT = int(os.getenv("FILE_STORAGE_ROOT_ID", "3"))
@@ -2825,15 +2828,24 @@ async def delete_dataset_release_transfer(transfer_id: int, db: Database = Depen
 async def get_transfer_idc(transfer_id: int, db: Database = Depends()):
     query = """\
         select
-            dataset_release_transfer_id,
-            gcs_url,
-            dataset_manifest_file_id,
-            recordset_manifest_file_id,
-            clinical_manifest_file_id,
-            published,
-            public
-        from transfer_idc
-        where dataset_release_transfer_id = $1
+            ti.dataset_release_transfer_id,
+            ti.gcs_url,
+            ti.dataset_manifest_file_id,
+            df_d.downloadable_file_id  as dataset_manifest_downloadable_file_id,
+            df_d.security_hash         as dataset_manifest_security_hash,
+            ti.recordset_manifest_file_id,
+            df_r.downloadable_file_id  as recordset_manifest_downloadable_file_id,
+            df_r.security_hash         as recordset_manifest_security_hash,
+            ti.clinical_manifest_file_id,
+            df_c.downloadable_file_id  as clinical_manifest_downloadable_file_id,
+            df_c.security_hash         as clinical_manifest_security_hash,
+            ti.published,
+            ti.public
+        from transfer_idc ti
+        left join downloadable_file df_d on df_d.file_id = ti.dataset_manifest_file_id
+        left join downloadable_file df_r on df_r.file_id = ti.recordset_manifest_file_id
+        left join downloadable_file df_c on df_c.file_id = ti.clinical_manifest_file_id
+        where ti.dataset_release_transfer_id = $1
         """
     try:
         record = await db.fetch(query, [transfer_id])
@@ -2883,9 +2895,204 @@ async def upsert_transfer_idc(
 
 @router.post("/transfers/{transfer_id}/idc/dataset-manifest/generate")
 async def generate_idc_dataset_manifest(transfer_id: int, db: Database = Depends()):
-    # TODO: build dataset-level IDC manifest (JSON format TBD)
-    # Should populate transfer_idc.dataset_manifest_file_id
-    api_error("NOT_IMPLEMENTED", "IDC dataset manifest generation is not yet implemented", {}, 501)
+    # Resolve transfer → dataset_release → dataset
+    rows = await db.fetch(
+        """
+        select drt.dataset_release_id, dr.dataset_id
+        from dataset_release_transfer drt
+        join dataset_release dr using (dataset_release_id)
+        where drt.dataset_release_transfer_id = $1
+        """,
+        [transfer_id],
+    )
+    if not rows:
+        api_error("NOT_FOUND", "Transfer not found", {"transfer_id": transfer_id}, 404)
+
+    dataset_release_id = rows[0]["dataset_release_id"]
+    dataset_id         = rows[0]["dataset_id"]
+
+    # Find the WP object mapped to this dataset
+    wp_rows = await db.fetch(
+        """
+        select wp_object_type, wp_object_id
+        from wp_object_map
+        where posda_object_type = 'dataset' and posda_object_id = $1
+        limit 1
+        """,
+        [dataset_id],
+    )
+    if not wp_rows:
+        api_error("NOT_FOUND", "No WordPress object is mapped to this dataset", {}, 422)
+
+    wp_object_type = wp_rows[0]["wp_object_type"]
+    wp_object_id   = wp_rows[0]["wp_object_id"]
+
+    if wp_object_type == "collection":
+        wp_endpoint_key = "Collection"
+    elif wp_object_type == "analysis_result":
+        wp_endpoint_key = "Analysis Result"
+    else:
+        api_error("VALIDATION_ERROR", f"Unsupported wp_object_type: {wp_object_type}", {}, 400)
+
+    wp_item = await wp_get(f"{wp_url(wp_endpoint_key)}/{wp_object_id}")
+    if wp_item is None:
+        api_error("NOT_FOUND", f"WordPress {wp_object_type} {wp_object_id} not found", {}, 404)
+
+    # Pull license from the first recordset linked to this release
+    lic_rows = await db.fetch(
+        """
+        select distinct rl.license_url, rl.license_name, rl.license_label
+        from dataset_release_recordset drr
+        join recordset_release rr using (recordset_release_id)
+        join recordset r          using (recordset_id)
+        join recordset_license rl on r.license_id = rl.license_id
+        where drr.dataset_release_id = $1
+        limit 1
+        """,
+        [dataset_release_id],
+    )
+    license_url        = lic_rows[0]["license_url"]   if lic_rows else ""
+    license_long_name  = lic_rows[0]["license_name"]  if lic_rows else ""
+    license_short_name = lic_rows[0]["license_label"] if lic_rows else ""
+
+    def _str(val) -> str:
+        if val is None:
+            return ""
+        if isinstance(val, dict):
+            return val.get("rendered") or str(val)
+        return str(val)
+
+    def _pipe(val) -> str:
+        if val is None:
+            return ""
+        if isinstance(val, list):
+            parts = []
+            for v in val:
+                if isinstance(v, dict):
+                    parts.append(v.get("name") or v.get("slug") or v.get("title") or str(v))
+                else:
+                    parts.append(str(v))
+            return "|".join(parts)
+        if isinstance(val, dict):
+            return val.get("name") or val.get("slug") or val.get("title") or str(val)
+        return str(val)
+
+    if wp_object_type == "collection":
+        name       = _str(wp_item.get("collection_short_title"))
+        status     = _str(wp_item.get("collection_status"))
+        source_doi = _str(wp_item.get("collection_doi"))
+        abstract   = _str(wp_item.get("collection_abstract"))
+    else:
+        name       = _str(wp_item.get("result_short_title"))
+        status     = ""
+        source_doi = _str(wp_item.get("result_doi"))
+        abstract   = _str(wp_item.get("result_abstract"))
+
+    title_raw = wp_item.get("title", "")
+    title = title_raw.get("rendered", "") if isinstance(title_raw, dict) else _str(title_raw)
+
+    citations_raw = wp_item.get("citations")
+    if isinstance(citations_raw, list):
+        citation = "|".join(
+            c.get("tcia_citation_statement") or c.get("tcia_citation_text") or ""
+            for c in citations_raw
+            if isinstance(c, dict)
+        )
+    else:
+        citation = _str(citations_raw)
+
+    manifest_row = {
+        "id":                 wp_item.get("id", ""),
+        "slug":               _str(wp_item.get("slug")),
+        "type":               _str(wp_item.get("type")),
+        "name":               name,
+        "title":              title,
+        "status":             status,
+        "version":            _str(wp_item.get("version_number")),
+        "updated":            _str(wp_item.get("date_updated")),
+        "source_doi":         source_doi,
+        "source_url":         _str(wp_item.get("link")),
+        "cancer_type":        _pipe(wp_item.get("cancer_types")),
+        "supporting_data":    _pipe(wp_item.get("supporting_data")),
+        "species":            _pipe(wp_item.get("species")),
+        "location":           _pipe(wp_item.get("cancer_locations")),
+        "program":            _pipe(wp_item.get("program")),
+        "license_url":        license_url        or "",
+        "license_long_name":  license_long_name  or "",
+        "license_short_name": license_short_name or "",
+        "abstract":           abstract,
+        "citation":           citation,
+    }
+
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=list(manifest_row.keys()))
+    writer.writeheader()
+    writer.writerow(manifest_row)
+    csv_bytes = buf.getvalue().encode("utf-8")
+
+    digest = hashlib.md5(csv_bytes).hexdigest()
+    size   = len(csv_bytes)
+    rel_path = os.path.join(digest[:2], digest[2:4], digest[4:6], digest)
+    os.makedirs(os.path.join(FILE_STORAGE_PATH, digest[:2], digest[2:4], digest[4:6]), exist_ok=True)
+    with open(os.path.join(FILE_STORAGE_PATH, rel_path), "wb") as fh:
+        fh.write(csv_bytes)
+
+    security_hash = secrets.token_hex(16)
+
+    try:
+        async with db.transaction() as conn:
+            file_rows = await conn.fetch(
+                """
+                insert into file (digest, size, processing_priority)
+                values ($1, $2, 1)
+                on conflict (digest) do update set digest = excluded.digest
+                returning file_id
+                """,
+                digest, size,
+            )
+            file_id = file_rows[0]["file_id"]
+
+            await conn.execute(
+                """
+                insert into file_location (file_id, file_storage_root_id, rel_path)
+                values ($1, $2, $3)
+                on conflict do nothing
+                """,
+                file_id, FILE_STORAGE_ROOT, rel_path,
+            )
+
+            df_rows = await conn.fetch(
+                "select downloadable_file_id, security_hash from downloadable_file where file_id = $1 limit 1",
+                file_id,
+            )
+            if not df_rows:
+                df_rows = await conn.fetch(
+                    """
+                    insert into downloadable_file (file_id, security_hash, mime_type)
+                    values ($1, $2, 'text/csv')
+                    returning downloadable_file_id, security_hash
+                    """,
+                    file_id, security_hash,
+                )
+
+            await conn.execute(
+                """
+                insert into transfer_idc (dataset_release_transfer_id, dataset_manifest_file_id)
+                values ($1, $2)
+                on conflict (dataset_release_transfer_id) do update
+                    set dataset_manifest_file_id = excluded.dataset_manifest_file_id
+                """,
+                transfer_id, file_id,
+            )
+    except Exception as e:
+        db_error(e, operation="generating IDC dataset manifest", context={"transfer_id": transfer_id})
+        api_error("DB_ERROR", "Failed to store manifest", {}, 500)
+
+    return item_response({
+        "file_id":               file_id,
+        "downloadable_file_id":  df_rows[0]["downloadable_file_id"],
+        "security_hash":         df_rows[0]["security_hash"],
+    })
 
 
 @router.post("/transfers/{transfer_id}/idc/recordset-manifest/generate")
