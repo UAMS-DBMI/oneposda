@@ -144,10 +144,6 @@ class DatasetType(BaseModel):
     dataset_type_id: int
     dataset_type_name: str
 
-class DatasetTypeListResponse(BaseModel):
-    data: list[DatasetType]
-    meta: Meta
-
 # --- Responses ---
 
 def item_response(data):
@@ -202,7 +198,7 @@ def db_error(
 
 
 
-@router.get("/lookups/dataset-types", response_model=DatasetTypeListResponse)
+@router.get("/lookups/dataset-types")
 # List dataset types
 async def get_dataset_types(db: Database = Depends()):
 
