@@ -66,7 +66,7 @@ class RecordsetUpdate(BaseModel):
     active: Optional[bool] = None
 
 class RecordsetCreate(BaseModel):
-    recordset_doi: str
+    recordset_doi: Optional[str] = None
     dataset_id: int
     license_id: int
     recordset_type_id: int
@@ -1162,8 +1162,7 @@ async def create_recordset(
     db: Database = Depends()):
 
     if (
-        not payload.recordset_doi.strip()
-        or not payload.recordset_name.strip()
+        not payload.recordset_name.strip()
         or payload.recordset_type_id <= 0
         or payload.dataset_id <= 0
         or payload.license_id <= 0
@@ -1173,7 +1172,6 @@ async def create_recordset(
             "Required recordset fields must be non-empty",
             {
                 "required": [
-                    "recordset_doi",
                     "recordset_type_id",
                     "recordset_name",
                     "dataset_id",
