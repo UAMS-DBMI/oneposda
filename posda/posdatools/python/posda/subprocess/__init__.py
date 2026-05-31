@@ -13,4 +13,4 @@ def lines(command):
         line = sub.stdout.readline().strip().decode()
         yield line
         if len(line) == 0 and sub.poll() != None:
-            raise StopIteration()
+            return
