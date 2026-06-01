@@ -34,10 +34,14 @@ the mapping endpoint at `:263` accept a `user` value in the path and persist
 it as the actor. Any authenticated caller can impersonate anyone. Replace
 with `current_user`.
 
-### 5. Arbitrary directory listing
-`routes/files.py:27 GET /listfiles` accepts a `path` query parameter and
-walks the filesystem with the server's privileges. Constrain to an allowed
-root or remove.
+### 5. Arbitrary directory listing — RESOLVED
+`routes/files.py:27 GET /listfiles` previously accepted any `path` and
+walked the filesystem with the server's privileges. Now the endpoint
+requires the path to be absolute and, after `os.path.realpath` resolution,
+to be inside one of the `root_path` values from `file_storage_root` (so
+symlinks can't escape). Non-directory or missing paths return 404; paths
+outside any configured root return 403. The endpoint still keeps the
+5000-result cap.
 
 ### 6. Importer router has no authentication
 `routes/importer.py:15-17` does not include `dependencies=[logged_in_user]`.
@@ -181,10 +185,9 @@ which is misleading. Delete the line.
 `routes/importer.py:25,202`. Changes to `file_storage_root` require an API
 restart to take effect. Either drop the cache or add a TTL / refresh path.
 
-### 32. `/listfiles` count check inside inner loop and over-indented
-`routes/files.py:34-37`. The 5000-result guard fires only when the inner
-loop runs, and the indentation is off. Move the check to the outer scope.
-(Becomes moot once #5 is addressed.)
+### 32. `/listfiles` count check inside inner loop and over-indented — RESOLVED
+Folded into the #5 fix. The 5000-result guard is now correctly indented
+and the per-iteration `asyncio.sleep(0)` moved out to once per directory.
 
 ### 33. Request body consumed twice
 `routes/worker.py:56-77` declares `error_files: ErrorFiles` (Pydantic) and

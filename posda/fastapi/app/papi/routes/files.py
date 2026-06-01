@@ -24,18 +24,57 @@ router = APIRouter(
 async def get_all_files():
     raise HTTPException(detail="listing all files is not allowed", status_code=401)
 
+def _path_is_within_root(path: str, root: str) -> bool:
+    """Return True iff path resolves to root or a descendant of root.
+
+    Uses os.path.realpath on both sides so symlinks can't be used to escape.
+    """
+    try:
+        real_path = os.path.realpath(path)
+        real_root = os.path.realpath(root)
+    except OSError:
+        return False
+    try:
+        return os.path.commonpath([real_path, real_root]) == real_root
+    except ValueError:
+        # Raised when paths are on different drives (Windows) or otherwise
+        # have no common prefix at all.
+        return False
+
+
 @router.get("/listfiles")
-async def get_listfiles(path: str):
+async def get_listfiles(path: str, db: Database = Depends()):
+    if not path or not os.path.isabs(path):
+        raise HTTPException(
+            status_code=400,
+            detail="path must be an absolute path",
+        )
+
+    root_records = await db.fetch("select root_path from file_storage_root")
+    allowed_roots = [r['root_path'] for r in root_records]
+
+    if not any(_path_is_within_root(path, root) for root in allowed_roots):
+        raise HTTPException(
+            status_code=403,
+            detail="path must be inside a configured file_storage_root",
+        )
+
+    if not os.path.isdir(path):
+        raise HTTPException(
+            status_code=404,
+            detail="path does not exist or is not a directory",
+        )
+
     return_list = []
     for root, dirs, files in os.walk(path):
         for name in files:
             return_list.append(os.path.join(root, name))
-            await asyncio.sleep(0)
             if len(return_list) > 5000:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="More than 5000 results. I refuse.")
-
+                raise HTTPException(
+                    status_code=400,
+                    detail="More than 5000 results. I refuse.",
+                )
+        await asyncio.sleep(0)
 
     return return_list
 
