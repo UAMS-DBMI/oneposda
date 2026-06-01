@@ -54,14 +54,14 @@ async def download_file(downloadable_file_id: int,
 
     if process:
         if record['report_name'] == 'DciodvfySeriesReport':
-            cmd = f"/home/posda/posdatools/dciodvfymacro/run.sh {path}"
+            script = "/home/posda/posdatools/dciodvfymacro/run.sh"
         else:
-            cmd = f"/home/posda/posdatools/phimacro/run.sh {path}"
+            script = "/home/posda/posdatools/phimacro/run.sh"
 
-        proc = await asyncio.create_subprocess_shell(
-            cmd,
+        proc = await asyncio.create_subprocess_exec(
+            script, path,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+            stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await proc.communicate()
 

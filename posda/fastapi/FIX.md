@@ -67,10 +67,11 @@ the `PUT`-shaped routes in `routes/pathology.py` that do INSERTs via paths.
 GETs that update state are a CSRF risk and break REST/caching assumptions.
 Convert to `POST`/`PUT`.
 
-### 9. Shell injection surface in download path
-`routes/download.py:61` calls `asyncio.create_subprocess_shell(cmd)` where
-`cmd` contains `path` interpolated from the DB. Use
-`create_subprocess_exec(cmd, *args)` so the path is never parsed by a shell.
+### 9. Shell injection surface in download path — RESOLVED
+`routes/download.py` now uses `asyncio.create_subprocess_exec(script, path,
+...)` instead of `create_subprocess_shell` with the path interpolated into
+the command string. The path is passed as a separate argv element and is
+never parsed by a shell.
 
 ---
 
