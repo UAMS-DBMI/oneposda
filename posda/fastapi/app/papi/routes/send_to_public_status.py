@@ -1,3 +1,5 @@
+import json
+import logging
 from fastapi import Depends, APIRouter, HTTPException
 from starlette.responses import HTMLResponse
 from pydantic import BaseModel
@@ -9,12 +11,57 @@ from urllib.parse import quote_plus
 
 from .auth import logged_in_user, User
 from ..util import Database
-from ..util.evil import evil_eval
 
 router = APIRouter(
     tags=["Send to Public Status"],
     dependencies=[logged_in_user]
 )
+
+
+def build_curl_command(file_dict):
+    """Build the NBIA submitDICOM curl command from a file dict.
+
+    Mirrors the shape ream serializes: subprocess_invocation_id, file_id,
+    collection, site, site_id, batch, filename, third_party_analysis_url.
+    """
+    bits = [
+        ('project', quote_plus(str(file_dict.get('collection', '')))),
+        ('siteName', quote_plus(str(file_dict.get('site', '')))),
+        ('siteID', quote_plus(str(file_dict.get('site_id', '')))),
+        ('batch', quote_plus(str(file_dict.get('batch', '')))),
+        ('uri', file_dict.get('filename', '')),
+    ]
+
+    tpa_url = file_dict.get('third_party_analysis_url')
+    if tpa_url is not None:
+        bits.append(('third_party_analysis_url', tpa_url))
+
+    out = "&".join(f"{k}={v}" for k, v in bits)
+
+    return (
+        'curl -H "Authorization:Bearer $TOKEN" '
+        '-k "https://$HOSTNAME/nbia-api/services/submitDICOM" '
+        f'-d "{out}" '
+    )
+
+
+LEGACY_ERROR_MARKER = "(legacy error format, see logs)"
+
+
+def parse_error_message(message):
+    """Parse an error_message row from public_copy_status.
+
+    New rows are JSON written by ream's serialize_submit_error. Older rows
+    are Python reprs (str(SubmitFailedError(...))) and are no longer parsed
+    here — those return a legacy marker so the page still renders.
+    """
+    if not message:
+        return None
+    try:
+        return json.loads(message)
+    except (ValueError, TypeError):
+        logging.info("public_copy_status row is in legacy format; skipping parse")
+        return None
 
 @router.get("/")
 async def get_all_studies():
@@ -53,12 +100,17 @@ async def report(subprocess_invocation_id: int, pretty: bool = False, db: Databa
     obj_subset = []
 
     for error in errors:
-        message = error['error_message']
-        _, file_obj, error_list = evil_eval(message)
+        parsed = parse_error_message(error['error_message'])
 
-        file_dict = file_obj._asdict()
-        file_dict['error_message'] = str(error_list[0])[:500]
-        file_dict['curl'] = file_obj.get_curl_command()
+        if parsed is None:
+            obj_subset.append({'error_message': LEGACY_ERROR_MARKER})
+            continue
+
+        file_dict = dict(parsed.get('file') or {})
+        inner_errors = parsed.get('errors') or []
+        if inner_errors:
+            file_dict['error_message'] = str(inner_errors[0])[:500]
+        file_dict['curl'] = build_curl_command(file_dict)
 
         obj_subset.append(file_dict)
 

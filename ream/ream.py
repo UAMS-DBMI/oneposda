@@ -60,12 +60,51 @@ def main_loop(redis_db, psql_db):
             print(e)
             set_file_status(psql_db, file, success=False, error=e)
 
+def _bytes_to_str(b):
+    if isinstance(b, (bytes, bytearray)):
+        return b.decode("utf-8", errors="replace")
+    return b
+
+def _inner_error_to_dict(e):
+    """Serialize one of the per-attempt errors collected in submit_file."""
+    if isinstance(e, SubmitFailedError) and e.args:
+        arg = e.args[0]
+        if isinstance(arg, tuple) and len(arg) == 2:
+            status, body = arg
+            return {
+                "type": "SubmitFailedError",
+                "status": status,
+                "body": _bytes_to_str(body),
+            }
+        return {"type": "SubmitFailedError", "body": _bytes_to_str(arg)}
+    return {"type": type(e).__name__, "detail": str(e)}
+
+def serialize_submit_error(e):
+    """Build a JSON-serializable dict from the SubmitFailedError raised by submit_file."""
+    if (
+        isinstance(e, SubmitFailedError)
+        and e.args
+        and isinstance(e.args[0], tuple)
+        and len(e.args[0]) == 3
+    ):
+        msg, file, errors = e.args[0]
+        return {
+            "msg": msg,
+            "file": file._asdict(),
+            "errors": [_inner_error_to_dict(err) for err in errors],
+        }
+    return {"msg": str(e)}
+
 def set_file_status(psql_db, file, success=True, error=None):
+    if error is None:
+        error_message = None
+    else:
+        error_message = json.dumps(serialize_submit_error(error))
     try:
         psql_db.execute("""
             insert into public_copy_status
             values (%s, %s, %s, %s)
-        """, [file.subprocess_invocation_id, file.file_id, success, str(error)])
+        """, [file.subprocess_invocation_id, file.file_id, success, error_message])
     except Exception as e:
         print(e)
 

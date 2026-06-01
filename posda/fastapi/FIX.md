@@ -12,11 +12,14 @@ numbered so they can be referenced individually.
 ARIES and PROD. The real tokens were rotated when this was first spotted,
 so the values in the file are no longer live. No further action required.
 
-### 2. `eval()` on database content
-`routes/send_to_public_status.py:57` calls `evil_eval(message)` on the
-`error_message` column of `public_copy_status`. Anyone able to write that
-column gets RCE. The helper module is even named `util/evil.py`. Parse the
-structured data instead of `eval`-ing a repr.
+### 2. `eval()` on database content — RESOLVED
+`routes/send_to_public_status.py:57` called `evil_eval(message)` on the
+`error_message` column. Fixed by changing the producer (`ream/ream.py`
+`set_file_status`) to write JSON via a new `serialize_submit_error` helper,
+and the reader to `json.loads` it. Existing legacy rows fall back to a
+"(legacy error format, see logs)" marker so the page still renders.
+`util/evil.py` had no other callers and was deleted; the curl-builder moved
+to a `build_curl_command(file_dict)` function inside the route module.
 
 ### 3. SQL injection via request body — RESOLVED
 `routes/edits.py:42-48` interpolated `scr.table_name` and `scr.column_name`
