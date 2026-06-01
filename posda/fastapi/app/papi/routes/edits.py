@@ -27,9 +27,6 @@ class StateChangeRequest(BaseModel):
     expected_state: str
     new_state: str
 
-    table_name: str = "dicom_edit_compare_disposition"
-    column_name: str = "current_disposition"
-
 
 @router.post("/state")
 async def set_state(
@@ -39,11 +36,11 @@ async def set_state(
     """Modify the state of an edit
     """
 
-    query = f"""
-        update {scr.table_name}
-        set {scr.column_name} = $1
+    query = """
+        update dicom_edit_compare_disposition
+        set current_disposition = $1
         where subprocess_invocation_id = $2
-        and {scr.column_name} = $3
+        and current_disposition = $3
         returning subprocess_invocation_id
     """
 
@@ -55,9 +52,9 @@ async def set_state(
 
     if len(results) <= 0:
 
-        query = f"""
-            select {scr.column_name}
-            from {scr.table_name}
+        query = """
+            select current_disposition
+            from dicom_edit_compare_disposition
             where subprocess_invocation_id = $1
         """
 
