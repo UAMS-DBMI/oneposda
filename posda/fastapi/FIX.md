@@ -56,10 +56,10 @@ resolution, lives inside one of the `file_storage_root` entries (same rule
 as `/listfiles`, sharing the new `util/paths.py` helper). Paths outside
 any configured root return 403; non-absolute paths return 400.
 
-### 7. Bearer tokens written to stdout
-`routes/auth.py:55-56,80` prints both `API_SYSTEM_TOKEN` and the
-caller-supplied bearer token to stdout on every request. Remove these prints
-(or replace with `logging.debug` gated on a flag, never printing the value).
+### 7. Bearer tokens written to stdout — RESOLVED
+`routes/auth.py` no longer prints the system token or caller-supplied
+bearer token. The four leftover debug prints in `decode_token` and
+`get_current_user` were removed outright (cruft from early development).
 
 ### 8. State-mutating GET endpoints
 `routes/vrstatus.py:50,85`, `routes/send_to_public_status.py:217,230`, and

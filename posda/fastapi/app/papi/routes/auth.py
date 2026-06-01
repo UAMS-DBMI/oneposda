@@ -51,12 +51,9 @@ async def decode_token(db, token):
 
     redis_db = get_redis_connection()
 
-    
-    print(f"System token: {API_SYSTEM_TOKEN}")
-    print(f"supplied token: {token}")
     if token == API_SYSTEM_TOKEN:
         return await get_user(db, "system")
-    
+
     username = redis_db.get(token)
     if username is None:
         return None
@@ -73,11 +70,8 @@ async def get_current_user(request: Request,
 
     # If the token wasn't supplied via header...
     if token is None:
-        print("No bearer token supplied, checking cookie...")
         # maybe it was supplied via cookie instead?
         token = request.cookies.get("logintoken")
-
-    print(f"Token is now: {token}")
 
     user = await decode_token(db, token)
     if not user:
