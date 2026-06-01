@@ -43,11 +43,18 @@ symlinks can't escape). Non-directory or missing paths return 404; paths
 outside any configured root return 403. The endpoint still keeps the
 5000-result cap.
 
-### 6. Importer router has no authentication
+### 6. Importer router has no authentication — PARTIALLY ADDRESSED
 `routes/importer.py:15-17` does not include `dependencies=[logged_in_user]`.
-`POST /import/file_in_place` (line 231) accepts an arbitrary `localpath` and
-will `os.stat` / md5 / register any path the server can read. Add auth, and
-constrain `localpath` to allowed roots.
+This is intentional: submissions arrive from non-user automation. The plan
+is to front this with a proxy that injects a system-user Authorization
+header on the affected routes; until then, the router stays
+unauthenticated.
+
+The `localpath` arbitrary-read concern in `POST /import/file_in_place` is
+resolved: it now requires an absolute path that, after `os.path.realpath`
+resolution, lives inside one of the `file_storage_root` entries (same rule
+as `/listfiles`, sharing the new `util/paths.py` helper). Paths outside
+any configured root return 403; non-absolute paths return 400.
 
 ### 7. Bearer tokens written to stdout
 `routes/auth.py:55-56,80` prints both `API_SYSTEM_TOKEN` and the

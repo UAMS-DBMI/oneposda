@@ -7,6 +7,7 @@ from starlette.requests import Request
 
 from ..util import Database
 from ..util.digest import md5sum_file
+from ..util.paths import path_is_within_root
 
 import hashlib
 import tempfile
@@ -237,7 +238,19 @@ async def import_file_in_place(
     digest: str = None,
     db: Database = Depends(),
 ):
+    if not localpath or not os.path.isabs(localpath):
+        raise HTTPException(
+            status_code=400,
+            detail="localpath must be an absolute path",
+        )
+
     root_map = await get_root_map(db)
+
+    if not any(path_is_within_root(localpath, root) for root in root_map):
+        raise HTTPException(
+            status_code=403,
+            detail="localpath must be inside a configured file_storage_root",
+        )
 
     match_root, rel_path = find_best_root(root_map, localpath)
 
