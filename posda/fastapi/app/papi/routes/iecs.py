@@ -67,12 +67,14 @@ async def get_iec_frames(iec: int, include_frames: bool = True, db: Database = D
     query = """
         select distinct
             file_id,
+            rel_path as path,
             image_type,
             coalesce(number_of_frames, 1) as frame_count,
             iop,
             ipp
         from
             image_equivalence_class_input_image
+            natural join file_location
             natural left join file_image
             natural left join image
             natural left join image_geometry
@@ -94,6 +96,7 @@ async def get_iec_frames(iec: int, include_frames: bool = True, db: Database = D
         simplified = [
             { 
                 "file_id": x.file_id,
+                "path": x.path,
                 "num_of_frames": x.frame_count,
             }
             for x in sorted_framelist

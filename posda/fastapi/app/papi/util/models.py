@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 class Frame(BaseModel):
     file_id: int
+    path: str
     num_of_frames: int
 
 class FrameResponse(BaseModel):
@@ -15,12 +16,13 @@ class FrameResponse(BaseModel):
 @dataclass
 class File:
     file_id: int
+    path: str
     image_type: list[str]
     frame_count: int
     orientation: list[float]
     position: list[float]
 
-    def from_raw(file_id: int, image_type: str, num_frames: int, iop: str, ipp: str) -> "File":
+    def from_raw(file_id: int, path: str, image_type: str, num_frames: int, iop: str, ipp: str) -> "File":
 
         num_frames = 1 if num_frames is None else int(num_frames)
 
@@ -30,7 +32,7 @@ class File:
         orientation = [float(i) for i in iop.split('\\')] if iop else []
         position = [float(i) for i in ipp.split('\\')] if ipp else []
 
-        return File(file_id, image_types, num_frames, orientation, position)
+        return File(file_id, path, image_types, num_frames, orientation, position)
 
     def normals(self) -> np.ndarray:
         """Computes the normal vector using the orientation matrix."""
