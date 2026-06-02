@@ -1,4 +1,5 @@
 DROP TABLE IF EXISTS public.transfer_recordset CASCADE;
+DROP TABLE IF EXISTS public.transfer_idc_file CASCADE;
 DROP TABLE IF EXISTS public.transfer_idc CASCADE;
 DROP TABLE IF EXISTS public.transfer_gc CASCADE;
 DROP TABLE IF EXISTS public.transfer_aspera CASCADE;
