@@ -17,7 +17,7 @@ FILE_STORAGE_PATH = os.getenv("FILE_STORAGE_PATH", "/home/posda/cache/created")
 FILE_STORAGE_ROOT = int(os.getenv("FILE_STORAGE_ROOT_ID", "3"))
 
 router = APIRouter(
-    tags=["distribution"],
+    tags=["Distribution"],
     dependencies=[logged_in_user]
 )
 
@@ -2932,23 +2932,6 @@ async def generate_idc_dataset_manifest(transfer_id: int, db: Database = Depends
     if wp_item is None:
         api_error("NOT_FOUND", f"WordPress {wp_object_type} {wp_object_id} not found", {}, 404)
 
-    # Pull license from the first recordset linked to this release
-    lic_rows = await db.fetch(
-        """
-        select distinct rl.license_url, rl.license_name, rl.license_label
-        from dataset_release_recordset drr
-        join recordset_release rr using (recordset_release_id)
-        join recordset r          using (recordset_id)
-        join recordset_license rl on r.license_id = rl.license_id
-        where drr.dataset_release_id = $1
-        limit 1
-        """,
-        [dataset_release_id],
-    )
-    license_url        = lic_rows[0]["license_url"]   if lic_rows else ""
-    license_long_name  = lic_rows[0]["license_name"]  if lic_rows else ""
-    license_short_name = lic_rows[0]["license_label"] if lic_rows else ""
-
     def _str(val) -> str:
         if val is None:
             return ""
@@ -2972,50 +2955,46 @@ async def generate_idc_dataset_manifest(transfer_id: int, db: Database = Depends
         return str(val)
 
     if wp_object_type == "collection":
-        name       = _str(wp_item.get("collection_short_title"))
+        short_name = _str(wp_item.get("collection_short_title"))
+        title      = _str(wp_item.get("collection_title"))
         status     = _str(wp_item.get("collection_status"))
-        source_doi = _str(wp_item.get("collection_doi"))
+        doi        = _str(wp_item.get("collection_doi"))
         abstract   = _str(wp_item.get("collection_abstract"))
     else:
-        name       = _str(wp_item.get("result_short_title"))
+        short_name = _str(wp_item.get("result_short_title"))
+        title      = _str(wp_item.get("result_title"))
         status     = ""
-        source_doi = _str(wp_item.get("result_doi"))
+        doi        = _str(wp_item.get("result_doi"))
         abstract   = _str(wp_item.get("result_abstract"))
-
-    title_raw = wp_item.get("title", "")
-    title = title_raw.get("rendered", "") if isinstance(title_raw, dict) else _str(title_raw)
 
     citations_raw = wp_item.get("citations")
     if isinstance(citations_raw, list):
         citation = "|".join(
             c.get("tcia_citation_statement") or c.get("tcia_citation_text") or ""
             for c in citations_raw
-            if isinstance(c, dict)
+            if isinstance(c, dict) and c.get("citation_type") == "Data Citation"
         )
     else:
         citation = _str(citations_raw)
 
     manifest_row = {
-        "id":                 wp_item.get("id", ""),
-        "slug":               _str(wp_item.get("slug")),
-        "type":               _str(wp_item.get("type")),
-        "name":               name,
-        "title":              title,
-        "status":             status,
-        "version":            _str(wp_item.get("version_number")),
-        "updated":            _str(wp_item.get("date_updated")),
-        "source_doi":         source_doi,
-        "source_url":         _str(wp_item.get("link")),
-        "cancer_type":        _pipe(wp_item.get("cancer_types")),
-        "supporting_data":    _pipe(wp_item.get("supporting_data")),
-        "species":            _pipe(wp_item.get("species")),
-        "location":           _pipe(wp_item.get("cancer_locations")),
-        "program":            _pipe(wp_item.get("program")),
-        "license_url":        license_url        or "",
-        "license_long_name":  license_long_name  or "",
-        "license_short_name": license_short_name or "",
-        "abstract":           abstract,
-        "citation":           citation,
+        "post_id":              wp_item.get("id", ""),
+        "dataset_slug":         _str(wp_item.get("slug")),
+        "dataset_type":         _str(wp_item.get("type")),
+        "dataset_doi":          doi,
+        "dataset_short_name":   short_name,
+        "dataset_title":        title,
+        "dataset_status":       status,
+        "dataset_version":      _str(wp_item.get("version_number")),
+        "dataset_version_date": _str(wp_item.get("date_updated")),
+        "dataset_url":          _str(wp_item.get("view_url")),
+        "cancer_type":          _pipe(wp_item.get("cancer_types")),
+        "supporting_data":      _pipe(wp_item.get("supporting_data")),
+        "species":              _pipe(wp_item.get("species")),
+        "location":             _pipe(wp_item.get("cancer_locations")),
+        "program":              _pipe(wp_item.get("program")),
+        "abstract":             abstract,
+        "citation":             citation,
     }
 
     buf = io.StringIO()
@@ -3091,9 +3070,159 @@ async def generate_idc_dataset_manifest(transfer_id: int, db: Database = Depends
 
 @router.post("/transfers/{transfer_id}/idc/recordset-manifest/generate")
 async def generate_idc_recordset_manifest(transfer_id: int, db: Database = Depends()):
-    # TODO: build recordset-level IDC manifest (JSON format TBD)
-    # Should populate transfer_idc.recordset_manifest_file_id
-    api_error("NOT_IMPLEMENTED", "IDC recordset manifest generation is not yet implemented", {}, 501)
+    query = """
+        WITH files AS (
+            SELECT
+                rrf.file_id,
+                f.digest,
+                fp.patient_id,
+                fst.study_instance_uid,
+                fse.series_instance_uid,
+                fsc.sop_instance_uid
+            FROM transfer_recordset tr
+            JOIN recordset_release rr   USING (recordset_release_id)
+            JOIN recordset r            USING (recordset_id)
+            JOIN recordset_type rt      USING (recordset_type_id)
+            JOIN recordset_release_file rrf USING (recordset_release_id)
+            JOIN file f                 USING (file_id)
+            JOIN file_patient fp        USING (file_id)
+            JOIN file_study fst         USING (file_id)
+            JOIN file_series fse        USING (file_id)
+            JOIN file_sop_common fsc    USING (file_id)
+            WHERE tr.dataset_release_transfer_id = $1
+              AND rt.recordset_type_name = 'Radiology Images'
+              AND f.is_dicom_file = true
+        ),
+        series_hashes AS (
+            SELECT series_instance_uid,
+                   md5(string_agg(digest, '' ORDER BY digest)) AS series_hash
+            FROM files
+            GROUP BY series_instance_uid
+        ),
+        study_hashes AS (
+            SELECT sp.study_instance_uid,
+                   md5(string_agg(sh.series_hash, '' ORDER BY sh.series_hash)) AS study_hash
+            FROM (SELECT DISTINCT study_instance_uid, series_instance_uid FROM files) sp
+            JOIN series_hashes sh USING (series_instance_uid)
+            GROUP BY sp.study_instance_uid
+        ),
+        patient_hashes AS (
+            SELECT sp.patient_id,
+                   md5(string_agg(sh.study_hash, '' ORDER BY sh.study_hash)) AS patient_hash
+            FROM (SELECT DISTINCT patient_id, study_instance_uid FROM files) sp
+            JOIN study_hashes sh USING (study_instance_uid)
+            GROUP BY sp.patient_id
+        ),
+        dataset_hash AS (
+            SELECT md5(string_agg(ph.patient_hash, '' ORDER BY ph.patient_hash)) AS dataset_hash
+            FROM (SELECT DISTINCT patient_id FROM files) p
+            JOIN patient_hashes ph USING (patient_id)
+        )
+        SELECT
+            dh.dataset_hash,
+            f.patient_id,
+            ph.patient_hash,
+            f.study_instance_uid,
+            sth.study_hash,
+            f.series_instance_uid,
+            sh.series_hash,
+            f.sop_instance_uid,
+            f.digest AS instance_hash,
+            f.file_id
+        FROM files f
+        JOIN series_hashes sh   USING (series_instance_uid)
+        JOIN study_hashes sth   USING (study_instance_uid)
+        JOIN patient_hashes ph  USING (patient_id)
+        CROSS JOIN dataset_hash dh
+        ORDER BY f.patient_id, f.study_instance_uid, f.series_instance_uid, f.sop_instance_uid
+    """
+
+    try:
+        rows = await db.fetch(query, [transfer_id])
+    except Exception as e:
+        db_error(e, operation="querying files for IDC recordset manifest", context={"transfer_id": transfer_id})
+
+    if not rows:
+        api_error("NOT_FOUND", "No radiology DICOM files found for this transfer", {}, 404)
+
+    fieldnames = [
+        "dataset_hash",
+        "patient_id", "patient_hash",
+        "study_instance_uid", "study_hash",
+        "series_instance_uid", "series_hash",
+        "sop_instance_uid", "instance_hash", "file_id",
+    ]
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({k: ("" if v is None else v) for k, v in dict(row).items()})
+    csv_bytes = buf.getvalue().encode("utf-8")
+
+    digest = hashlib.md5(csv_bytes).hexdigest()
+    size   = len(csv_bytes)
+    rel_path = os.path.join(digest[:2], digest[2:4], digest[4:6], digest)
+    os.makedirs(os.path.join(FILE_STORAGE_PATH, digest[:2], digest[2:4], digest[4:6]), exist_ok=True)
+    with open(os.path.join(FILE_STORAGE_PATH, rel_path), "wb") as fh:
+        fh.write(csv_bytes)
+
+    security_hash = secrets.token_hex(16)
+
+    try:
+        async with db.transaction() as conn:
+            file_rows = await conn.fetch(
+                """
+                insert into file (digest, size, processing_priority)
+                values ($1, $2, 1)
+                on conflict (digest) do update set digest = excluded.digest
+                returning file_id
+                """,
+                digest, size,
+            )
+            file_id = file_rows[0]["file_id"]
+
+            await conn.execute(
+                """
+                insert into file_location (file_id, file_storage_root_id, rel_path)
+                values ($1, $2, $3)
+                on conflict do nothing
+                """,
+                file_id, FILE_STORAGE_ROOT, rel_path,
+            )
+
+            df_rows = await conn.fetch(
+                "select downloadable_file_id, security_hash from downloadable_file where file_id = $1 limit 1",
+                file_id,
+            )
+            if not df_rows:
+                df_rows = await conn.fetch(
+                    """
+                    insert into downloadable_file (file_id, security_hash, mime_type)
+                    values ($1, $2, 'text/csv')
+                    returning downloadable_file_id, security_hash
+                    """,
+                    file_id, security_hash,
+                )
+
+            await conn.execute(
+                """
+                insert into transfer_idc (dataset_release_transfer_id, recordset_manifest_file_id)
+                values ($1, $2)
+                on conflict (dataset_release_transfer_id) do update
+                    set recordset_manifest_file_id = excluded.recordset_manifest_file_id
+                """,
+                transfer_id, file_id,
+            )
+    except Exception as e:
+        db_error(e, operation="storing IDC recordset manifest", context={"transfer_id": transfer_id})
+
+    return item_response({
+        "file_id":              file_id,
+        "downloadable_file_id": df_rows[0]["downloadable_file_id"],
+        "security_hash":        df_rows[0]["security_hash"],
+        "row_count":            len(rows),
+        "dataset_hash":         rows[0]["dataset_hash"],
+    })
 
 
 @router.post("/transfers/{transfer_id}/idc/clinical-manifest/generate")
