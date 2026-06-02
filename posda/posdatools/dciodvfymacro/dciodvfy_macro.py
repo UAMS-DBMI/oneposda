@@ -34,23 +34,16 @@ def apply_dciodvfy_macro(rules, reader, writer):
             if len(line) > 0:
                 found_fix = False
                 # see if there is a rule that matches
-                for rule in rules:
+                for rule, fix in rules.items():
                     # rules are all substrings that just need
                     # to match the line, so here we can use in
                     if rule in line:
-                        # do not include empty rules
-                        # TODO: we might need to delete these entries
-                        # from the errors list?
-                        if rules[rule] != "":
-                            # replacing the rule text with the fix text,
-                            # rather than just using the fix txt, ensures
-                            # that any extra values in the message are
-                            # preserved
-                            messages.append(line.replace(rule, rules[rule]))
-                            found_fix = True
+                        found_fix = True
+                        messages.append(line + " - " + fix)
+                        break
 
                 if not found_fix:
-                    messages.append(line)
+                    messages.append(line + " - %%% NEED FIX %%%")
 
         # reassemble cell
         writer.writerow([series, errors, "\n".join(messages)])
