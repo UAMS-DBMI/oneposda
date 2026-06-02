@@ -42,3 +42,4 @@ add_masking_tables.sql
 add_values_to_masking_status_type.sql
 add_uid_root_to_submissions.sql
 path_migration_master.sql
+remove_roi_for_uid_not_null_constraint.sql
