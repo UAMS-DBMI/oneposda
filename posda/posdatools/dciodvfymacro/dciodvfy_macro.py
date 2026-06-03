@@ -31,26 +31,23 @@ def apply_dciodvfy_macro(rules, reader, writer):
         messages = []
         for line in errors.split("\n"):
             line = line.strip()
-            if len(line) > 0:
-                found_fix = False
-                # see if there is a rule that matches
-                for rule in rules:
-                    # rules are all substrings that just need
-                    # to match the line, so here we can use in
-                    if rule in line:
-                        # do not include empty rules
-                        # TODO: we might need to delete these entries
-                        # from the errors list?
-                        if rules[rule] != "":
-                            # replacing the rule text with the fix text,
-                            # rather than just using the fix txt, ensures
-                            # that any extra values in the message are
-                            # preserved
-                            messages.append(line.replace(rule, rules[rule]))
-                            found_fix = True
+            if len(line) == 0:
+                continue
+            if line.lower() == "none":
+                messages.append(line)
+                continue
+            found_fix = False
+            # see if there is a rule that matches
+            for rule, fix in rules.items():
+                # rules are all substrings that just need
+                # to match the line, so here we can use in
+                if rule in line:
+                    found_fix = True
+                    messages.append(line + " - " + fix)
+                    break
 
-                if not found_fix:
-                    messages.append(line)
+            if not found_fix:
+                messages.append(line + " - %%% NEED FIX %%%")
 
         # reassemble cell
         writer.writerow([series, errors, "\n".join(messages)])
