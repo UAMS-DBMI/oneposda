@@ -1,162 +1,106 @@
 #!/usr/bin/env python3
-
-import os
-import sys
-import csv
-import argparse
-import pydicom
-import requests
-from posda.config import Config
-from posda.database import Database
-from posda.queries import Query
-from posda.background.process import BackgroundProcess
-
-
-about="""\
-This script adds segmentation linkage data to the posda database and reports to the user if any linked SOPs are missing.
 """
+Check segmentation linkage: walks all SEG files in the activity, finds missing
+references and Frame of Reference mismatches, and generates repair reports.
+"""
+import sys
+import argparse
+from posda.database import Database
+from posda.background.process import BackgroundProcess
+from posda.linkage import LinkageChecker, DIVIDER, reference_to_row, REFERENCE_SEQUENCES_SEG
 
-def  call_api(unique_url, call_type):
-    base_url = '{}/v1/segs'.format(Config.get('internal-api-url'))
-    #base_url = '{}/v1/pathology'.format(POSDA_INTERNAL_API_URL)
-    API_KEY = Config.get('api_system_token')
-    HEADERS = {'Authorization': f'Bearer {API_KEY}'}
-    url = "{}{}".format(base_url,unique_url)
-    if call_type == 0:
-        response = requests.get(url,headers=HEADERS)
-    elif call_type == 1:
-        response = requests.patch(url,headers=HEADERS)
-    elif call_type == 2:
-        response = requests.put(url,headers=HEADERS)
 
-    # Check if the response status code indicates success
-    if response.ok:
-        try:
-            res = response.json()
-            return res
-        except ValueError as e:  # Catch JSON decoding errors
-            print(f"Error decoding JSON from response: {e}")
-            return None  # or {}, [] based on expected data type
-    else:
-        print(f"Error fetching data. Call: {unique_url} Status code: {response.status_code}, Response: {response.text}")
-        return None  # or {}, [] based on expected data type
+class SegLinkageChecker(LinkageChecker):
+    reference_sequences = REFERENCE_SEQUENCES_SEG
 
-def find_segs_in_activity(activity_id):
-        str = "/find_segs_in_activity/{}".format(activity_id)
-        return call_api(str, 0)
+    def run(self):
+        background = self.background
 
-def populate_seg_linkages(file_id, seg_id, linked_sop_instance_uid, linked_sop_class_uid):
-        str = "/populate_seg_linkages/{}/{}/{}/{}".format(file_id, seg_id, linked_sop_instance_uid, linked_sop_class_uid)
-        return call_api(str, 2)
+        print(DIVIDER)
+        print("CheckSegLinkages.py running with the following arguments:")
+        print(f"Activity ID: {self.args.activity_id}")
+        print(DIVIDER)
 
-def get_linked_file_info(sop_instance_uid):
-    str = "/getLatestFileForSop/{}".format(sop_instance_uid)
-    return call_api(str, 0)
+        # All files supply the UID context (reference targets).
+        all_file_rows = self.get_activity_files()
+        sop_uids, series_uids, study_uids, for_uids, sop_to_for, sop_to_series = \
+            self.build_uid_context(all_file_rows)
 
-def get_Linked_FileFOR(file_id):
-    str = "/getFORfromfile/{}".format(file_id)
-    return call_api(str, 0)
+        # Only SEG files are walked as source files.
+        seg_file_rows = self.get_activity_files(modality_filter='SEG')
+        if not seg_file_rows:
+            print("No Segmentation objects found in activity.")
+            background.finish("Process complete")
+            return
 
-def getSeries(file_id):
-    str = "/getSeries/{}".format(file_id)
-    return call_api(str, 0)
+        print(f"Found {len(seg_file_rows)} SEG file(s) "
+              f"({len(all_file_rows)} total files in activity).")
 
-def createSegReports(args,background,result_data,cname,direction):
-     result_list = list(result_data)
-     result_container = []
-     firstline = True
-     for i in range(0,len(result_list),500):
-        result_container.append(result_list[i:i+500])
-     for j in range(len(result_container)):
-        r = background.create_report("{}{}".format(cname,j))
-        writer = csv.writer(r)
-        writer.writerow(['series_instance_uid','op','tag','val1','val2','Operation','activity_id','edit_description','notify'])
-        lastSeries = ''
-        #ref changer
-        if(direction):
-            for k in result_container[j]:
-                    if k[0] != lastSeries:
-                        if(firstline):
-                            writer.writerow([k[0],'','','','','BackgroundEditTp', args.activity_id, 'Repairing SEG Frame of Reference Linkages', args.notify])
-                            firstline = False
-                        else:
-                            writer.writerow([k[0]])
-                    writer.writerow(['','set_tag', '<(0020,0052)>','<{}>'.format(k[1]),'<>'])
-        #seg changer
-        else:
-            for k in result_container[j]:
-                    if k[3] != lastSeries:
-                        if(firstline):
-                            writer.writerow([k[3],'','','','','BackgroundEditTp', args.activity_id, 'Repairing SEG Frame of Reference Linkages', args.notify])
-                            firstline = False
-                        else:
-                            writer.writerow([k[3]])
-                    writer.writerow(['', 'set_tag', '<(0020,0052)>','<{}>'.format(k[2]),'<>'])
+        print(DIVIDER)
+        print("Reference Scan")
+        print(DIVIDER)
+        missing_refs, for_mismatches = self.find_missing_references(
+            seg_file_rows, sop_uids, series_uids, study_uids,
+            for_uids, sop_to_for, sop_to_series,
+        )
+        missing_refs   = self.annotate_missing_refs(missing_refs)
+        missing_refs   = self.suggest_missing_ref_candidates(missing_refs)
+        for_mismatches = self.suggest_relink_candidates(for_mismatches)
+
+        for entry in missing_refs:
+            if entry.get("missing") is False:
+                entry["note"] = (
+                    f"Found in activity {entry['found_activity_id']} "
+                    f"timepoint {entry['found_timepoint_id']}"
+                )
+            else:
+                entry["note"] = "Not found anywhere in Posda"
+
+        missing_rows = [reference_to_row(e) for e in missing_refs if e.get("missing")]
+        found_rows   = [reference_to_row(e) for e in missing_refs if not e.get("missing")]
+
+        print(f"Found {len(missing_rows)} Missing References, {len(found_rows)} Found References")
+        for name in self.create_reference_reports(missing_rows, "Missing_References"):
+            print(f"  -> {name}")
+        for name in self.create_reference_reports(found_rows, "Found_References"):
+            print(f"  -> {name}")
+
+        print(DIVIDER)
+        print("FOR Mismatches")
+        print(DIVIDER)
+        print(f"Found {len(for_mismatches)} FOR Mismatches")
+        self.create_for_mismatch_report(for_mismatches)
+        self.create_for_repair_reports(
+            for_mismatches,
+            description_a="Repairing SEG Frame of Reference: align SEG to image FOR",
+            description_b="Repairing SEG Frame of Reference: align image to SEG FOR",
+        )
+        print(DIVIDER)
+        background.finish("Process complete")
+        print(DIVIDER)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('background_id', nargs='?', default='',
+                        help='the background_subprocess_id (blank for CL mode)')
+    parser.add_argument('activity_id', help='the activity SEG files are in')
+    parser.add_argument('notify',      help='user to notify when complete')
+    return parser.parse_args()
+
+
 def main(args):
     background = BackgroundProcess(args.background_id, args.notify, args.activity_id)
     background.daemonize()
-    success = 0
-    fail = 0
-    for_fail = 0
-    numSEGs = 0
-    csv_data = set()
-    mySEGFiles = find_segs_in_activity(args.activity_id)
-    if (mySEGFiles):
-        numSEGs = len(mySEGFiles)
-        for f in mySEGFiles:
-            current = success
-            ds = pydicom.dcmread(f['path'])
-            try:
-                if hasattr(ds, "FrameOfReferenceUID"):
-                    segFOR = ds.FrameOfReferenceUID
-                    # print("\nSegmentation {} found. Frame of Reference UID: {} \n".format(f['file_id'], segFOR))
-                if hasattr(ds, "ReferencedSeriesSequence"):
-                    referenced_series = ds.ReferencedSeriesSequence[0]
-                    if hasattr(referenced_series, "ReferencedInstanceSequence"):
-                        referenced_instances = referenced_series.ReferencedInstanceSequence
-                        for instance in referenced_instances:
-                            #get the file_id for the SOP proving the linked file is in posda
-                            linked_file = get_linked_file_info(instance.ReferencedSOPInstanceUID)[0]['file_id']
-                            if (linked_file):
-                                    #Get the series and frame of reference
-                                    linked_FOR = get_Linked_FileFOR(linked_file)[0]['for_uid']
-                                    linked_series = getSeries(linked_file)[0]['series_instance_uid']
-                                    seg_series = getSeries(f['file_id'])[0]['series_instance_uid']
-                                    #if the FOR matches or does not exist the linkage is good
-                                    #test = False
-                                    if linked_FOR is None or linked_FOR == '' or segFOR == linked_FOR:
-                                        success = success + 1
-                                        populate_seg_linkages(linked_file, f['file_id'], str(instance.ReferencedSOPInstanceUID), str(instance.ReferencedSOPClassUID))
-                                    else:
-                                        for_fail = for_fail + 1
-                                        data = (linked_series, segFOR, linked_FOR, seg_series)
-                                        csv_data.add(data)
-                                        #print ("Reference SOP: {} was found, but has non-matching Frame of Reference {}".format(linked_file,linked_FOR))
-                            else:
-                                #print ("Reference SOP: {} was not found".format(instance))
-                                fail = fail + 1
-            except Exception as e:
-                #print( "Linkage failed. {}".format(e))
-                fail = fail + 1
-            #print("{} linkages found for this segmentation.".format((success - current)))
-    else:
-        print("No Segmentation objects found in activity.")
+    conn = Database("posda_files")
+    checker = SegLinkageChecker(args, background, conn)
+    try:
+        checker.run()
+    except Exception as e:
+        print("FATAL ERROR:", e)
+        background.finish("Failed")
+        raise e
 
-    if numSEGs > 0:
-        print("\n{} missing SOPs. {} files had non matching Frame Of References(FOR).\n{} file linkages verified for {} segmentations.\n".format( fail, for_fail,success, numSEGs))
-        if fail > 0 or for_fail > 0:
-            name = "change_seg_FORs_to_match_images{}{}{}{}.csv".format(args.background_id,numSEGs,for_fail,args.activity_id)
-            createSegReports(args,background,csv_data,name,1)
-            name = "change_image_FORs_to_match_segs{}{}{}{}.csv".format(args.background_id,numSEGs,for_fail,args.activity_id)
-            createSegReports(args, background,csv_data,name,0)
-    background.finish("Process complete")
-
-def parse_args():
-    parser = argparse.ArgumentParser(description=about)
-    parser.add_argument('background_id', nargs='?', default='', help='the background_subprocess_id (blank for CL Mode)')
-    parser.add_argument('activity_id', help='the activity seg files are in')
-    parser.add_argument('notify', help='user to notify when complete')
-    return parser.parse_args()
 
 if __name__ == '__main__':
     main(parse_args())
