@@ -198,6 +198,21 @@ class TrueBackgroundProcess:
         #            self.email.getvalue())
 
 
+    def insert_email_button(self, caption: str, op: str, param_hash: dict,
+                            btn_class: str = "btn btn-primary") -> None:
+        """Insert a clickable button into the email at the current position.
+
+        Mirrors Perl BackgroundProcess::InsertEmailButton. The button calls
+        PosdaGetRemoteMethod on the client so the op executes within DbIf::Application.
+        """
+        params = '&'.join(f"{k}={v}" for k, v in param_hash.items())
+        remote_method = f"PosdaGetRemoteMethod('{op}', '{params}', function(){{Update()}})"
+        print(
+            f'\n<button class="{btn_class}"'
+            f' onclick="javascript:{remote_method}"'
+            f'>{caption}</button>\n'
+        )
+
     def set_activity_status(self, status: str, time_remaining: str=None) -> None:
         if self.activity_id is None:
             raise MissingActivityIdError("This BackgroundProcess was created "
@@ -229,6 +244,10 @@ class CLBackgroundProcess(TrueBackgroundProcess):
 
     def print_to_email(self, *args, **kwargs):
         print(*args, **kwargs)
+
+    def insert_email_button(self, caption: str, op: str, param_hash: dict,
+                            btn_class: str = "btn btn-primary") -> None:
+        print(f"[Button] {caption} -> {op}({param_hash})")
 
     def set_activity_status(self, status: str, time_remaining: str=None) -> None:
         if time_remaining is not None:
