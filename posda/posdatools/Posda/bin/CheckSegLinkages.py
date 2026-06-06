@@ -7,7 +7,7 @@ import sys
 import argparse
 from posda.database import Database
 from posda.background.process import BackgroundProcess
-from posda.linkage import LinkageChecker, DIVIDER, reference_to_row, REFERENCE_SEQUENCES_SEG
+from posda.linkage import LinkageChecker, DIVIDER, REFERENCE_SEQUENCES_SEG
 
 
 class SegLinkageChecker(LinkageChecker):
@@ -23,7 +23,7 @@ class SegLinkageChecker(LinkageChecker):
 
         # All files supply the UID context (reference targets).
         all_file_rows = self.get_activity_files()
-        sop_uids, series_uids, study_uids, for_uids, sop_to_for, sop_to_series = \
+        sop_uids, series_uids, study_uids, for_uids, sop_to_for, sop_to_series, sop_to_file_id = \
             self.build_uid_context(all_file_rows)
 
         # Only SEG files are walked as source files.
@@ -41,27 +41,13 @@ class SegLinkageChecker(LinkageChecker):
         print(DIVIDER)
         missing_refs, for_mismatches = self.find_missing_references(
             seg_file_rows, sop_uids, series_uids, study_uids,
-            for_uids, sop_to_for, sop_to_series,
+            for_uids, sop_to_for, sop_to_series, sop_to_file_id,
         )
         missing_refs   = self.annotate_missing_refs(missing_refs)
-        missing_refs   = self.suggest_missing_ref_candidates(missing_refs)
-        for_mismatches = self.suggest_relink_candidates(for_mismatches)
+        # missing_refs   = self.suggest_missing_ref_candidates(missing_refs)
+        # for_mismatches = self.suggest_relink_candidates(for_mismatches)
 
-        for entry in missing_refs:
-            if entry.get("missing") is False:
-                if str(entry.get("found_activity_id")) == str(self.args.activity_id):
-                    entry["note"] = "In current activity"
-                else:
-                    entry.setdefault("note", "In external activity")                
-
-        missing_rows = [reference_to_row(e) for e in missing_refs if e.get("missing")]
-        found_rows   = [reference_to_row(e) for e in missing_refs if not e.get("missing")]
-
-        print(f"Found {len(missing_rows)} Missing References, {len(found_rows)} Found References")
-        for name in self.create_reference_reports(missing_rows, "Missing_References"):
-            print(f"  -> {name}")
-        for name in self.create_reference_reports(found_rows, "Found_References"):
-            print(f"  -> {name}")
+        self.create_split_reference_reports(missing_refs)
 
         print(DIVIDER)
         print("FOR Mismatches")
@@ -73,6 +59,10 @@ class SegLinkageChecker(LinkageChecker):
             description_a="Repairing SEG Frame of Reference: align SEG to image FOR",
             description_b="Repairing SEG Frame of Reference: align image to SEG FOR",
         )
+        print(DIVIDER)
+        print("Edit Skeleton")
+        print(DIVIDER)
+        self.create_edit_skeleton()
         print(DIVIDER)
         background.finish("Process complete")
         print(DIVIDER)

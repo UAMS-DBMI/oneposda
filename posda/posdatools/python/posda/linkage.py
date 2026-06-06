@@ -10,6 +10,7 @@ from pydicom.dataset import Dataset
 from pydicom.sequence import Sequence
 
 DIVIDER = "------------------------------------------"
+TCIA_UID_ROOT = "<!1.3.6.1.4.1.14519.5.2.1>"
 
 TAGS_TO_SCAN = [
     "StudyInstanceUID",
@@ -38,7 +39,7 @@ REFERENCE_SEQUENCES_RT = frozenset({
 REFERENCE_REPORT_HEADER = [
     "file_id", "modality", "series_instance_uid", "path", "key_path",
     "category", "referenced_uid", "referenced_sop_class", "missing",
-    "found_activity_id", "found_timepoint_id", "note",
+    "found_activity_id", "found_timepoint_id", "found_file_id", "note",
     "candidate_series_uid", "candidate_modality", "candidate_confidence", "candidate_note",
 ]
 
@@ -101,6 +102,7 @@ def reference_to_row(entry):
         "X" if entry.get("missing") else "",
         entry.get("found_activity_id", ""),
         entry.get("found_timepoint_id", ""),
+        entry.get("found_file_id", ""),
         entry.get("note", ""),
         entry.get("candidate_series_uid", ""),
         entry.get("candidate_modality", ""),
@@ -226,6 +228,7 @@ class LinkageChecker:
         for_uids = set()
         sop_to_for = {}
         sop_to_series = {}
+        sop_to_file_id = {}
         for row in file_rows:
             sop    = row.sop_instance_uid
             series = row.series_instance_uid
@@ -237,20 +240,22 @@ class LinkageChecker:
                     sop_to_for[sop] = for_uid
                 if series:
                     sop_to_series[sop] = series
+                sop_to_file_id[sop] = row.file_id
             if series:
                 series_uids.add(series)
             if study:
                 study_uids.add(study)
             if for_uid:
                 for_uids.add(for_uid)
-        return sop_uids, series_uids, study_uids, for_uids, sop_to_for, sop_to_series
+        return sop_uids, series_uids, study_uids, for_uids, sop_to_for, sop_to_series, sop_to_file_id
 
     # ------------------------------------------------------------------
     # Reference scanning
     # ------------------------------------------------------------------
 
     def find_missing_references(
-        self, file_rows, sop_uids, series_uids, study_uids, for_uids, sop_to_for, sop_to_series
+        self, file_rows, sop_uids, series_uids, study_uids, for_uids, sop_to_for, sop_to_series,
+        sop_to_file_id=None,
     ):
         """Walk each file's DICOM dataset and collect reference anomalies.
 
@@ -329,6 +334,8 @@ class LinkageChecker:
                     if exists:
                         entry["found_activity_id"]   = file.activity_id
                         entry["found_timepoint_id"]  = file.activity_timepoint_id
+                        if category == "sop" and sop_to_file_id:
+                            entry["found_file_id"] = sop_to_file_id.get(val)
                     missing_references.append(entry)
                     if exists and category == "sop":
                         ref_for  = sop_to_for.get(val)
@@ -436,6 +443,7 @@ class LinkageChecker:
             if loc:
                 entry["found_activity_id"]    = loc["activity_id"]
                 entry["found_timepoint_id"]   = loc["activity_timepoint_id"]
+                entry["found_file_id"]        = loc["file_id"]
                 entry["missing"]              = False
             else:
                 entry["missing"] = True
@@ -822,11 +830,94 @@ class LinkageChecker:
     # Report writers
     # ------------------------------------------------------------------
 
+    def create_split_reference_reports(self, missing_refs):
+        """Annotate notes, split into three buckets, and write one report each.
+
+        Buckets:
+          Missing_References  — not found anywhere in Posda
+          External_References — found in Posda but outside the current activity/timepoint
+          Found_References    — found within the current activity/timepoint
+        """
+        activity_id = str(self.args.activity_id)
+        for entry in missing_refs:
+            if entry.get("missing") is False:
+                if str(entry.get("found_activity_id")) == activity_id:
+                    entry["note"] = "In current activity"
+                else:
+                    entry.setdefault("note", "In external activity")
+
+        missing_rows  = [reference_to_row(e) for e in missing_refs if e.get("missing")]
+        external_rows = [reference_to_row(e) for e in missing_refs
+                         if not e.get("missing")
+                         and str(e.get("found_activity_id")) != activity_id]
+        found_rows    = [reference_to_row(e) for e in missing_refs
+                         if not e.get("missing")
+                         and str(e.get("found_activity_id")) == activity_id]
+
+        n_missing  = len(missing_rows)
+        n_external = len(external_rows)
+        n_found    = len(found_rows)
+
+        print(f"Missing (Not in Posda): {n_missing}")
+        print(f"External (Not in current Activity / Timepoint): {n_external}")
+        print(f"Found (In current Activity / Timepoint): {n_found}")
+
+        def _counts(entries):
+            return {
+                "patients": len({e.get("patient_id")           for e in entries} - {None}),
+                "studies":  len({e.get("study_instance_uid")   for e in entries} - {None}),
+                "for_uids": len({e.get("file_for_uid")         for e in entries} - {None}),
+                "series":   len({e.get("series_instance_uid")  for e in entries} - {None}),
+                "files":    len({e.get("file_id")              for e in entries} - {None}),
+                "refs":     len(entries),
+            }
+
+        missing_entries  = [e for e in missing_refs if e.get("missing")]
+        external_entries = [e for e in missing_refs
+                            if not e.get("missing")
+                            and str(e.get("found_activity_id")) != activity_id]
+        found_entries    = [e for e in missing_refs
+                            if not e.get("missing")
+                            and str(e.get("found_activity_id")) == activity_id]
+
+        cm, ce, cf = _counts(missing_entries), _counts(external_entries), _counts(found_entries)
+
+        r = self.background.create_report("Reference_Summary")
+        summary_writer = csv.writer(r, lineterminator='\n')
+        summary_writer.writerow([
+            "level",
+            "Missing (Not in Posda)",
+            "External (Not in current Activity / Timepoint)",
+            "Found (In current Activity / Timepoint)",
+        ])
+        for level, label in (
+            ("patients", "Patients"),
+            ("studies",  "Studies"),
+            ("for_uids", "Frame of Reference UIDs"),
+            ("series",   "Series"),
+            ("files",    "Files"),
+            ("refs",     "References"),
+        ):
+            summary_writer.writerow([label, cm[level], ce[level], cf[level]])
+        print("  -> Reference_Summary")
+
+        for bucket, name in (
+            (missing_rows,  "Missing_References"),
+            (external_rows, "External_References"),
+            (found_rows,    "Found_References"),
+        ):
+            if not bucket:
+                continue
+            for report_name in self.create_reference_reports(bucket, name):
+                print(f"  -> {report_name}")
+
     def create_reference_reports(self, references, base_name, batch_size=250_000):
         """Write references in batches, returning the list of report names created."""
+        if not references:
+            return []
         batches = [
             references[i:i + batch_size]
-            for i in range(0, max(len(references), 1), batch_size)
+            for i in range(0, len(references), batch_size)
         ]
         report_names = []
         for i, batch in enumerate(batches):
@@ -841,6 +932,8 @@ class LinkageChecker:
 
     def create_for_mismatch_report(self, for_mismatches):
         """Create the FOR_Mismatches detail report."""
+        if not for_mismatches:
+            return
         r = self.background.create_report("FOR_Mismatches")
         writer = csv.writer(r, lineterminator='\n')
         writer.writerow(FOR_MISMATCH_HEADER)
@@ -896,6 +989,34 @@ class LinkageChecker:
             sorted(deduped, key=lambda e: e.get("referenced_series_uid") or ""),
             "referenced_series_uid", "file_for_uid", description_b,
         )
+
+    def create_edit_skeleton(self):
+        """Write a BackgroundEditTp skeleton CSV the user can fill in for batch edits."""
+        r = self.background.create_report("Edit_Skeleton")
+        writer = csv.writer(r, lineterminator='\n')
+        writer.writerow(["series_instance_uid", "num_files", "op", "tag", "val1", "val2",
+                         "Operation", "edit_description", "notify", "activity_id"])
+        # BackgroundEditTp goes on the first series row only — not repeated for subsequent series.
+        # Each tag that needs hashing requires its own op row beneath the series row.
+        # Use [<0>] instead of [0] to match all sequence indices (pattern mode).
+        writer.writerow(["<series_instance_uid>", None, None, None, None, None,
+                         "BackgroundEditTp", "Edits from Linkage Check",
+                         self.args.notify, self.args.activity_id])
+        writer.writerow([None, None, "hash_unhashed_uid",
+                         "<(XXXX,XXXX)[<0>](YYYY,YYYY)>", TCIA_UID_ROOT, "<>",
+                         None, None, None, None])
+        writer.writerow([None, None, "hash_unhashed_uid",
+                         "<(XXXX,XXXX)[<0>](ZZZZ,ZZZZ)>", TCIA_UID_ROOT, "<>",
+                         None, None, None, None])
+        writer.writerow(["<series_instance_uid_2>", None, None, None, None, None,
+                         None, None, None, None])
+        writer.writerow([None, None, "hash_unhashed_uid",
+                         "<(XXXX,XXXX)[<0>](YYYY,YYYY)>", TCIA_UID_ROOT, "<>",
+                         None, None, None, None])
+        writer.writerow([None, None, "hash_unhashed_uid",
+                         "<(XXXX,XXXX)[<0>](ZZZZ,ZZZZ)>", TCIA_UID_ROOT, "<>",
+                         None, None, None, None])
+        print("  -> Edit_Skeleton")
 
     def create_relink_report(self, relink_items):
         """Generate a relink worklist for structural file rewrites (RT fix pipeline).

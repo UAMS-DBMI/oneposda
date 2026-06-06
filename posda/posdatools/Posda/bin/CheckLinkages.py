@@ -8,16 +8,15 @@ import csv
 from collections import defaultdict
 from posda.database import Database
 from posda.background.process import BackgroundProcess
-from posda.linkage import LinkageChecker, DIVIDER, reference_to_row
+from posda.linkage import LinkageChecker, DIVIDER
 
-TCIA_UID_ROOT = "<!1.3.6.1.4.1.14519.5.2.1>"
 
 
 class GeneralLinkageChecker(LinkageChecker):
 
     def detect_uid_anomalies(self, file_rows):
         """Build UID sets and detect cross-category overlaps and duplicate SOPs."""
-        sop_uids, series_uids, study_uids, for_uids, sop_to_for, sop_to_series = \
+        sop_uids, series_uids, study_uids, for_uids, sop_to_for, sop_to_series, sop_to_file_id = \
             self.build_uid_context(file_rows)
 
         sop_counts = defaultdict(list)
@@ -59,7 +58,7 @@ class GeneralLinkageChecker(LinkageChecker):
               f"{len(series_uids)} Series UID(s), {len(study_uids)} Study UID(s), "
               f"{len(for_uids)} Frame of Reference UID(s)")
 
-        return uid_anomalies, sop_uids, series_uids, study_uids, for_uids, sop_to_for, sop_to_series
+        return uid_anomalies, sop_uids, series_uids, study_uids, for_uids, sop_to_for, sop_to_series, sop_to_file_id
 
     def run(self):
         args = self.args
@@ -74,7 +73,7 @@ class GeneralLinkageChecker(LinkageChecker):
         print("UID Analysis")
         print(DIVIDER)
         file_rows = self.get_activity_files()
-        uid_anomalies, sop_uids, series_uids, study_uids, for_uids, sop_to_for, sop_to_series = \
+        uid_anomalies, sop_uids, series_uids, study_uids, for_uids, sop_to_for, sop_to_series, sop_to_file_id = \
             self.detect_uid_anomalies(file_rows)
         _write_uid_report(background.create_report("UID_Report"), uid_anomalies)
         print("  -> UID_Report")
@@ -83,27 +82,14 @@ class GeneralLinkageChecker(LinkageChecker):
         print("Reference Scan")
         print(DIVIDER)
         missing_references, for_mismatches = self.find_missing_references(
-            file_rows, sop_uids, series_uids, study_uids, for_uids, sop_to_for, sop_to_series
+            file_rows, sop_uids, series_uids, study_uids, for_uids, sop_to_for, sop_to_series,
+            sop_to_file_id,
         )
         missing_references = self.annotate_missing_refs(missing_references)
         missing_references = self.suggest_missing_ref_candidates(missing_references)
         for_mismatches     = self.suggest_relink_candidates(for_mismatches)
 
-        for entry in missing_references:
-            if entry.get("missing") is False:
-                if str(entry.get("found_activity_id")) == str(args.activity_id):
-                    entry["note"] = "In current activity"
-                else:
-                    entry.setdefault("note", "In external activity")
-
-        missing_rows = [reference_to_row(e) for e in missing_references if e.get("missing")]
-        found_rows   = [reference_to_row(e) for e in missing_references if not e.get("missing")]
-
-        print(f"Found {len(missing_rows)} Missing References, {len(found_rows)} Found References")
-        for name in self.create_reference_reports(missing_rows, "Missing_References"):
-            print(f"  -> {name}")
-        for name in self.create_reference_reports(found_rows, "Found_References"):
-            print(f"  -> {name}")
+        self.create_split_reference_reports(missing_references)
 
         print(DIVIDER)
         print("FOR Mismatches")
@@ -115,8 +101,7 @@ class GeneralLinkageChecker(LinkageChecker):
         print(DIVIDER)
         print("Edit Skeleton")
         print(DIVIDER)
-        _write_edit_skeleton(background.create_report("Edit_Skeleton"), args.notify, args.activity_id)
-        print("  -> Edit_Skeleton")
+        self.create_edit_skeleton()
 
         print(DIVIDER)
         background.finish("Complete")
@@ -128,15 +113,6 @@ def _write_uid_report(report, uid_anomalies):
     for row in uid_anomalies:
         writer.writerow(row)
 
-
-def _write_edit_skeleton(report, notify, activity_id):
-    writer = csv.writer(report, lineterminator='\n')
-    writer.writerow(["series_instance_uid", "num_files", "op", "tag", "val1", "val2",
-                     "Operation", "edit_description", "notify", "activity_id"])
-    writer.writerow([None, None, None, None, None, None,
-                     "BackgroundEditTp", "Edits from Linkage Check", notify, activity_id])
-    writer.writerow([None, None, "hash_unhashed_uid", None, TCIA_UID_ROOT, "<>",
-                     None, None, None, None])
 
 
 def parse_args():
