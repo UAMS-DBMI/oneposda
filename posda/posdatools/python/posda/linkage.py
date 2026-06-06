@@ -148,26 +148,29 @@ class LinkageChecker:
             modality_clause = ""
             params = (self.args.activity_id,)
         elif isinstance(modality_filter, (list, tuple)):
-            modality_clause = "AND fs.modality = ANY(%s)"
+            modality_clause = "WHERE fs.modality = ANY(%s)"
             params = (self.args.activity_id, list(modality_filter))
         else:
-            modality_clause = "AND fs.modality = %s"
+            modality_clause = "WHERE fs.modality = %s"
             params = (self.args.activity_id, modality_filter)
         cur = self.conn.cursor()
         cur.execute(f"""
             WITH files_in_activity AS (
-                SELECT file_id
-                FROM activity_timepoint_file
-                NATURAL JOIN file
-                WHERE activity_timepoint_id = (
+                SELECT atf.file_id, at.activity_id, at.activity_timepoint_id
+                FROM activity_timepoint_file atf
+                JOIN file f ON f.file_id = atf.file_id
+                JOIN activity_timepoint at ON at.activity_timepoint_id = atf.activity_timepoint_id
+                WHERE atf.activity_timepoint_id = (
                     SELECT MAX(activity_timepoint_id)
                     FROM activity_timepoint
                     WHERE activity_id = %s
                 )
-                AND file.is_dicom_file = true
+                AND f.is_dicom_file = true
             )
             SELECT
                 fia.file_id,
+                fia.activity_id,
+                fia.activity_timepoint_id,
                 storage_path(fia.file_id)  AS storage_path,
                 fm.media_storage_sop_class,
                 fs.modality,
@@ -308,21 +311,25 @@ class LinkageChecker:
                         sop_class_context.get(tuple(key_path[:-1]))
                         if category == "sop" else None
                     )
-                    missing_references.append({
-                        "file_id":             file.file_id,
-                        "modality":            file.modality,
-                        "series_instance_uid": file.series_instance_uid,
-                        "study_instance_uid":  file.study_instance_uid,
-                        "file_for_uid":        file.for_uid,
-                        "patient_id":          file.patient_id,
-                        "path":                f"<{''.join(path)}>",
-                        "key_path":            f"<{''.join(key_path)}>",
-                        "uid":                 val,
-                        "category":            category,
+                    entry = {
+                        "file_id":              file.file_id,
+                        "modality":             file.modality,
+                        "series_instance_uid":  file.series_instance_uid,
+                        "study_instance_uid":   file.study_instance_uid,
+                        "file_for_uid":         file.for_uid,
+                        "patient_id":           file.patient_id,
+                        "path":                 f"<{''.join(path)}>",
+                        "key_path":             f"<{''.join(key_path)}>",
+                        "uid":                  val,
+                        "category":             category,
                         "referenced_sop_class": ref_sop_class,
-                        "note":                "" if exists else "UID not present in activity",
-                        "missing":             not exists,
-                    })
+                        "note":                 "",
+                        "missing":              not exists,
+                    }
+                    if exists:
+                        entry["found_activity_id"]   = file.activity_id
+                        entry["found_timepoint_id"]  = file.activity_timepoint_id
+                    missing_references.append(entry)
                     if exists and category == "sop":
                         ref_for  = sop_to_for.get(val)
                         file_for = file.for_uid
@@ -584,7 +591,8 @@ class LinkageChecker:
         def _fmt(pairs):
             return "; ".join(f"{s}({m})" for s, m in pairs)
 
-        sop_refs = [e for e in missing_refs if e.get("category") == "sop"]
+        sop_refs = [e for e in missing_refs
+                    if e.get("category") == "sop" and e.get("missing")]
         if not sop_refs:
             return missing_refs
 

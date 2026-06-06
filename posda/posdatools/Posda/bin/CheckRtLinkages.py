@@ -23,7 +23,6 @@ class RTLinkageChecker(LinkageChecker):
     def run(self):
         background = self.background
         args = self.args
-        conn = self.conn
 
         print(DIVIDER)
         print("CheckRtLinkages.py running with the following arguments:")
@@ -51,14 +50,6 @@ class RTLinkageChecker(LinkageChecker):
         print(f"  Total: {len(rt_file_rows)} RT file(s) "
               f"({len(all_file_rows)} total files in activity)")
 
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT MAX(activity_timepoint_id) FROM activity_timepoint WHERE activity_id = %s",
-            (args.activity_id,),
-        )
-        current_timepoint_id = cur.fetchone()[0]
-        cur.close()
-
         print(DIVIDER)
         print("Reference Scan")
         print(DIVIDER)
@@ -72,9 +63,7 @@ class RTLinkageChecker(LinkageChecker):
 
         for entry in missing_refs:
             if entry.get("missing") is False:
-                if "found_activity_id" not in entry:
-                    entry["found_activity_id"]  = args.activity_id
-                    entry["found_timepoint_id"] = current_timepoint_id
+                if str(entry.get("found_activity_id")) == str(args.activity_id):
                     entry["note"] = "In current activity"
                 else:
                     entry.setdefault("note", "In external activity")

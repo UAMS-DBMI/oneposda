@@ -49,12 +49,10 @@ class SegLinkageChecker(LinkageChecker):
 
         for entry in missing_refs:
             if entry.get("missing") is False:
-                entry["note"] = (
-                    f"Found in activity {entry['found_activity_id']} "
-                    f"timepoint {entry['found_timepoint_id']}"
-                )
-            else:
-                entry["note"] = "Not found anywhere in Posda"
+                if str(entry.get("found_activity_id")) == str(self.args.activity_id):
+                    entry["note"] = "In current activity"
+                else:
+                    entry.setdefault("note", "In external activity")                
 
         missing_rows = [reference_to_row(e) for e in missing_refs if e.get("missing")]
         found_rows   = [reference_to_row(e) for e in missing_refs if not e.get("missing")]
