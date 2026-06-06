@@ -35,7 +35,7 @@ class RTLinkageChecker(LinkageChecker):
             self.build_uid_context(all_file_rows)
 
         # All RT object types are walked as source files in a single pass.
-        rt_file_rows = self.get_activity_files(modality_filter=RT_MODALITIES)
+        rt_file_rows = [r for r in all_file_rows if r.modality in RT_MODALITIES]
         if not rt_file_rows:
             print("No RT objects found in activity.")
             background.finish("Process complete")

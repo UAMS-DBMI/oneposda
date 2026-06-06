@@ -27,7 +27,7 @@ class SegLinkageChecker(LinkageChecker):
             self.build_uid_context(all_file_rows)
 
         # Only SEG files are walked as source files.
-        seg_file_rows = self.get_activity_files(modality_filter='SEG')
+        seg_file_rows = [r for r in all_file_rows if r.modality == 'SEG']
         if not seg_file_rows:
             print("No Segmentation objects found in activity.")
             background.finish("Process complete")
