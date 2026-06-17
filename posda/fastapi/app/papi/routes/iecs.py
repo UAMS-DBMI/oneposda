@@ -67,7 +67,7 @@ async def get_iec_frames(iec: int, include_frames: bool = True, db: Database = D
     query = """
         select distinct
             file_id,
-            rel_path as path,
+            file_storage_root_id || '/' || rel_path as path,
             image_type,
             coalesce(number_of_frames, 1) as frame_count,
             iop,
