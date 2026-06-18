@@ -61,17 +61,16 @@ sub AppControllerLogout {
 }
 sub AppControllerLogin {
   my($this, $http, $dyn) = @_;
-  print STDERR "Login attempt for: $dyn->{name}\n";
   my $passwd = $dyn->{password};
   my $user = lc($dyn->{name});
 
   my $token_or_failure = Posda::Auth::is_authorized($user, $passwd);
   if ($token_or_failure) {
-    print STDERR "Login succeeded.\n";
+    print STDERR "Login attempt for: $dyn->{name} (succeeded).\n";
     $this->SetUserPrivs($user, $token_or_failure);
     $this->AutoRefresh;
   } else {
-    print STDERR "Login failed!\n";
+    print STDERR "Login attempt for: $dyn->{name} (failed).\n";
     $this->QueueJsCmd("alert('Incorrect login!')");
   }
 
