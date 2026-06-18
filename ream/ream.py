@@ -9,6 +9,7 @@ See the interface at: https://github.com/CBIIT/NBIA-TCIA/blob/master/software/nb
 
 import redis
 import json
+import sys
 import time
 import os
 from typing import NamedTuple
@@ -44,7 +45,50 @@ class File(NamedTuple):
     third_party_analysis_url: str
 
 
-def main_loop(redis_db, psql_db):
+class Db:
+    """Postgres connection holder that can reconnect on a dropped connection."""
+
+    RECONNECT_DEADLINE_SECONDS = 300
+
+    def __init__(self, dbname):
+        self.dbname = dbname
+        self.conn = None
+        self.cur = None
+        self._connect()
+
+    def _connect(self):
+        self.conn = psycopg2.connect(dbname=self.dbname)
+        self.conn.autocommit = True
+        self.cur = self.conn.cursor()
+
+    def reconnect_or_die(self):
+        for c in (self.cur, self.conn):
+            try:
+                if c is not None:
+                    c.close()
+            except Exception:
+                pass
+        self.cur = None
+        self.conn = None
+
+        start = time.monotonic()
+        delay = 1
+        while True:
+            try:
+                self._connect()
+                print("reconnected to postgres")
+                return
+            except psycopg2.OperationalError as e:
+                elapsed = time.monotonic() - start
+                if elapsed >= self.RECONNECT_DEADLINE_SECONDS:
+                    print(f"could not reconnect to postgres after {elapsed:.0f}s, exiting")
+                    sys.exit(1)
+                print(f"reconnect failed ({e}), retrying in {delay}s")
+                time.sleep(delay)
+                delay = min(delay * 2, 30)
+
+
+def main_loop(redis_db, db):
     while True:
         sr = redis_db.brpop("submission_required", 5)
         if sr is None:
@@ -54,20 +98,29 @@ def main_loop(redis_db, psql_db):
         file = File(*json.loads(value))
         try:
             submit_file(file)
-            set_file_status(psql_db, file, success=True)
+            set_file_status(db, file, success=True)
         except SubmitFailedError as e:
             # probably should put this onto a failed-file list now?
             print(e)
-            set_file_status(psql_db, file, success=False, error=e)
+            set_file_status(db, file, success=False, error=e)
 
-def set_file_status(psql_db, file, success=True, error=None):
-    try:
-        psql_db.execute("""
-            insert into public_copy_status
-            values (%s, %s, %s, %s)
-        """, [file.subprocess_invocation_id, file.file_id, success, str(error)])
-    except Exception as e:
-        print(e)
+def set_file_status(db, file, success=True, error=None):
+    sql = """
+        insert into public_copy_status
+        values (%s, %s, %s, %s)
+    """
+    params = [file.subprocess_invocation_id, file.file_id, success, str(error)]
+    for _ in range(3):
+        try:
+            db.cur.execute(sql, params)
+            return
+        except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+            print(f"postgres connection lost ({e}), reconnecting")
+            db.reconnect_or_die()
+        except Exception as e:
+            print(e)
+            return
+    print(f"set_file_status: gave up on file_id={file.file_id} after repeated connection failures")
 
 def submit_file(f):
     """Submit the file, try several times before giving up"""
@@ -178,16 +231,14 @@ def main():
     redis_db = redis.StrictRedis(host=REDIS_HOST, db=0)
     print("connected to redis")
 
-    psql_db_conn = psycopg2.connect(dbname=PSQL_DB_NAME)
-    psql_db_conn.autocommit = True
-    psql_db_cur = psql_db_conn.cursor()
+    db = Db(PSQL_DB_NAME)
     print("connected to postgres")
 
 
     TOKEN = login_or_die()
     print(f"logged in to api, token={TOKEN}")
 
-    main_loop(redis_db, psql_db_cur)
+    main_loop(redis_db, db)
 
 
 
