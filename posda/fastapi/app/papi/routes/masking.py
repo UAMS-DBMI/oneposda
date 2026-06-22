@@ -525,6 +525,7 @@ async def get_iec_review_files(
     simplified = [
         { 
             "file_id": x.file_id,
+            "path": x.path,
             "num_of_frames": x.frame_count,
         }
         for x in sorted_framelist
