@@ -30,6 +30,7 @@ import struct
 import sys
 import logging
 import enum
+from datetime import date, datetime, timedelta
 from configparser import RawConfigParser
 from io import StringIO
 from glob import glob
@@ -421,11 +422,21 @@ def editImageDesc(filename):
                 #print("bad tag")
                 desc_dict[tag]  = '0'
                 to_change = to_change+1
+            if tag.replace(" ", "").lower() in ('date'):
+                desc_dict[tag]  = shiftDate(desc_dict[tag])
+                to_change = to_change+1
         if to_change != 0:
             new_img_desc = combine_image_desc(desc_dict)
             directory.replace(new_img_desc)
             print('{} elements of description edited'.format(to_change))
             to_change = 0
+
+def shiftDate(originalDate):
+    shift_date = int('2000') #testing default
+    date_object = datetime.strptime(originalDate, "%m/%d/%y").date()
+    newDate =  date_object - timedelta(days=shift_date)
+    return newDate.strftime("%m/%d/%y")
+
 
 def blackout(im1, l,l_dims, dims, coords):
     im = Image.new("RGB", (im1.size[0], im1.size[1]))
