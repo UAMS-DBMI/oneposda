@@ -496,6 +496,7 @@ async def get_iec_review_files(
     query = """
         select distinct
             file_id,
+            file_storage_root_id || '/' || rel_path as path,
             image_type,
             coalesce(number_of_frames, 1) as frame_count,
             iop,
@@ -503,6 +504,7 @@ async def get_iec_review_files(
         from
             masking
             natural join file_import
+            natural join file_location
             natural join dicom_file
             natural left join file_image
             natural left join image
