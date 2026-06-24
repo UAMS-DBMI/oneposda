@@ -67,9 +67,9 @@ INSERT INTO public.dataset (
         '10.7937/k9/tcia.2015.u1x8a5nr',
         true,
         NOW(),
-        'admin',
+        0,
         NOW(),
-        'admin'
+        0
     ),
     (
         2,
@@ -78,9 +78,9 @@ INSERT INTO public.dataset (
         '10.7937/tcia.2020.jit9grk8',
         true,
         NOW(),
-        'admin',
+        0,
         NOW(),
-        'admin'
+        0
     );
 SELECT setval(pg_get_serial_sequence('public.dataset', 'dataset_id'), COALESCE(MAX(dataset_id), 0), true) FROM public.dataset;
 
@@ -106,12 +106,12 @@ INSERT INTO public.recordset (
     when_updated,
     who_updated
 ) VALUES
-    (1, 'Radiology 01 Public', 1, 1, 2, null, true, NOW(), 'admin', NOW(), 'admin'),
-    (2, 'Radiology 02 Public', 1, 1, 2, null, true, NOW(), 'admin', NOW(), 'admin'),
-    (3, 'Radiology 03 Limited', 1, 1, 4, null, true, NOW(), 'admin', NOW(), 'admin'),
-    (4, 'Clinical 01 Public', 4, 1, 2, null, true, NOW(), 'admin', NOW(), 'admin'),
-    (5, 'Image Annotations 01 Public', 3, 2, 2, null, true, NOW(), 'admin', NOW(), 'admin'),
-    (6, 'Image Annotations 02 Limited', 3, 2, 4, null, true, NOW(), 'admin', NOW(), 'admin');
+    (1, 'Radiology 01 Public', 1, 1, 2, null, true, NOW(), 0, NOW(), 0),
+    (2, 'Radiology 02 Public', 1, 1, 2, null, true, NOW(), 0, NOW(), 0),
+    (3, 'Radiology 03 Limited', 1, 1, 4, null, true, NOW(), 0, NOW(), 0),
+    (4, 'Clinical 01 Public', 4, 1, 2, null, true, NOW(), 0, NOW(), 0),
+    (5, 'Image Annotations 01 Public', 3, 2, 2, null, true, NOW(), 0, NOW(), 0),
+    (6, 'Image Annotations 02 Limited', 3, 2, 4, null, true, NOW(), 0, NOW(), 0);
 SELECT setval(pg_get_serial_sequence('public.recordset', 'recordset_id'), COALESCE(MAX(recordset_id), 0), true) FROM public.recordset;
 
 INSERT INTO public.recordset_destination (recordset_id, destination_id, default_display, transfer_mode_id) VALUES
@@ -141,12 +141,12 @@ INSERT INTO public.recordset_release (
     when_updated,
     who_updated
 ) VALUES
-    (1, 1, 1, NOW(), 'Initial Release', NOW(), 'admin', NOW(), 'admin'),
-    (2, 2, 1, NOW(), 'Initial Release', NOW(), 'admin', NOW(), 'admin'),
-    (3, 3, 1, NOW(), 'Initial Release', NOW(), 'admin', NOW(), 'admin'),
-    (4, 4, 1, NOW(), 'Initial Release', NOW(), 'admin', NOW(), 'admin'),
-    (5, 5, 1, NOW(), 'Initial Release', NOW(), 'admin', NOW(), 'admin'),
-    (6, 6, 1, NOW(), 'Initial Release', NOW(), 'admin', NOW(), 'admin');
+    (1, 1, 1, NOW(), 'Initial Release', NOW(), 0, NOW(), 0),
+    (2, 2, 1, NOW(), 'Initial Release', NOW(), 0, NOW(), 0),
+    (3, 3, 1, NOW(), 'Initial Release', NOW(), 0, NOW(), 0),
+    (4, 4, 1, NOW(), 'Initial Release', NOW(), 0, NOW(), 0),
+    (5, 5, 1, NOW(), 'Initial Release', NOW(), 0, NOW(), 0),
+    (6, 6, 1, NOW(), 'Initial Release', NOW(), 0, NOW(), 0);
 SELECT setval(pg_get_serial_sequence('public.recordset_release', 'recordset_release_id'), COALESCE(MAX(recordset_release_id), 0), true) FROM public.recordset_release;
 
 INSERT INTO public.recordset_release_file (recordset_release_id, file_id) VALUES
@@ -173,12 +173,12 @@ INSERT INTO public.recordset_draft (
     when_updated,
     who_updated
 ) VALUES
-    (1, 1, 'Version 2 Draft', 'open', null, 1, NOW(), 'admin', NOW(), 'admin'),
-    (2, 2, 'Version 2 Draft', 'open', null, 2, NOW(), 'admin', NOW(), 'admin'),
-    (3, 3, 'Version 2 Draft', 'open', null, 3, NOW(), 'admin', NOW(), 'admin'),
-    (4, 4, 'Version 2 Draft', 'open', null, 4, NOW(), 'admin', NOW(), 'admin'),
-    (5, 5, 'Version 2 Draft', 'open', null, 5, NOW(), 'admin', NOW(), 'admin'),
-    (6, 6, 'Version 2 Draft', 'open', null, 6, NOW(), 'admin', NOW(), 'admin');
+    (1, 1, 'Version 2 Draft', 'open', null, 1, NOW(), 0, NOW(), 0),
+    (2, 2, 'Version 2 Draft', 'open', null, 2, NOW(), 0, NOW(), 0),
+    (3, 3, 'Version 2 Draft', 'open', null, 3, NOW(), 0, NOW(), 0),
+    (4, 4, 'Version 2 Draft', 'open', null, 4, NOW(), 0, NOW(), 0),
+    (5, 5, 'Version 2 Draft', 'open', null, 5, NOW(), 0, NOW(), 0),
+    (6, 6, 'Version 2 Draft', 'open', null, 6, NOW(), 0, NOW(), 0);
 SELECT setval(pg_get_serial_sequence('public.recordset_draft', 'recordset_draft_id'), COALESCE(MAX(recordset_draft_id), 0), true) FROM public.recordset_draft;
 
 INSERT INTO public.recordset_draft_file (recordset_draft_id, file_id) VALUES
@@ -204,8 +204,8 @@ INSERT INTO public.dataset_release (
     when_updated,
     who_updated
 ) VALUES
-    (1, 1, 1, NOW(), 'Initial Release', NOW(), 'admin', NOW(), 'admin'),
-    (2, 2, 1, NOW(), 'Initial Release', NOW(), 'admin', NOW(), 'admin');
+    (1, 1, 1, NOW(), 'Initial Release', NOW(), 0, NOW(), 0),
+    (2, 2, 1, NOW(), 'Initial Release', NOW(), 0, NOW(), 0);
 SELECT setval(pg_get_serial_sequence('public.dataset_release', 'dataset_release_id'), COALESCE(MAX(dataset_release_id), 0), true) FROM public.dataset_release;
 
 INSERT INTO public.dataset_release_recordset (dataset_release_id, recordset_release_id) VALUES
@@ -233,11 +233,11 @@ INSERT INTO public.dataset_release_transfer (
     when_updated,
     who_updated
 ) VALUES
-    (1, 1, 1, 'RIDER-LUNG-CT IDC grouped release', 2, 'draft', 'Initial grouped IDC test transfer', NOW(), 'admin', NOW(), 'admin'),
-    (2, 1, 3, 'RIDER-LUNG-CT WordPress release', 1, 'draft', 'Initial WordPress test transfer', NOW(), 'admin', NOW(), 'admin'),
-    (3, 2, 1, 'RIDER-LUNGCT-SEG IDC grouped release', 2, 'draft', 'Initial IDC test transfer for analysis result', NOW(), 'admin', NOW(), 'admin'),
-    (4, 1, 5, 'RIDER-LUNG-CT NBIA release', 1, 'draft', 'Initial NBIA test transfer', NOW(), 'admin', NOW(), 'admin'),
-    (5, 1, 2, 'RIDER-LUNG-CT General Commons limited release', 1, 'draft', 'Initial General Commons test transfer', NOW(), 'admin', NOW(), 'admin');
+    (1, 1, 1, 'RIDER-LUNG-CT IDC grouped release', 2, 'draft', 'Initial grouped IDC test transfer', NOW(), 0, NOW(), 0),
+    (2, 1, 3, 'RIDER-LUNG-CT WordPress release', 1, 'draft', 'Initial WordPress test transfer', NOW(), 0, NOW(), 0),
+    (3, 2, 1, 'RIDER-LUNGCT-SEG IDC grouped release', 2, 'draft', 'Initial IDC test transfer for analysis result', NOW(), 0, NOW(), 0),
+    (4, 1, 5, 'RIDER-LUNG-CT NBIA release', 1, 'draft', 'Initial NBIA test transfer', NOW(), 0, NOW(), 0),
+    (5, 1, 2, 'RIDER-LUNG-CT General Commons limited release', 1, 'draft', 'Initial General Commons test transfer', NOW(), 0, NOW(), 0);
 SELECT setval(pg_get_serial_sequence('public.dataset_release_transfer', 'dataset_release_transfer_id'), COALESCE(MAX(dataset_release_transfer_id), 0), true) FROM public.dataset_release_transfer;
 
 -- Transfer recordset membership. Manifest file IDs are left null so this script does

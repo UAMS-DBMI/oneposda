@@ -23,6 +23,9 @@ DROP TABLE IF EXISTS public.transfer_mode CASCADE;
 DROP TABLE IF EXISTS public.recordset_type CASCADE;
 DROP TABLE IF EXISTS public.dataset_type CASCADE;
 DROP TABLE IF EXISTS public.dataset_relation_type CASCADE;
+DROP TABLE IF EXISTS public.qc_review CASCADE;
+DROP TABLE IF EXISTS public.qc_series CASCADE;
+DROP TABLE IF EXISTS public.qc_series_history CASCADE;
 
 
 -- For pre-name change tables
