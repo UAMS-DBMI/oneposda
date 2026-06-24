@@ -135,6 +135,10 @@ class TransferWpUpdate(BaseModel):
 class TransferReleaseRecordsetRequest(BaseModel):
     recordset_release_ids: list[int]
 
+class FavoriteInsert(BaseModel):
+    object_type: str
+    object_id: int
+
 # --- Response Models ---
 
 class Meta(BaseModel):
@@ -308,6 +312,93 @@ async def get_users(db: Database = Depends()):
         db_error(e, operation="fetching users")
 
     return list_response(records)
+
+# -----------------------------------------FAVORITES-----------------------------------------------
+
+@router.get("/favorites")
+# List favorites for the current user
+async def get_favorites(current_user: User = logged_in_user, db: Database = Depends()):
+    query = """\
+        select
+            f.favorite_id,
+            f.object_type,
+            f.object_id,
+            f.when_created,
+            case
+                when f.object_type = 'dataset' then d.dataset_name
+                when f.object_type = 'recordset' then r.recordset_name
+            end as object_name,
+            case
+                when f.object_type = 'dataset' then d.when_updated
+                when f.object_type = 'recordset' then r.when_updated
+            end as when_updated,
+            case
+                when f.object_type = 'recordset' then pd.dataset_name
+            end as parent_dataset_name
+        from public.user_favorite f
+        left join public.dataset d on f.object_type = 'dataset' and f.object_id = d.dataset_id
+        left join public.recordset r on f.object_type = 'recordset' and f.object_id = r.recordset_id
+        left join public.dataset pd on r.dataset_id = pd.dataset_id
+        where f.user_id = $1
+        order by when_updated desc nulls last
+        """
+    try:
+        records = await db.fetch(query, [current_user.user_id])
+    except Exception as e:
+        db_error(e, operation="fetching favorites")
+    return list_response(records)
+
+
+@router.post("/favorites")
+# Add a favorite for the current user
+async def add_favorite(
+    payload: FavoriteInsert,
+    current_user: User = logged_in_user,
+    db: Database = Depends()):
+
+    query = """\
+        with inserted as (
+            insert into public.user_favorite (user_id, object_type, object_id)
+            values ($1, $2, $3)
+            on conflict (user_id, object_type, object_id) do update
+                set object_id = excluded.object_id
+            returning favorite_id, object_type, object_id, when_created
+        )
+        select
+            i.favorite_id,
+            i.object_type,
+            i.object_id,
+            i.when_created,
+            coalesce(d.dataset_name, r.recordset_name) as object_name
+        from inserted i
+        left join public.dataset d on i.object_type = 'dataset' and i.object_id = d.dataset_id
+        left join public.recordset r on i.object_type = 'recordset' and i.object_id = r.recordset_id
+        """
+    try:
+        record = await db.fetch_one(query, [current_user.user_id, payload.object_type, payload.object_id])
+    except Exception as e:
+        db_error(e, operation="adding favorite")
+    return item_response(record)
+
+
+@router.delete("/favorites/{object_type}/{object_id}")
+# Remove a favorite for the current user
+async def remove_favorite(
+    object_type: str,
+    object_id: int,
+    current_user: User = logged_in_user,
+    db: Database = Depends()):
+
+    query = """\
+        delete from public.user_favorite
+        where user_id = $1 and object_type = $2 and object_id = $3
+        """
+    try:
+        await db.execute(query, [current_user.user_id, object_type, object_id])
+    except Exception as e:
+        db_error(e, operation="removing favorite")
+    return {"data": None}
+
 
 # -----------------------------------------DATASETS------------------------------------------------
 
