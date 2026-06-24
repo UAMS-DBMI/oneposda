@@ -293,6 +293,22 @@ async def get_destinations(db: Database = Depends()):
 
     return list_response(records)
 
+@router.get("/lookups/users")
+# List active users
+async def get_users(db: Database = Depends()):
+    query = """\
+        select user_id, user_name, full_name
+        from auth.users
+        where not disabled
+        order by user_name
+        """
+    try:
+        records = await db.fetch(query)
+    except Exception as e:
+        db_error(e, operation="fetching users")
+
+    return list_response(records)
+
 # -----------------------------------------DATASETS------------------------------------------------
 
 @router.get("/datasets")
@@ -420,7 +436,7 @@ async def create_dataset(
         payload.dataset_name,
         payload.dataset_doi,
         payload.active,
-        current_user.username,
+        current_user.user_id,
     ]
 
     try:
@@ -505,7 +521,7 @@ async def update_dataset(
 
     updates.append("when_updated = now()")
     updates.append(f"who_updated = ${idx}")
-    values.append(current_user.username)
+    values.append(current_user.user_id)
     idx += 1
 
     dataset_id_placeholder = idx
@@ -646,7 +662,7 @@ async def create_dataset_release(
         payload.release_number,
         payload.release_date,
         payload.release_notes,
-        current_user.username,
+        current_user.user_id,
     ]
 
     try:
@@ -726,7 +742,7 @@ async def update_dataset_release(
 
     updates.append("when_updated = now()")
     updates.append(f"who_updated = ${idx}")
-    values.append(current_user.username)
+    values.append(current_user.user_id)
     idx += 1
 
     release_id_placeholder = idx
@@ -1050,7 +1066,7 @@ async def create_transfer_for_dataset_release(
         payload.transfer_mode_id,
         payload.transfer_status,
         payload.transfer_notes,
-        current_user.username,
+        current_user.user_id,
     ]
 
     record = []
@@ -1214,7 +1230,7 @@ async def create_recordset(
         payload.recordset_type_id,
         payload.recordset_name,
         payload.active,
-        current_user.username,
+        current_user.user_id,
     ]
 
     try:
@@ -1324,7 +1340,7 @@ async def update_recordset(
 
     updates.append("when_updated = now()")
     updates.append(f"who_updated = ${idx}")
-    values.append(current_user.username)
+    values.append(current_user.user_id)
     idx += 1
 
     recordset_id_placeholder = idx
@@ -1711,7 +1727,7 @@ async def create_recordset_draft(
         payload.draft_name,
         payload.draft_notes,
         payload.draft_status,
-        current_user.username,
+        current_user.user_id,
     ]
 
     try:
@@ -1832,7 +1848,7 @@ async def update_recordset_draft(
 
     updates.append("when_updated = now()")
     updates.append(f"who_updated = ${idx}")
-    values.append(current_user.username)
+    values.append(current_user.user_id)
     idx += 1
 
     draft_id_placeholder = idx
@@ -1875,7 +1891,7 @@ async def delete_recordset_draft(
     """
 
     try:
-        record = await db.fetch_one(delete_query, [draft_id, current_user.username])
+        record = await db.fetch_one(delete_query, [draft_id, current_user.user_id])
     except Exception as e:
         db_error(
             e,
@@ -2478,7 +2494,7 @@ async def create_recordset_release(
                 payload.release_number,
                 payload.release_date,
                 payload.release_notes,
-                current_user.username,
+                current_user.user_id,
             )
 
             if not release_rows:
@@ -2491,7 +2507,7 @@ async def create_recordset_release(
             await conn.execute(q_copy_files, release_id, draft_id)
 
             # 4. Mark draft as published
-            await conn.execute(q_mark_draft_published, draft_id, current_user.username)
+            await conn.execute(q_mark_draft_published, draft_id, current_user.user_id)
 
     except Exception as e:
         db_error(
@@ -2775,7 +2791,7 @@ async def update_dataset_release_transfer(
 
     updates.append("when_updated = now()")
     updates.append(f"who_updated = ${idx}")
-    values.append(current_user.username)
+    values.append(current_user.user_id)
     idx += 1
 
     transfer_id_placeholder = idx
