@@ -289,10 +289,10 @@ class TiffDirectory:
         bytesToWrite += b'\0' * lenDiff
         self._fh.seek(descObj.my_data_start())
         self._fh.write(bytesToWrite)
-        print(
-            f'ImageDescription updated '
-            f'old={oldLen} new={newLen}'
-        )
+        # print(
+        #     f'ImageDescription updated '
+        #     f'old={oldLen} new={newLen}'
+        # )
 
 
 
