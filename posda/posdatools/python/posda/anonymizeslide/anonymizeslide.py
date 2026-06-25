@@ -275,24 +275,24 @@ class TiffDirectory:
         self._fh.write_fmt('D', 0)
 
     def replace(self, new_data):
-        descObj = self.entries[TiffTag.ImageDescription]
-        old = descObj.value()
-        oldLen = descObj.my_data_length()
-        newLen = len(new_data.encode('utf-8'))
-        lenDiff = oldLen - newLen
-        #print('oldLen:{} newLen:{}, lenDiff: {}'.format(oldLen, newLen, lenDiff))
-        if lenDiff < 0:
-            raise IOError('Edit data larger than data strip')
 
+        descObj = self.entries[TiffTag.ImageDescription]
+        oldLen = descObj.my_data_length()
+        bytesToWrite = new_data.encode('utf-8') + b'\0'
+        newLen = len(bytesToWrite)
+        lenDiff = oldLen - newLen
+        if lenDiff < 0:
+            raise IOError(
+                f'Edit data larger than data strip '
+                f'({newLen}>{oldLen})'
+            )
+        bytesToWrite += b'\0' * lenDiff
         self._fh.seek(descObj.my_data_start())
-        bytesToWrite = new_data.encode('utf-8')
-        bytesToWrite = bytesToWrite + (b'\0' * lenDiff)
-        if oldLen == len(bytesToWrite):
-            self._fh.write(bytesToWrite)
-            #print('replace completed')
-        else:
-            print('oldLen not same as new: {} vs {}'.format(oldLen,len(bytesToWrite)))
-            print('replace failed')
+        self._fh.write(bytesToWrite)
+        print(
+            f'ImageDescription updated '
+            f'old={oldLen} new={newLen}'
+        )
 
 
 
@@ -404,39 +404,106 @@ def getImageDesc(directory):
     return img_desc_dict
 
 def editImageDesc(filename):
-    to_change = 0
+
     fh = TiffFile(filename)
 
     try:
         desc0 = fh.directories[0].entries[TiffTag.ImageDescription].value()
+
         if not desc0.startswith(b'Aperio'):
             raise UnrecognizedFile
+
     except KeyError:
         raise UnrecognizedFile
 
     for directory in fh.directories:
+
+        desc_entry = directory.entries[TiffTag.ImageDescription]
+
+        original_desc = desc_entry.value().decode(
+            'utf-8',
+            errors='replace'
+        )
+
         desc_dict = getImageDesc(directory)
-        #print("desc_dict {}".format(desc_dict))
-        for tag in desc_dict:
-            if tag.replace(" ", "").lower() in ('user','filename','imageid','scanscopeid','dsrid','title'):
-                #print("bad tag")
-                desc_dict[tag]  = '0'
-                to_change = to_change+1
-            if tag.replace(" ", "").lower() in ('date'):
-                desc_dict[tag]  = shiftDate(desc_dict[tag])
-                to_change = to_change+1
-        if to_change != 0:
-            new_img_desc = combine_image_desc(desc_dict)
-            directory.replace(new_img_desc)
-            print('{} elements of description edited'.format(to_change))
-            to_change = 0
 
-def shiftDate(originalDate):
-    shift_date = int('2000') #testing default
-    date_object = datetime.strptime(originalDate, "%m/%d/%y").date()
-    newDate =  date_object - timedelta(days=shift_date)
-    return newDate.strftime("%m/%d/%y")
+        changes = 0
 
+        for tag in list(desc_dict.keys()):
+
+            normalized = tag.replace(" ", "").lower()
+
+            if normalized in (
+                'user',
+                'filename',
+                'imageid',
+                'scanscopeid',
+                'dsrid',
+                'title'
+            ):
+                desc_dict[tag] = '0'
+                changes += 1
+
+            elif normalized == 'date':
+                old_date = desc_dict[tag]
+                new_date = shiftDate(old_date)
+
+                if new_date != old_date:
+                    desc_dict[tag] = new_date
+                    changes += 1
+
+        if changes == 0:
+            continue
+
+        new_img_desc = combine_image_desc(desc_dict)
+
+        old_len = desc_entry.my_data_length()
+
+        # +1 for TIFF ASCII NULL terminator
+        new_len = len(new_img_desc.encode('utf-8')) + 1
+
+        print(
+            f"ImageDescription old={old_len} bytes "
+            f"new={new_len} bytes"
+        )
+
+        if new_len > old_len:
+            raise IOError(
+                f"New ImageDescription too large "
+                f"({new_len}>{old_len})"
+            )
+
+        directory.replace(new_img_desc)
+
+        print(
+            f"{changes} ImageDescription fields modified"
+        )
+
+def shiftDate(originalDate, shift_days=2000):
+    """
+    Shift a date backward while preserving its original format.
+    Returns the original value unchanged if parsing fails.
+    """
+
+    originalDate = originalDate.strip()
+
+    formats = [
+        "%m/%d/%y",
+        "%m/%d/%Y",
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+    ]
+
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(originalDate, fmt)
+            shifted = dt - timedelta(days=shift_days)
+            return shifted.strftime(fmt)
+        except ValueError:
+            continue
+
+    print(f"WARNING: Could not parse date '{originalDate}'")
+    return originalDate
 
 def blackout(im1, l,l_dims, dims, coords):
     im = Image.new("RGB", (im1.size[0], im1.size[1]))
@@ -550,16 +617,26 @@ def saveNew(filepath, ogpath, pixel_data_by_layer):
         print('*** Redaction FAILED: returning original file: {}  ***'.format(ogpath))
         return ogpath
 
-#from MR
 def combine_image_desc(desc_dict):
-    image_desc = ''
-    for e in desc_dict.keys():
-        if desc_dict[e] == '' or  desc_dict[e] == '':
-            image_desc = image_desc + e  + '|'
+    """
+    Rebuild Aperio ImageDescription metadata.
+    """
+
+    entries = []
+
+    for key, value in desc_dict.items():
+
+        if value is None:
+            value = ''
+
+        value = str(value)
+
+        if value == '':
+            entries.append(key)
         else:
-            image_desc = image_desc + e + ' = ' + desc_dict[e] + '|'
-    #print('Combine complete: {}'.format(image_desc))
-    return image_desc
+            entries.append(f"{key} = {value}")
+
+    return '|'.join(entries)
 
 
 
