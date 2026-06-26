@@ -3735,3 +3735,1082 @@ async def remove_recordset_release_from_transfer(
             "current_count": count_record[0]["current_count"] if count_record else 0,
         }
     )
+
+
+# =====================================================================================
+# QC REVIEWS / ASSIGNMENTS / FLAGS
+# =====================================================================================
+
+# --- QC Models ---
+
+class QCReviewCreate(BaseModel):
+    review_type: str                                # 'full' | 'partial'
+    sample_percentage: Optional[float] = None       # required when partial
+    sample_seed: Optional[int] = None               # server-generated when omitted
+    review_notes: Optional[str] = None
+
+class QCReviewUpdate(BaseModel):
+    review_status: Optional[str] = None             # open | complete | cancelled
+    review_notes: Optional[str] = None
+
+class QCReviewClone(BaseModel):
+    mode: Optional[str] = "carry_forward"           # carry_forward | resample
+    review_notes: Optional[str] = None
+
+class QCSplitRequest(BaseModel):
+    user_ids: Optional[list[int]] = None            # one assigned slice per user
+    count: Optional[int] = None                     # N unclaimed pickup slices
+    force: bool = False
+
+class QCAssignmentUpdate(BaseModel):
+    assigned_to: Optional[int] = None
+    assignment_status: Optional[str] = None
+
+class QCSeriesStatusUpdate(BaseModel):
+    qc_status: str
+    notes: Optional[str] = None
+
+class QCSeriesBatchStatus(BaseModel):
+    series_instance_uids: list[str]
+    qc_status: str
+    notes: Optional[str] = None
+
+class UserFlagCreate(BaseModel):
+    object_type: str
+    object_id: int
+    series_instance_uid: Optional[str] = None
+    flagged_for: int
+    note: Optional[str] = None
+
+class UserFlagUpdate(BaseModel):
+    flag_status: Optional[str] = None
+    note: Optional[str] = None
+    flagged_for: Optional[int] = None
+
+
+VALID_QC_STATUS = ("pending", "approved", "rejected", "flagged")
+VALID_REVIEW_STATUS = ("open", "complete", "cancelled")
+
+# Shared draw: a draft's series population + deterministic per-modality sample rank.
+#   $1 = recordset_draft_id, $2 = seed (text)
+# Selection predicate (full or ceil sample): ($3 = true or rn <= ceil($4::numeric/100*mcount))
+QC_DRAW_CTE = """
+        pop as (
+            select fs.series_instance_uid as suid,
+                   max(fs.modality) as modality,
+                   md5(string_agg(f.digest, '' order by f.digest)) as series_file_hash
+            from recordset_draft_file rdf
+            join file_series fs on fs.file_id = rdf.file_id
+            join file f on f.file_id = rdf.file_id
+            where rdf.recordset_draft_id = $1
+            group by fs.series_instance_uid
+        ),
+        drawn as (
+            select suid, modality, series_file_hash,
+                   row_number() over (partition by modality order by md5($2 || suid)) as rn,
+                   count(*) over (partition by modality) as mcount
+            from pop
+        )
+"""
+
+
+def qc_paged_response(rows, total, page=None, limit=None):
+    meta = {"count": len(rows), "total": total}
+    if page is not None and limit is not None:
+        meta["page"] = page
+        meta["limit"] = limit
+    return {"data": rows, "meta": meta}
+
+
+def qc_page_clause(page: Optional[int], limit: Optional[int]):
+    if page is None or limit is None:
+        return ""
+    p = page if page and page > 0 else 1
+    l = limit if limit and limit > 0 else 1
+    return f"limit {int(l)} offset {int((p - 1) * l)}"
+
+
+async def qc_sync_assignment_status(conn, assignment_id: int):
+    # Auto: a slice completes when it has 0 pending series; reverts if pending reappears.
+    counts = await conn.fetch(
+        "select count(*) as total, count(*) filter (where qc_status = 'pending') as pending "
+        "from qc_series where assignment_id = $1",
+        assignment_id,
+    )
+    total = counts[0]["total"]
+    pending = counts[0]["pending"]
+    if total > 0 and pending == 0:
+        await conn.execute(
+            "update qc_review_assignment set assignment_status = 'complete', when_updated = now() "
+            "where assignment_id = $1 and assignment_status <> 'complete'",
+            assignment_id,
+        )
+    else:
+        await conn.execute(
+            "update qc_review_assignment set assignment_status = 'in_progress', when_updated = now() "
+            "where assignment_id = $1 and assignment_status = 'complete'",
+            assignment_id,
+        )
+
+
+def qc_modality_summary(pop_rows, samp_rows):
+    pop = {r["modality"]: r["population_count"] for r in pop_rows}
+    samp = {r["modality"]: r["sampled_count"] for r in samp_rows}
+    return [
+        {
+            "modality": m,
+            "population_count": pop[m],
+            "sampled_count": samp.get(m, 0),
+        }
+        for m in pop
+    ]
+
+
+QC_POP_PER_MOD = """
+    select coalesce(modality, '(none)') as modality, count(*) as population_count
+    from (
+        select fs.series_instance_uid as suid, max(fs.modality) as modality
+        from recordset_draft_file rdf
+        join file_series fs on fs.file_id = rdf.file_id
+        where rdf.recordset_draft_id = $1
+        group by fs.series_instance_uid
+    ) p
+    group by coalesce(modality, '(none)')
+"""
+
+QC_SAMPLED_PER_MOD = """
+    select coalesce(modality, '(none)') as modality, count(*) as sampled_count
+    from qc_series where qc_review_id = $1
+    group by coalesce(modality, '(none)')
+"""
+
+
+# ------------------------------------- QC REVIEWS -------------------------------------
+
+@router.post("/recordsets/drafts/{draft_id}/qc-reviews")
+# Create a QC review (full or partial sample) + its initial assignment + sampled series
+async def create_qc_review(
+    draft_id: int,
+    payload: QCReviewCreate,
+    current_user: User = logged_in_user,
+    db: Database = Depends()):
+
+    review_type = payload.review_type
+    if review_type not in ("full", "partial"):
+        api_error("VALIDATION_ERROR", "review_type must be 'full' or 'partial'",
+                  {"review_type": review_type}, 422)
+
+    is_full = review_type == "full"
+    pct = None
+    if not is_full:
+        pct = payload.sample_percentage
+        if pct is None or pct <= 0 or pct > 100:
+            api_error("VALIDATION_ERROR", "sample_percentage must be in (0, 100] for a partial review",
+                      {"sample_percentage": pct}, 422)
+
+    seed = payload.sample_seed if payload.sample_seed is not None else secrets.randbelow(2_000_000_000)
+    seed_text = str(seed)
+
+    pop_count_q = """
+        select count(*) as c from (
+            select fs.series_instance_uid
+            from recordset_draft_file rdf
+            join file_series fs on fs.file_id = rdf.file_id
+            where rdf.recordset_draft_id = $1
+            group by fs.series_instance_uid
+        ) p
+    """
+    review_insert = """
+        insert into qc_review (recordset_draft_id, review_status, review_type, sample_percentage,
+                               sample_seed, review_notes, when_created, who_created, when_updated, who_updated)
+        values ($1, 'open', $2, $3, $4, $5, now(), $6, now(), $6)
+        returning *
+    """
+    assign_insert = """
+        insert into qc_review_assignment (qc_review_id, assigned_to, assignment_status, share_percentage,
+                                          when_created, who_created, when_updated, who_updated)
+        values ($1, null, 'needs_qc', 100, now(), $2, now(), $2)
+        returning *
+    """
+    series_insert = f"""
+        insert into qc_series (qc_review_id, series_instance_uid, qc_status, series_file_hash, modality, assignment_id)
+        with {QC_DRAW_CTE}
+        select $5, suid, 'pending', series_file_hash, modality, $6
+        from drawn
+        where ($3 = true or rn <= ceil($4::numeric / 100 * mcount))
+    """
+
+    try:
+        async with db.transaction() as conn:
+            cnt = await conn.fetch(pop_count_q, draft_id)
+            if not cnt or cnt[0]["c"] == 0:
+                api_error("VALIDATION_ERROR", "Draft has no series to review",
+                          {"recordset_draft_id": draft_id}, 422)
+
+            rev = await conn.fetch(review_insert, draft_id, review_type, pct, seed,
+                                   payload.review_notes, current_user.user_id)
+            review = rev[0]
+            review_id = review["qc_review_id"]
+
+            asg = await conn.fetch(assign_insert, review_id, current_user.user_id)
+            assignment = asg[0]
+
+            await conn.execute(series_insert, draft_id, seed_text, is_full, pct,
+                               review_id, assignment["assignment_id"])
+
+            pop_rows = await conn.fetch(QC_POP_PER_MOD, draft_id)
+            samp_rows = await conn.fetch(QC_SAMPLED_PER_MOD, review_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        db_error(e, operation="creating qc review", context={"recordset_draft_id": draft_id})
+
+    return item_response({
+        "review": dict(review),
+        "assignment": dict(assignment),
+        "summary": qc_modality_summary(pop_rows, samp_rows),
+    })
+
+
+@router.get("/recordsets/drafts/{draft_id}/qc-reviews")
+# List QC reviews for a draft (with per-review series counts)
+async def list_qc_reviews(
+    draft_id: int,
+    review_status: Optional[str] = Query(default=None),
+    review_type: Optional[str] = Query(default=None),
+    page: Optional[int] = Query(default=None),
+    limit: Optional[int] = Query(default=None),
+    db: Database = Depends()):
+
+    where = ["r.recordset_draft_id = $1"]
+    values = [draft_id]
+    if review_status:
+        values.append(review_status)
+        where.append(f"r.review_status = ${len(values)}")
+    if review_type:
+        values.append(review_type)
+        where.append(f"r.review_type = ${len(values)}")
+    where_sql = "where " + " and ".join(where)
+
+    list_q = f"""
+        select r.*,
+            coalesce(c.total, 0) as series_total,
+            coalesce(c.pending, 0) as series_pending,
+            coalesce(c.approved, 0) as series_approved,
+            coalesce(c.rejected, 0) as series_rejected,
+            coalesce(c.flagged, 0) as series_flagged
+        from qc_review r
+        left join (
+            select qc_review_id,
+                count(*) as total,
+                count(*) filter (where qc_status = 'pending') as pending,
+                count(*) filter (where qc_status = 'approved') as approved,
+                count(*) filter (where qc_status = 'rejected') as rejected,
+                count(*) filter (where qc_status = 'flagged') as flagged
+            from qc_series group by qc_review_id
+        ) c on c.qc_review_id = r.qc_review_id
+        {where_sql}
+        order by r.qc_review_id desc
+        {qc_page_clause(page, limit)}
+    """
+    count_q = f"select count(*) as total from qc_review r {where_sql}"
+
+    try:
+        rows = await db.fetch(list_q, values)
+        total = (await db.fetch(count_q, values))[0]["total"]
+    except Exception as e:
+        db_error(e, operation="listing qc reviews", context={"recordset_draft_id": draft_id})
+
+    return qc_paged_response(rows, total, page, limit)
+
+
+@router.get("/qc/reviews/{review_id}")
+# QC review detail: review + assignments (counts) + status/modality breakdown (+ stale breakdown)
+async def get_qc_review(review_id: int, db: Database = Depends()):
+    review = await db.fetch_one("select * from qc_review where qc_review_id = $1", [review_id])
+    if not review:
+        api_error("NOT_FOUND", "QC review not found", {"qc_review_id": review_id}, 404)
+
+    assignments = await db.fetch(
+        """
+        select a.*,
+            coalesce(c.total, 0) as series_total,
+            coalesce(c.pending, 0) as series_pending,
+            coalesce(c.approved, 0) as series_approved,
+            coalesce(c.rejected, 0) as series_rejected,
+            coalesce(c.flagged, 0) as series_flagged
+        from qc_review_assignment a
+        left join (
+            select assignment_id,
+                count(*) as total,
+                count(*) filter (where qc_status = 'pending') as pending,
+                count(*) filter (where qc_status = 'approved') as approved,
+                count(*) filter (where qc_status = 'rejected') as rejected,
+                count(*) filter (where qc_status = 'flagged') as flagged
+            from qc_series group by assignment_id
+        ) c on c.assignment_id = a.assignment_id
+        where a.qc_review_id = $1
+        order by a.assignment_id
+        """,
+        [review_id],
+    )
+    by_status = await db.fetch(
+        "select qc_status, count(*) as count from qc_series where qc_review_id = $1 group by qc_status",
+        [review_id],
+    )
+    by_modality = await db.fetch(
+        "select coalesce(modality, '(none)') as modality, qc_status, count(*) as count "
+        "from qc_series where qc_review_id = $1 group by coalesce(modality, '(none)'), qc_status",
+        [review_id],
+    )
+
+    stale_breakdown = None
+    if review["review_status"] == "stale":
+        is_full = review["review_type"] == "full"
+        seed_text = str(review["sample_seed"]) if review["sample_seed"] is not None else "0"
+        recon_q = f"""
+            with {QC_DRAW_CTE},
+            t as (
+                select suid, series_file_hash from drawn
+                where ($3 = true or rn <= ceil($4::numeric / 100 * mcount))
+            ),
+            cur as (
+                select series_instance_uid as suid, series_file_hash
+                from qc_series where qc_review_id = $5
+            )
+            select
+                count(*) filter (where t.suid is not null and cur.suid is not null
+                                 and t.series_file_hash <> cur.series_file_hash) as changed,
+                count(*) filter (where t.suid is not null and cur.suid is null) as would_add,
+                count(*) filter (where t.suid is null and cur.suid is not null) as would_drop
+            from t full outer join cur on t.suid = cur.suid
+        """
+        recon = await db.fetch(
+            recon_q,
+            [review["recordset_draft_id"], seed_text, is_full,
+             review["sample_percentage"], review_id],
+        )
+        stale_breakdown = dict(recon[0]) if recon else None
+
+    return item_response({
+        "review": dict(review),
+        "assignments": [dict(a) for a in assignments],
+        "series_by_status": [dict(r) for r in by_status],
+        "series_by_modality": [dict(r) for r in by_modality],
+        "stale_breakdown": stale_breakdown,
+    })
+
+
+@router.put("/qc/reviews/{review_id}")
+# Update a QC review (status / notes). Type/percentage/seed are immutable (re-draw = clone).
+async def update_qc_review(
+    review_id: int,
+    payload: QCReviewUpdate,
+    current_user: User = logged_in_user,
+    db: Database = Depends()):
+
+    review = await db.fetch_one("select * from qc_review where qc_review_id = $1", [review_id])
+    if not review:
+        api_error("NOT_FOUND", "QC review not found", {"qc_review_id": review_id}, 404)
+
+    new_status = payload.review_status
+    if new_status is not None:
+        if new_status not in VALID_REVIEW_STATUS:
+            api_error("VALIDATION_ERROR", "Invalid review_status",
+                      {"allowed": list(VALID_REVIEW_STATUS)}, 422)
+        if new_status == "complete":
+            remaining = await db.fetch_one(
+                "select count(*) as n from qc_series where qc_review_id = $1 and qc_status <> 'approved'",
+                [review_id],
+            )
+            if remaining and remaining["n"] > 0:
+                api_error("VALIDATION_ERROR",
+                          "Review cannot be completed until every series is approved",
+                          {"not_approved": remaining["n"]}, 422)
+
+    try:
+        updated = await db.fetch_one(
+            """
+            update qc_review set
+                review_status = coalesce($2, review_status),
+                review_notes = coalesce($3, review_notes),
+                when_updated = now(),
+                who_updated = $4
+            where qc_review_id = $1
+            returning *
+            """,
+            [review_id, new_status, payload.review_notes, current_user.user_id],
+        )
+    except Exception as e:
+        db_error(e, operation="updating qc review", context={"qc_review_id": review_id})
+
+    return item_response(updated)
+
+
+@router.put("/qc/reviews/{review_id}/cancel")
+# Soft-cancel a QC review (no hard delete; row + series kept for audit)
+async def cancel_qc_review(
+    review_id: int,
+    current_user: User = logged_in_user,
+    db: Database = Depends()):
+
+    updated = await db.fetch_one(
+        "update qc_review set review_status = 'cancelled', when_updated = now(), who_updated = $2 "
+        "where qc_review_id = $1 returning *",
+        [review_id, current_user.user_id],
+    )
+    if not updated:
+        api_error("NOT_FOUND", "QC review not found", {"qc_review_id": review_id}, 404)
+    return item_response(updated)
+
+
+@router.post("/qc/reviews/{review_id}/clone")
+# Clone a review: re-draw against its own draft (same seed) and overlay carried statuses
+async def clone_qc_review(
+    review_id: int,
+    payload: QCReviewClone,
+    current_user: User = logged_in_user,
+    db: Database = Depends()):
+
+    source = await db.fetch_one("select * from qc_review where qc_review_id = $1", [review_id])
+    if not source:
+        api_error("NOT_FOUND", "QC review not found", {"qc_review_id": review_id}, 404)
+
+    mode = payload.mode or "carry_forward"
+    if mode not in ("carry_forward", "resample"):
+        api_error("VALIDATION_ERROR", "mode must be 'carry_forward' or 'resample'", {"mode": mode}, 422)
+
+    is_resample = mode == "resample"
+    is_full = source["review_type"] == "full"
+    draft_id = source["recordset_draft_id"]
+    pct = source["sample_percentage"]
+    seed = secrets.randbelow(2_000_000_000) if is_resample else (source["sample_seed"] or 0)
+    seed_text = str(seed)
+
+    review_insert = """
+        insert into qc_review (recordset_draft_id, review_status, review_type, sample_percentage,
+                               sample_seed, review_notes, cloned_from_review_id,
+                               when_created, who_created, when_updated, who_updated)
+        values ($1, 'open', $2, $3, $4, $5, $6, now(), $7, now(), $7)
+        returning *
+    """
+    assign_insert = """
+        insert into qc_review_assignment (qc_review_id, assigned_to, assignment_status, share_percentage,
+                                          when_created, who_created, when_updated, who_updated)
+        values ($1, null, 'needs_qc', 100, now(), $2, now(), $2)
+        returning *
+    """
+    series_insert = f"""
+        insert into qc_series (qc_review_id, series_instance_uid, qc_status, series_file_hash, modality, assignment_id)
+        with {QC_DRAW_CTE},
+        sel as (
+            select suid, modality, series_file_hash from drawn
+            where ($3 = true or rn <= ceil($4::numeric / 100 * mcount))
+        )
+        select $5, sel.suid,
+            case when $7 = true then 'pending'
+                 when s.series_instance_uid is not null and s.series_file_hash = sel.series_file_hash
+                     then s.qc_status
+                 else 'pending' end,
+            sel.series_file_hash, sel.modality, $6
+        from sel
+        left join qc_series s on s.qc_review_id = $8 and s.series_instance_uid = sel.suid
+    """
+    reconcile_q = """
+        with newr as (
+            select series_instance_uid as suid, series_file_hash from qc_series where qc_review_id = $1
+        ),
+        src as (
+            select series_instance_uid as suid, series_file_hash from qc_series where qc_review_id = $2
+        )
+        select
+            count(*) filter (where src.suid is not null and newr.series_file_hash = src.series_file_hash)
+                as carried_unchanged,
+            count(*) filter (where src.suid is not null and newr.series_file_hash <> src.series_file_hash)
+                as changed,
+            count(*) filter (where src.suid is null) as added,
+            (select count(*) from src where suid not in (select suid from newr)) as dropped
+        from newr left join src on newr.suid = src.suid
+    """
+
+    try:
+        async with db.transaction() as conn:
+            rev = await conn.fetch(review_insert, draft_id, source["review_type"], pct, seed,
+                                   payload.review_notes, review_id, current_user.user_id)
+            review = rev[0]
+            new_id = review["qc_review_id"]
+
+            asg = await conn.fetch(assign_insert, new_id, current_user.user_id)
+            assignment = asg[0]
+
+            await conn.execute(series_insert, draft_id, seed_text, is_full, pct,
+                               new_id, assignment["assignment_id"], is_resample, review_id)
+
+            pop_rows = await conn.fetch(QC_POP_PER_MOD, draft_id)
+            samp_rows = await conn.fetch(QC_SAMPLED_PER_MOD, new_id)
+            recon = await conn.fetch(reconcile_q, new_id, review_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        db_error(e, operation="cloning qc review", context={"qc_review_id": review_id})
+
+    return item_response({
+        "review": dict(review),
+        "assignment": dict(assignment),
+        "summary": qc_modality_summary(pop_rows, samp_rows),
+        "reconcile": dict(recon[0]) if recon else None,
+    })
+
+
+@router.post("/qc/reviews/{review_id}/split")
+# Rebalance a review across N slices, stratified evenly per modality (contiguous chunks)
+async def split_qc_review(
+    review_id: int,
+    payload: QCSplitRequest,
+    current_user: User = logged_in_user,
+    db: Database = Depends()):
+
+    if (payload.user_ids is None) == (payload.count is None):
+        api_error("VALIDATION_ERROR", "Provide exactly one of user_ids or count", {}, 422)
+
+    if payload.user_ids is not None:
+        assignees = list(payload.user_ids)
+        if len(assignees) < 1:
+            api_error("VALIDATION_ERROR", "user_ids must be non-empty", {}, 422)
+    else:
+        if payload.count < 1:
+            api_error("VALIDATION_ERROR", "count must be >= 1", {}, 422)
+        assignees = [None] * payload.count
+
+    n = len(assignees)
+    share = round(100.0 / n, 4)
+
+    review = await db.fetch_one("select qc_review_id from qc_review where qc_review_id = $1", [review_id])
+    if not review:
+        api_error("NOT_FOUND", "QC review not found", {"qc_review_id": review_id}, 404)
+
+    assign_insert = """
+        insert into qc_review_assignment (qc_review_id, assigned_to, assignment_status, share_percentage,
+                                          when_created, who_created, when_updated, who_updated)
+        values ($1, $2, 'needs_qc', $3, now(), $4, now(), $4)
+        returning assignment_id
+    """
+
+    try:
+        async with db.transaction() as conn:
+            existing = await conn.fetch(
+                "select assignment_status from qc_review_assignment where qc_review_id = $1", review_id)
+            if not payload.force and any(
+                    a["assignment_status"] in ("in_progress", "complete") for a in existing):
+                api_error("CONFLICT",
+                          "Review has in-progress/complete assignments; pass force=true to rebalance",
+                          {"qc_review_id": review_id}, 409)
+
+            series = await conn.fetch(
+                "select series_instance_uid as suid, modality from qc_series "
+                "where qc_review_id = $1 order by modality nulls first, series_instance_uid",
+                review_id)
+
+            # Group series per modality, preserving UID order.
+            groups = {}
+            for r in series:
+                groups.setdefault(r["modality"], []).append(r["suid"])
+
+            # Even per-modality allocation; rotate the leftover recipient across modalities.
+            alloc = [[] for _ in range(n)]
+            for mi, uids in enumerate(groups.values()):
+                c = len(uids)
+                counts = [c // n] * n
+                start = mi % n
+                for k in range(c % n):
+                    counts[(start + k) % n] += 1
+                idx = 0
+                for si in range(n):
+                    alloc[si].extend(uids[idx:idx + counts[si]])
+                    idx += counts[si]
+
+            new_ids = []
+            for si in range(n):
+                row = await conn.fetch(assign_insert, review_id, assignees[si], share, current_user.user_id)
+                aid = row[0]["assignment_id"]
+                new_ids.append(aid)
+                if alloc[si]:
+                    await conn.execute(
+                        "update qc_series set assignment_id = $1 "
+                        "where qc_review_id = $2 and series_instance_uid = any($3::text[])",
+                        aid, review_id, alloc[si])
+
+            # Drop the old slices (now unreferenced).
+            await conn.execute(
+                "delete from qc_review_assignment where qc_review_id = $1 and assignment_id <> all($2::int[])",
+                review_id, new_ids)
+
+            result = await conn.fetch(
+                """
+                select a.*,
+                    coalesce(c.total, 0) as series_total
+                from qc_review_assignment a
+                left join (select assignment_id, count(*) as total from qc_series group by assignment_id) c
+                    on c.assignment_id = a.assignment_id
+                where a.qc_review_id = $1
+                order by a.assignment_id
+                """,
+                review_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        db_error(e, operation="splitting qc review", context={"qc_review_id": review_id})
+
+    return list_response([dict(r) for r in result])
+
+
+# ----------------------------------- QC ASSIGNMENTS ----------------------------------
+
+@router.get("/qc/reviews/{review_id}/assignments")
+# List a review's assignment slices (with series counts)
+async def list_review_assignments(review_id: int, db: Database = Depends()):
+    rows = await db.fetch(
+        """
+        select a.*,
+            coalesce(c.total, 0) as series_total,
+            coalesce(c.pending, 0) as series_pending,
+            coalesce(c.approved, 0) as series_approved,
+            coalesce(c.rejected, 0) as series_rejected,
+            coalesce(c.flagged, 0) as series_flagged
+        from qc_review_assignment a
+        left join (
+            select assignment_id, count(*) as total,
+                count(*) filter (where qc_status = 'pending') as pending,
+                count(*) filter (where qc_status = 'approved') as approved,
+                count(*) filter (where qc_status = 'rejected') as rejected,
+                count(*) filter (where qc_status = 'flagged') as flagged
+            from qc_series group by assignment_id
+        ) c on c.assignment_id = a.assignment_id
+        where a.qc_review_id = $1
+        order by a.assignment_id
+        """,
+        [review_id])
+    return list_response([dict(r) for r in rows])
+
+
+@router.get("/qc/assignments")
+# Queue queries: pickup pool (unassigned + needs_qc) or a user's queue
+async def list_qc_assignments(
+    status: Optional[str] = Query(default=None),
+    assigned_to: Optional[int] = Query(default=None),
+    review_id: Optional[int] = Query(default=None),
+    unassigned: Optional[bool] = Query(default=None),
+    page: Optional[int] = Query(default=None),
+    limit: Optional[int] = Query(default=None),
+    db: Database = Depends()):
+
+    where = []
+    values = []
+    if status:
+        values.append(status)
+        where.append(f"a.assignment_status = ${len(values)}")
+    if assigned_to is not None:
+        values.append(assigned_to)
+        where.append(f"a.assigned_to = ${len(values)}")
+    if review_id is not None:
+        values.append(review_id)
+        where.append(f"a.qc_review_id = ${len(values)}")
+    if unassigned is True:
+        where.append("a.assigned_to is null")
+    where_sql = ("where " + " and ".join(where)) if where else ""
+
+    list_q = f"""
+        select a.*,
+            coalesce(c.total, 0) as series_total,
+            coalesce(c.pending, 0) as series_pending,
+            r.review_type, r.review_status, r.recordset_draft_id,
+            rs.recordset_id, rs.recordset_name
+        from qc_review_assignment a
+        join qc_review r on r.qc_review_id = a.qc_review_id
+        join recordset_draft d on d.recordset_draft_id = r.recordset_draft_id
+        join recordset rs on rs.recordset_id = d.recordset_id
+        left join (
+            select assignment_id, count(*) as total,
+                count(*) filter (where qc_status = 'pending') as pending
+            from qc_series group by assignment_id
+        ) c on c.assignment_id = a.assignment_id
+        {where_sql}
+        order by a.qc_review_id, a.assignment_id
+        {qc_page_clause(page, limit)}
+    """
+    count_q = f"select count(*) as total from qc_review_assignment a {where_sql}"
+
+    try:
+        rows = await db.fetch(list_q, values)
+        total = (await db.fetch(count_q, values))[0]["total"]
+    except Exception as e:
+        db_error(e, operation="listing qc assignments")
+    return qc_paged_response(rows, total, page, limit)
+
+
+@router.get("/qc/assignments/{assignment_id}")
+# Assignment detail + parent review summary + series counts
+async def get_qc_assignment(assignment_id: int, db: Database = Depends()):
+    assignment = await db.fetch_one(
+        "select * from qc_review_assignment where assignment_id = $1", [assignment_id])
+    if not assignment:
+        api_error("NOT_FOUND", "Assignment not found", {"assignment_id": assignment_id}, 404)
+
+    review = await db.fetch_one(
+        "select qc_review_id, recordset_draft_id, review_type, review_status, sample_percentage "
+        "from qc_review where qc_review_id = $1", [assignment["qc_review_id"]])
+    by_status = await db.fetch(
+        "select qc_status, count(*) as count from qc_series where assignment_id = $1 group by qc_status",
+        [assignment_id])
+    by_modality = await db.fetch(
+        "select coalesce(modality, '(none)') as modality, qc_status, count(*) as count "
+        "from qc_series where assignment_id = $1 group by coalesce(modality, '(none)'), qc_status",
+        [assignment_id])
+
+    return item_response({
+        "assignment": dict(assignment),
+        "review": dict(review) if review else None,
+        "series_by_status": [dict(r) for r in by_status],
+        "series_by_modality": [dict(r) for r in by_modality],
+    })
+
+
+@router.put("/qc/assignments/{assignment_id}")
+# Update an assignment (reassign / set status)
+async def update_qc_assignment(
+    assignment_id: int,
+    payload: QCAssignmentUpdate,
+    current_user: User = logged_in_user,
+    db: Database = Depends()):
+
+    updated = await db.fetch_one(
+        """
+        update qc_review_assignment set
+            assigned_to = coalesce($2, assigned_to),
+            assignment_status = coalesce($3, assignment_status),
+            when_updated = now(),
+            who_updated = $4
+        where assignment_id = $1
+        returning *
+        """,
+        [assignment_id, payload.assigned_to, payload.assignment_status, current_user.user_id])
+    if not updated:
+        api_error("NOT_FOUND", "Assignment not found", {"assignment_id": assignment_id}, 404)
+    return item_response(updated)
+
+
+@router.post("/qc/assignments/{assignment_id}/claim")
+# Claim an unclaimed slice from the pickup pool
+async def claim_qc_assignment(
+    assignment_id: int,
+    current_user: User = logged_in_user,
+    db: Database = Depends()):
+
+    updated = await db.fetch_one(
+        """
+        update qc_review_assignment set
+            assigned_to = $2,
+            assignment_status = 'in_progress',
+            when_updated = now(),
+            who_updated = $2
+        where assignment_id = $1 and assigned_to is null
+        returning *
+        """,
+        [assignment_id, current_user.user_id])
+    if not updated:
+        api_error("CONFLICT", "Assignment is not available to claim (missing or already claimed)",
+                  {"assignment_id": assignment_id}, 409)
+    return item_response(updated)
+
+
+@router.post("/qc/assignments/{assignment_id}/release")
+# Release a slice back to the pickup pool
+async def release_qc_assignment(
+    assignment_id: int,
+    current_user: User = logged_in_user,
+    db: Database = Depends()):
+
+    updated = await db.fetch_one(
+        """
+        update qc_review_assignment set
+            assigned_to = null,
+            assignment_status = 'needs_qc',
+            when_updated = now(),
+            who_updated = $2
+        where assignment_id = $1
+        returning *
+        """,
+        [assignment_id, current_user.user_id])
+    if not updated:
+        api_error("NOT_FOUND", "Assignment not found", {"assignment_id": assignment_id}, 404)
+    return item_response(updated)
+
+
+# ---------------------------- QC SERIES (viz tool consumes) --------------------------
+
+@router.get("/qc/assignments/{assignment_id}/series")
+# List an assignment's series, optionally filtered by status / modality
+async def list_assignment_series(
+    assignment_id: int,
+    qc_status: Optional[str] = Query(default=None),
+    modality: Optional[str] = Query(default=None),
+    page: Optional[int] = Query(default=None),
+    limit: Optional[int] = Query(default=None),
+    db: Database = Depends()):
+
+    where = ["assignment_id = $1"]
+    values = [assignment_id]
+    if qc_status:
+        values.append(qc_status)
+        where.append(f"qc_status = ${len(values)}")
+    if modality:
+        values.append(modality)
+        where.append(f"modality = ${len(values)}")
+    where_sql = "where " + " and ".join(where)
+
+    list_q = f"""
+        select qc_review_id, series_instance_uid, qc_status, series_file_hash, modality, assignment_id, notes
+        from qc_series
+        {where_sql}
+        order by series_instance_uid
+        {qc_page_clause(page, limit)}
+    """
+    count_q = f"select count(*) as total from qc_series {where_sql}"
+
+    try:
+        rows = await db.fetch(list_q, values)
+        total = (await db.fetch(count_q, values))[0]["total"]
+    except Exception as e:
+        db_error(e, operation="listing assignment series", context={"assignment_id": assignment_id})
+    return qc_paged_response(rows, total, page, limit)
+
+
+@router.get("/qc/assignments/{assignment_id}/series/summary")
+# Status / modality counts for an assignment (filter chips + progress)
+async def assignment_series_summary(assignment_id: int, db: Database = Depends()):
+    by_status = await db.fetch(
+        "select qc_status, count(*) as count from qc_series where assignment_id = $1 group by qc_status",
+        [assignment_id])
+    by_modality = await db.fetch(
+        "select coalesce(modality, '(none)') as modality, qc_status, count(*) as count "
+        "from qc_series where assignment_id = $1 group by coalesce(modality, '(none)'), qc_status",
+        [assignment_id])
+    return item_response({
+        "by_status": [dict(r) for r in by_status],
+        "by_modality": [dict(r) for r in by_modality],
+    })
+
+
+@router.put("/qc/assignments/{assignment_id}/series/{series_instance_uid}/status")
+# Set one series' QC status (writes history; any authorized user)
+async def set_series_status(
+    assignment_id: int,
+    series_instance_uid: str,
+    payload: QCSeriesStatusUpdate,
+    current_user: User = logged_in_user,
+    db: Database = Depends()):
+
+    if payload.qc_status not in VALID_QC_STATUS:
+        api_error("VALIDATION_ERROR", "Invalid qc_status", {"allowed": list(VALID_QC_STATUS)}, 422)
+
+    try:
+        async with db.transaction() as conn:
+            row = await conn.fetch(
+                "select qc_review_id, qc_status from qc_series "
+                "where assignment_id = $1 and series_instance_uid = $2",
+                assignment_id, series_instance_uid)
+            if not row:
+                api_error("NOT_FOUND", "Series not found in this assignment",
+                          {"assignment_id": assignment_id, "series_instance_uid": series_instance_uid}, 404)
+            review_id = row[0]["qc_review_id"]
+            previous = row[0]["qc_status"]
+
+            updated = await conn.fetch(
+                "update qc_series set qc_status = $1, notes = coalesce($2, notes) "
+                "where qc_review_id = $3 and series_instance_uid = $4 returning *",
+                payload.qc_status, payload.notes, review_id, series_instance_uid)
+
+            await conn.execute(
+                "insert into qc_series_history (qc_review_id, series_instance_uid, previous_status, "
+                "new_status, who_updated, notes) values ($1, $2, $3, $4, $5, $6)",
+                review_id, series_instance_uid, previous, payload.qc_status,
+                current_user.user_id, payload.notes)
+
+            await qc_sync_assignment_status(conn, assignment_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        db_error(e, operation="setting series status", context={"assignment_id": assignment_id})
+
+    return item_response(dict(updated[0]))
+
+
+@router.put("/qc/assignments/{assignment_id}/series/status")
+# Batch-set status for many series in one transaction (history per series)
+async def set_series_status_batch(
+    assignment_id: int,
+    payload: QCSeriesBatchStatus,
+    current_user: User = logged_in_user,
+    db: Database = Depends()):
+
+    if payload.qc_status not in VALID_QC_STATUS:
+        api_error("VALIDATION_ERROR", "Invalid qc_status", {"allowed": list(VALID_QC_STATUS)}, 422)
+    if not payload.series_instance_uids:
+        api_error("VALIDATION_ERROR", "series_instance_uids must be non-empty", {}, 422)
+
+    try:
+        async with db.transaction() as conn:
+            rows = await conn.fetch(
+                "select qc_review_id, series_instance_uid, qc_status from qc_series "
+                "where assignment_id = $1 and series_instance_uid = any($2::text[])",
+                assignment_id, payload.series_instance_uids)
+            if not rows:
+                api_error("NOT_FOUND", "No matching series in this assignment",
+                          {"assignment_id": assignment_id}, 404)
+            review_id = rows[0]["qc_review_id"]
+
+            await conn.execute(
+                "update qc_series set qc_status = $1, notes = coalesce($2, notes) "
+                "where assignment_id = $3 and series_instance_uid = any($4::text[])",
+                payload.qc_status, payload.notes, assignment_id, payload.series_instance_uids)
+
+            for r in rows:
+                await conn.execute(
+                    "insert into qc_series_history (qc_review_id, series_instance_uid, previous_status, "
+                    "new_status, who_updated, notes) values ($1, $2, $3, $4, $5, $6)",
+                    review_id, r["series_instance_uid"], r["qc_status"], payload.qc_status,
+                    current_user.user_id, payload.notes)
+
+            await qc_sync_assignment_status(conn, assignment_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        db_error(e, operation="batch setting series status", context={"assignment_id": assignment_id})
+
+    return item_response({"updated": len(rows)})
+
+
+@router.get("/qc/assignments/{assignment_id}/series/{series_instance_uid}/history")
+# Read the status-change history for one series
+async def get_series_history(assignment_id: int, series_instance_uid: str, db: Database = Depends()):
+    row = await db.fetch_one(
+        "select qc_review_id from qc_series where assignment_id = $1 and series_instance_uid = $2",
+        [assignment_id, series_instance_uid])
+    if not row:
+        api_error("NOT_FOUND", "Series not found in this assignment",
+                  {"assignment_id": assignment_id, "series_instance_uid": series_instance_uid}, 404)
+    history = await db.fetch(
+        "select * from qc_series_history where qc_review_id = $1 and series_instance_uid = $2 "
+        "order by when_updated desc",
+        [row["qc_review_id"], series_instance_uid])
+    return list_response([dict(r) for r in history])
+
+
+# ----------------------------------- USER FLAGS --------------------------------------
+
+@router.post("/flags")
+# Create a per-user action-item flag (launch scope: object_type='qc_review')
+async def create_user_flag(
+    payload: UserFlagCreate,
+    current_user: User = logged_in_user,
+    db: Database = Depends()):
+
+    if payload.object_type != "qc_review":
+        api_error("VALIDATION_ERROR", "object_type must be 'qc_review' (launch scope)",
+                  {"object_type": payload.object_type}, 422)
+
+    try:
+        created = await db.fetch_one(
+            """
+            insert into user_flag (object_type, object_id, series_instance_uid, flagged_for,
+                                   flagged_by, note, flag_status, when_created)
+            values ($1, $2, $3, $4, $5, $6, 'open', now())
+            returning *
+            """,
+            [payload.object_type, payload.object_id, payload.series_instance_uid,
+             payload.flagged_for, current_user.user_id, payload.note])
+    except Exception as e:
+        db_error(e, operation="creating user flag")
+    return item_response(created)
+
+
+@router.get("/flags")
+# List flags (dashboard action items via flagged_for=me&status=open, or flags on an object)
+async def list_user_flags(
+    flagged_for: Optional[str] = Query(default=None),
+    flagged_by: Optional[int] = Query(default=None),
+    status: Optional[str] = Query(default=None),
+    object_type: Optional[str] = Query(default=None),
+    object_id: Optional[int] = Query(default=None),
+    page: Optional[int] = Query(default=None),
+    limit: Optional[int] = Query(default=None),
+    current_user: User = logged_in_user,
+    db: Database = Depends()):
+
+    where = []
+    values = []
+    if flagged_for is not None:
+        target = current_user.user_id if flagged_for == "me" else int(flagged_for)
+        values.append(target)
+        where.append(f"flagged_for = ${len(values)}")
+    if flagged_by is not None:
+        values.append(flagged_by)
+        where.append(f"flagged_by = ${len(values)}")
+    if status:
+        values.append(status)
+        where.append(f"flag_status = ${len(values)}")
+    if object_type:
+        values.append(object_type)
+        where.append(f"object_type = ${len(values)}")
+    if object_id is not None:
+        values.append(object_id)
+        where.append(f"object_id = ${len(values)}")
+    where_sql = ("where " + " and ".join(where)) if where else ""
+
+    list_q = f"select * from user_flag {where_sql} order by when_created desc {qc_page_clause(page, limit)}"
+    count_q = f"select count(*) as total from user_flag {where_sql}"
+
+    try:
+        rows = await db.fetch(list_q, values)
+        total = (await db.fetch(count_q, values))[0]["total"]
+    except Exception as e:
+        db_error(e, operation="listing user flags")
+    return qc_paged_response(rows, total, page, limit)
+
+
+@router.put("/flags/{user_flag_id}")
+# Resolve / reopen / edit a flag (any authorized user)
+async def update_user_flag(
+    user_flag_id: int,
+    payload: UserFlagUpdate,
+    current_user: User = logged_in_user,
+    db: Database = Depends()):
+
+    flag = await db.fetch_one("select * from user_flag where user_flag_id = $1", [user_flag_id])
+    if not flag:
+        api_error("NOT_FOUND", "Flag not found", {"user_flag_id": user_flag_id}, 404)
+
+    if payload.flag_status is not None and payload.flag_status not in ("open", "resolved"):
+        api_error("VALIDATION_ERROR", "flag_status must be 'open' or 'resolved'", {}, 422)
+
+    resolving = payload.flag_status == "resolved"
+    reopening = payload.flag_status == "open"
+
+    try:
+        updated = await db.fetch_one(
+            """
+            update user_flag set
+                flag_status = coalesce($2, flag_status),
+                note = coalesce($3, note),
+                flagged_for = coalesce($4, flagged_for),
+                when_resolved = case when $5 then now() when $6 then null else when_resolved end,
+                who_resolved  = case when $5 then $7   when $6 then null else who_resolved  end
+            where user_flag_id = $1
+            returning *
+            """,
+            [user_flag_id, payload.flag_status, payload.note, payload.flagged_for,
+             resolving, reopening, current_user.user_id])
+    except Exception as e:
+        db_error(e, operation="updating user flag", context={"user_flag_id": user_flag_id})
+
+    return item_response(updated)

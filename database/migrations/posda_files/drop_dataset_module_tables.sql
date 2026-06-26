@@ -26,6 +26,10 @@ DROP TABLE IF EXISTS public.dataset_relation_type CASCADE;
 DROP TABLE IF EXISTS public.qc_review CASCADE;
 DROP TABLE IF EXISTS public.qc_series CASCADE;
 DROP TABLE IF EXISTS public.qc_series_history CASCADE;
+DROP TABLE IF EXISTS public.qc_review_assignment CASCADE;
+DROP TABLE IF EXISTS public.user_flag CASCADE;
+DROP TABLE IF EXISTS public.user_favorite CASCADE;
+DROP FUNCTION IF EXISTS public.qc_mark_open_reviews_stale() CASCADE;
 
 
 -- For pre-name change tables
