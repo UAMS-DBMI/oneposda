@@ -4601,6 +4601,56 @@ async def assignment_series_summary(assignment_id: int, db: Database = Depends()
     })
 
 
+@router.get("/qc/assignments/{assignment_id}/series/{series_instance_uid}/files")
+# Files for a single series in an assignment, ordered by instance number
+async def list_assignment_series_files(
+    assignment_id: int,
+    series_instance_uid: str,
+    db: Database = Depends()):
+
+    series = await db.fetch_one(
+        "select qc_review_id from qc_series where assignment_id = $1 and series_instance_uid = $2",
+        [assignment_id, series_instance_uid])
+    if not series:
+        api_error("NOT_FOUND", "Series not found in this assignment",
+                  {"assignment_id": assignment_id, "series_instance_uid": series_instance_uid}, 404)
+
+    rows = await db.fetch(
+        """
+        select
+            rdf.file_id,
+            coalesce(i.number_of_frames, 1) as num_of_frames,
+            fsr.root_path || '/' || fl.rel_path     as file_path
+        from qc_series qs
+        join qc_review qr           on qr.qc_review_id    = qs.qc_review_id
+        join recordset_draft_file rdf on rdf.recordset_draft_id = qr.recordset_draft_id
+        join file_series fs          on fs.file_id         = rdf.file_id
+                                    and fs.series_instance_uid = qs.series_instance_uid
+        left join file_location fl      on fl.file_id             = rdf.file_id
+        left join file_storage_root fsr on fsr.file_storage_root_id = fl.file_storage_root_id
+        left join file_image fi         on fi.file_id             = rdf.file_id
+        left join image i               on i.image_id             = fi.image_id
+        left join file_sop_common fsc   on fsc.file_id            = rdf.file_id
+        where qs.assignment_id = $1 and qs.series_instance_uid = $2
+        order by
+            case when fsc.instance_number is null or fsc.instance_number = ''
+                 then 0
+                 else fsc.instance_number::int
+            end
+        """,
+        [assignment_id, series_instance_uid])
+
+    data = [dict(r) for r in rows]
+    return {
+        "data": data,
+        "meta": {
+            "count": len(data),
+            "assignment_id": assignment_id,
+            "series_instance_uid": series_instance_uid,
+        },
+    }
+
+
 @router.put("/qc/assignments/{assignment_id}/series/{series_instance_uid}/status")
 # Set one series' QC status (writes history; any authorized user)
 async def set_series_status(
