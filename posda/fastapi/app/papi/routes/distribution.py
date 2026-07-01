@@ -408,6 +408,8 @@ async def get_datasets(
     search: Optional[str] = Query(default=None),
     active_only: Optional[bool] = Query(default=None),
     dataset_type_id: Optional[int] = Query(default=None),
+    page: Optional[int] = Query(default=None),
+    limit: Optional[int] = Query(default=None),
     db: Database = Depends()):
 
     where_clauses = []
@@ -435,7 +437,7 @@ async def get_datasets(
 
     where_sql = f"where {' and '.join(where_clauses)}" if where_clauses else ""
 
-    query = f"""\
+    list_q = f"""\
         select
             d.dataset_id,
             d.dataset_type_id,
@@ -451,15 +453,18 @@ async def get_datasets(
             dataset d
             join dataset_type dt using (dataset_type_id)
         {where_sql}
-        order by d.dataset_id
+        order by d.dataset_id desc
+        {page_clause(page, limit)}
         """
+    count_q = f"select count(*) as total from dataset d join dataset_type dt using (dataset_type_id) {where_sql}"
 
     try:
-        rows = await db.fetch(query, values)
+        rows = await db.fetch(list_q, values)
+        total = (await db.fetch(count_q, values))[0]["total"]
     except Exception as e:
         db_error(e, operation="fetching datasets")
 
-    return list_response(rows)
+    return paged_response(rows, total, page, limit)
 
 
 @router.post("/datasets")
@@ -1195,6 +1200,8 @@ async def get_recordsets(
     dataset_id: Optional[int] = Query(default=None),
     search: Optional[str] = Query(default=None),
     active_only: Optional[bool] = Query(default=None),
+    page: Optional[int] = Query(default=None),
+    limit: Optional[int] = Query(default=None),
     db: Database = Depends()):
 
     where_clauses = []
@@ -1222,7 +1229,7 @@ async def get_recordsets(
 
     where_sql = f"where {' and '.join(where_clauses)}" if where_clauses else ""
 
-    query = f"""\
+    list_q = f"""\
         select
             r.recordset_id,
             r.recordset_doi,
@@ -1250,15 +1257,24 @@ async def get_recordsets(
             join dataset d using (dataset_id)
             join dataset_type dt using (dataset_type_id)
         {where_sql}
-        order by r.recordset_id
+        order by r.recordset_id desc
+        {page_clause(page, limit)}
+        """
+    count_q = f"""\
+        select count(*) as total
+        from recordset r
+            join recordset_type rt using (recordset_type_id)
+            join dataset d using (dataset_id)
+        {where_sql}
         """
 
     try:
-        records = await db.fetch(query, values)
+        records = await db.fetch(list_q, values)
+        total = (await db.fetch(count_q, values))[0]["total"]
     except Exception as e:
         db_error(e, operation="fetching recordsets")
 
-    return list_response(records)
+    return paged_response(records, total, page, limit)
 
 
 @router.post("/recordsets")
@@ -2000,18 +2016,22 @@ async def delete_recordset_draft(
 # List files in a draft
 async def get_recordset_draft_files(
     draft_id: int,
+    page: Optional[int] = Query(default=None),
+    limit: Optional[int] = Query(default=None),
     db: Database = Depends()):
 
-    query = """\
-        select
-            rf.file_id
-        from
-            recordset_draft_file rf
-        where
-            rf.recordset_draft_id = $1;
+    list_q = f"""\
+        select rf.file_id
+        from recordset_draft_file rf
+        where rf.recordset_draft_id = $1
+        order by rf.file_id
+        {page_clause(page, limit)}
         """
+    count_q = "select count(*) as total from recordset_draft_file where recordset_draft_id = $1"
+
     try:
-        records = await db.fetch(query, [draft_id])
+        records = await db.fetch(list_q, [draft_id])
+        total = (await db.fetch(count_q, [draft_id]))[0]["total"]
     except Exception as e:
         db_error(
             e,
@@ -2019,7 +2039,7 @@ async def get_recordset_draft_files(
             context={"draft_id": draft_id},
         )
 
-    return list_response(records)
+    return paged_response(records, total, page, limit)
 
 
 @router.get("/recordsets/drafts/{draft_id}/summary")
@@ -2665,24 +2685,32 @@ async def get_recordset_release(release_id: int, db: Database = Depends()):
 
 @router.get("/recordsets/releases/{release_id}/files")
 # List files in a release
-async def get_recordset_release_files(release_id: int, db: Database = Depends()):
-    query = """\
-        select
-            rf.file_id
-        from
-            recordset_release_file rf
-        where
-            rf.recordset_release_id = $1;
+async def get_recordset_release_files(
+    release_id: int,
+    page: Optional[int] = Query(default=None),
+    limit: Optional[int] = Query(default=None),
+    db: Database = Depends()):
+
+    list_q = f"""\
+        select rf.file_id
+        from recordset_release_file rf
+        where rf.recordset_release_id = $1
+        order by rf.file_id
+        {page_clause(page, limit)}
         """
+    count_q = "select count(*) as total from recordset_release_file where recordset_release_id = $1"
+
     try:
-        records = await db.fetch(query, [release_id])
+        records = await db.fetch(list_q, [release_id])
+        total = (await db.fetch(count_q, [release_id]))[0]["total"]
     except Exception as e:
         db_error(
             e,
             operation="fetching recordset release files",
             context={"release_id": release_id},
         )
-    return list_response(records)
+
+    return paged_response(records, total, page, limit)
 
 
 @router.get("/recordsets/releases/{release_id}/summary")
@@ -3814,7 +3842,7 @@ QC_DRAW_CTE = """
 """
 
 
-def qc_paged_response(rows, total, page=None, limit=None):
+def paged_response(rows, total, page=None, limit=None):
     meta = {"count": len(rows), "total": total}
     if page is not None and limit is not None:
         meta["page"] = page
@@ -3822,7 +3850,7 @@ def qc_paged_response(rows, total, page=None, limit=None):
     return {"data": rows, "meta": meta}
 
 
-def qc_page_clause(page: Optional[int], limit: Optional[int]):
+def page_clause(page: Optional[int], limit: Optional[int]):
     if page is None or limit is None:
         return ""
     p = page if page and page > 0 else 1
@@ -4011,7 +4039,7 @@ async def list_qc_reviews(
         ) c on c.qc_review_id = r.qc_review_id
         {where_sql}
         order by r.qc_review_id desc
-        {qc_page_clause(page, limit)}
+        {page_clause(page, limit)}
     """
     count_q = f"select count(*) as total from qc_review r {where_sql}"
 
@@ -4021,7 +4049,7 @@ async def list_qc_reviews(
     except Exception as e:
         db_error(e, operation="listing qc reviews", context={"recordset_draft_id": draft_id})
 
-    return qc_paged_response(rows, total, page, limit)
+    return paged_response(rows, total, page, limit)
 
 
 @router.get("/qc/reviews/{review_id}")
@@ -4436,7 +4464,7 @@ async def list_qc_assignments(
         ) c on c.assignment_id = a.assignment_id
         {where_sql}
         order by a.qc_review_id, a.assignment_id
-        {qc_page_clause(page, limit)}
+        {page_clause(page, limit)}
     """
     count_q = f"select count(*) as total from qc_review_assignment a {where_sql}"
 
@@ -4445,7 +4473,7 @@ async def list_qc_assignments(
         total = (await db.fetch(count_q, values))[0]["total"]
     except Exception as e:
         db_error(e, operation="listing qc assignments")
-    return qc_paged_response(rows, total, page, limit)
+    return paged_response(rows, total, page, limit)
 
 
 @router.get("/qc/assignments/{assignment_id}")
@@ -4573,7 +4601,7 @@ async def list_assignment_series(
         from qc_series
         {where_sql}
         order by series_instance_uid
-        {qc_page_clause(page, limit)}
+        {page_clause(page, limit)}
     """
     count_q = f"select count(*) as total from qc_series {where_sql}"
 
@@ -4582,7 +4610,7 @@ async def list_assignment_series(
         total = (await db.fetch(count_q, values))[0]["total"]
     except Exception as e:
         db_error(e, operation="listing assignment series", context={"assignment_id": assignment_id})
-    return qc_paged_response(rows, total, page, limit)
+    return paged_response(rows, total, page, limit)
 
 
 @router.get("/qc/assignments/{assignment_id}/series/summary")
@@ -4817,7 +4845,7 @@ async def list_user_flags(
         where.append(f"object_id = ${len(values)}")
     where_sql = ("where " + " and ".join(where)) if where else ""
 
-    list_q = f"select * from user_flag {where_sql} order by when_created desc {qc_page_clause(page, limit)}"
+    list_q = f"select * from user_flag {where_sql} order by when_created desc {page_clause(page, limit)}"
     count_q = f"select count(*) as total from user_flag {where_sql}"
 
     try:
@@ -4825,7 +4853,7 @@ async def list_user_flags(
         total = (await db.fetch(count_q, values))[0]["total"]
     except Exception as e:
         db_error(e, operation="listing user flags")
-    return qc_paged_response(rows, total, page, limit)
+    return paged_response(rows, total, page, limit)
 
 
 @router.put("/flags/{user_flag_id}")
