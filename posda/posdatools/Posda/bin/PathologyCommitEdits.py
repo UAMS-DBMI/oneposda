@@ -84,7 +84,17 @@ def get_root_and_rel_path(file_id):
 
 def editSlide(filepath,edit_type):
     files = [filepath]
-    anonymizeslide.anonymize(files,edit_type)
+    if edit_type == '1' or edit_type == '2':
+        anonymizeslide.anonymize(files,edit_type)
+    elif edit_type == '3':
+        str = "/find_dateshift/{}".format(files[0])
+        possible_shifts = call_api(str, 0)
+        #if (possible_shifts[0]['base_date']  '0'):
+        #    anonymizeslide.anonymizeDesc(files,edit_type,possible_shifts[0]['base_date'])
+        #else:
+        anonymizeslide.anonymizeDesc(files,edit_type,possible_shifts[0]['shift_date'])
+    else:
+        print('Problem with requested edit, no matching type')
 
 def create_path_activity_timepoint(activity_id, user):
     str = "/create_path_activity_timepoint/{}/{}".format(activity_id,user)

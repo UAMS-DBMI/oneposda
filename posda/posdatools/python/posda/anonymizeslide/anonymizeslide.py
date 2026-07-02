@@ -403,7 +403,7 @@ def getImageDesc(directory):
             img_desc_dict[split_entry[0]] = split_entry[1] if len(split_entry) > 1 else ''
     return img_desc_dict
 
-def editImageDesc(filename):
+def editImageDesc(filename,shift):
 
     fh = TiffFile(filename)
 
@@ -446,7 +446,7 @@ def editImageDesc(filename):
 
             elif normalized == 'date':
                 old_date = desc_dict[tag]
-                new_date = shiftDate(old_date)
+                new_date = shiftDate(old_date,shift)
 
                 if new_date != old_date:
                     desc_dict[tag] = new_date
@@ -638,7 +638,9 @@ def combine_image_desc(desc_dict):
 
     return '|'.join(entries)
 
-
+def anonymizeDesc(filepaths,edit_type,shift):
+    for filename in filepaths:
+        editImageDesc(filename,shift)
 
 def anonymize(filepaths,edit_type):
     #print("removing slide")
