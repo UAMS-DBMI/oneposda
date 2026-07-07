@@ -9,7 +9,6 @@ from posda.database import Database
 from posda.queries import Query
 from posda.background.process import BackgroundProcess
 from posda.nifti.parser import NiftiParser, InvalidNiftiHeaderError
-from posda.util import printe
 
 about="""\
 This script detects nifti files in an activity and parses them into the File Nifti Table.
@@ -105,11 +104,11 @@ def main(args):
                 if file_type.startswith(t):
                     nifti = NiftiParser(file_path)
         except InvalidNiftiHeaderError as e:
-            printe(f"Type matched, but was not a nifti: {file_id=} {file_path=}")
-            printe(e)
+            print(f"Type matched, but was not a nifti: {file_id=} {file_path=}")
+            print(e)
         except Exception as e:
-            printe(f"Unknown error while attempting to parse: {file_id=} {file_path=}")
-            printe(e)
+            print(f"Unknown error while attempting to parse: {file_id=} {file_path=}")
+            print(e)
 
         if nifti is None:
             num_not_parsed += 1
