@@ -107,11 +107,11 @@ def main(args):
         except InvalidNiftiHeaderError as e:
             printe(f"Type matched, but was not a nifti: {file_id=} {file_path=}")
             printe(e)
-            num_not_parsed += 1
-            continue
         except Exception as e:
             printe(f"Unknown error while attempting to parse: {file_id=} {file_path=}")
             printe(e)
+
+        if nifti is None:
             num_not_parsed += 1
             continue
 
