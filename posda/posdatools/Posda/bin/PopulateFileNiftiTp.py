@@ -8,7 +8,8 @@ import argparse
 from posda.database import Database
 from posda.queries import Query
 from posda.background.process import BackgroundProcess
-from posda.nifti.parser import NiftiParser
+from posda.nifti.parser import NiftiParser, InvalidNiftiHeaderError
+from posda.util import printe
 
 about="""\
 This script detects nifti files in an activity and parses them into the File Nifti Table.
@@ -92,20 +93,29 @@ def main(args):
                 continue
 
         nifti = None
-        if file_type.startswith("Nifti") or file_type.startswith("gzip"):
-            nifti = NiftiParser(file_path)
-        elif file_type == "data":
-            file_data = open(file_path, 'rb')
-            file_data.seek(0)
-            type_check = file_data.read(352)
-            if type_check[344:348] in [b'n+1\0', b'ni1\0'] or type_check[4:8] in [b'n+2\0', b'ni2\0']:
-                nifti = NiftiParser(file_path)
-    
-        if nifti:
-            back.print_to_email(f"Nifti File: {file_id}")
-        else:
+
+        types_to_parse = [
+            "Nifti",
+            "gzip",
+            "data"
+        ]
+
+        try:
+            for t in types_to_parse:
+                if file_type.startswith(t):
+                    nifti = NiftiParser(file_path)
+        except InvalidNiftiHeaderError as e:
+            printe(f"Type matched, but was not a nifti: {file_id=} {file_path=}")
+            printe(e)
             num_not_parsed += 1
             continue
+        except Exception as e:
+            printe(f"Unknown error while attempting to parse: {file_id=} {file_path=}")
+            printe(e)
+            num_not_parsed += 1
+            continue
+
+        back.print_to_email(f"Nifti File: {file_id}")
 
         nifti_file_type = "Nifti Image (gzipped)" if nifti.is_zipped else "Nifti Image"
         

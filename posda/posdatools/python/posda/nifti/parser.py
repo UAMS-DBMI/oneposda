@@ -6,7 +6,8 @@ import struct
 import gzip
 
 
-
+class InvalidNiftiHeaderError(ValueError):
+    pass
 
 class NiftiParser:
 
@@ -145,9 +146,11 @@ class NiftiParser:
             self.nifti_type = 2
             self.read_n2_header()  
         else:
-            raise ValueError("Invalid NIfTI header")
+            raise InvalidNiftiHeaderError("Invalid NIfTI header")
        
-        self.read_image_data()
+        ## This reads the entire file into memory, and is currently
+        ## not being used, so it's been removed for now.
+        # self.read_image_data()
             
         self.file_nib = nib.nifti1.Nifti1Image.from_stream(self.file_data)
 
