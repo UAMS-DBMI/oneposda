@@ -403,8 +403,7 @@ def getImageDesc(directory):
             img_desc_dict[split_entry[0]] = split_entry[1] if len(split_entry) > 1 else ''
     return img_desc_dict
 
-def editImageDesc(filename,shift):
-
+def editImageDesc(filename,details):
     fh = TiffFile(filename)
 
     try:
@@ -446,7 +445,7 @@ def editImageDesc(filename,shift):
 
             elif normalized == 'date':
                 old_date = desc_dict[tag]
-                new_date = shiftDate(old_date,shift)
+                new_date = changeDate(old_date,details)
 
                 if new_date != old_date:
                     desc_dict[tag] = new_date
@@ -478,6 +477,19 @@ def editImageDesc(filename,shift):
         print(
             f"{changes} ImageDescription fields modified"
         )
+def changeDate(originalDate, details):
+    split_details = details.split(':', 1)
+    action = split_details[0].lower()
+    if action == 'shift':
+        new_date = shiftDate(originalDate, split_details[1])
+    elif action == 'baseline':
+        d1 = datetime.strptime(originalDate, "%Y-%m-%d").date()
+        d2 = datetime.strptime(split_details[1], "%Y-%m-%d").date()
+        calc_shift = (d1 - d2).days
+        new_date = shiftDate(originalDate, calc_shift)
+    else:
+        new_date = shiftDate(originalDate)
+    return new_date
 
 def shiftDate(originalDate, shift_days=2000):
     """
@@ -642,7 +654,7 @@ def anonymizeDesc(filepaths,edit_type,shift):
     for filename in filepaths:
         editImageDesc(filename,shift)
 
-def anonymize(filepaths,edit_type):
+def anonymize(filepaths,edit_type,edit_details):
     #print("removing slide")
     for filename in filepaths:
         try:
@@ -654,7 +666,7 @@ def anonymize(filepaths,edit_type):
                 remove_label_aperio_svs(filename)
             elif edit_type == '3':
                 #print("removing ImageDesc")
-                editImageDesc(filename)
+                editImageDesc(filename,edit_details)
             #4 is remove whole file, no edit
             #5 is handled in redactPixels
 

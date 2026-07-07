@@ -203,7 +203,7 @@ def main(pargs):
                     # background.print_to_email("Completed {} edit on file.".format(len(edits)))
                     # background.print_to_email("File {} should  now be file {}.".format(current_file_id, new_file_id))
                 elif e['edit_type'] != '4': #4 is remove file, just dont add to new activity
-                    editSlide(new_destination_path, e['edit_type'])
+                    editSlide(new_destination_path, e['edit_type'],e['edit_details'])
                     completeEdit(e['pathology_edit_queue_id'])
             new_file_id = process(new_destination_path)
             if current_file_id != new_file_id:
