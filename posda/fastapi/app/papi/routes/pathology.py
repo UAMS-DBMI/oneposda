@@ -184,13 +184,13 @@ async def remF(pathid: int, db: Database = Depends()):
         'status': 'success',
     }
 
-@router.put("/editMeta/{pathid}")
-async def editM(pathid: int, db: Database = Depends()):
+@router.put("/editMeta/{pathid}/{details}")
+async def editM(pathid: int, details: str, db: Database = Depends()):
     record = await db.fetch("""\
         INSERT INTO pathology_edit_queue
         (file_id,edit_type, edit_details, status)
-        VALUES($1 , 3, 'imgdesc', 'waiting');
-        """, [pathid])
+        VALUES($1 , 3, $2, 'waiting');
+        """, [pathid,details])
 
     print(record)
     if len(record) < 1:

@@ -55,6 +55,7 @@ sub SpecificInitialize {
   $self->{edit_status} = "";
   $self->{preview_file_id} = 0;
   $self->{prev_id} = 0;
+  $self->{details} = 'default';
 
 }
 
@@ -521,7 +522,17 @@ sub removeLabelButtonPress(){
 
 sub metaEditButtonPress(){
   my ($self, $http, $dyn) = @_;
-  $self->{client}->PUT("$self->{MY_API_URL}/editMeta/$self->{pathid}");
+  $self->{client}->GET("$self->{MY_API_URL}/find_dateshift/$self->{pathid}");
+  my $row = (decode_json($self->{client}->responseContent()))->[0];
+  if($row){
+    if ($row->{base_date} && $row->{base_date} ne '0') {
+        $self->{details} = 'baseline:' . $row->{base_date};
+    }
+    elsif ($row->{shift_date} && $row->{shift_date} ne '0') {
+        $self->{details} = 'shift:' . $row->{shift_date};
+    }
+  }
+  $self->{client}->PUT("$self->{MY_API_URL}/editMeta/$self->{pathid}/$self->{details}");
   $self->{client}->PUT("$self->{MY_API_URL}/set_edit/$self->{pathid}/false/$self->{current_user}");
 }
 
