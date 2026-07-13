@@ -1,0 +1,36 @@
+# Throwaway pod for inspecting the posda-deploy PVC. Not in
+# kustomization.yaml; use it like:
+#
+#     kubectl -n posda apply -f jobs/debug-deploy.yaml
+#     kubectl -n posda exec -it debug-deploy -- sh
+#     kubectl -n posda delete pod debug-deploy
+#
+# Uses the same image as the sync Job (so git is available to poke at the
+# checkout) and runs as uid 1000 to see exactly what the app pods see.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: debug-deploy
+  namespace: posda
+  labels:
+    app.kubernetes.io/name: debug-deploy
+    app.kubernetes.io/part-of: posda
+spec:
+  restartPolicy: Never
+  securityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+  containers:
+    - name: shell
+      image: alpine/git:2.54.0
+      command: ["sleep", "infinity"]
+      env:
+        - name: HOME
+          value: /tmp
+      volumeMounts:
+        - name: posda-deploy
+          mountPath: /deploy
+  volumes:
+    - name: posda-deploy
+      persistentVolumeClaim:
+        claimName: posda-deploy

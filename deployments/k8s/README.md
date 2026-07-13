@@ -65,9 +65,10 @@ the pods mount subPaths of that checkout (`posda/posdatools`, `lanterna`,
 `steve`, `ream`, `posda/fastapi/app`, `kaleidoscope/kaleidoscope/server`,
 `web/...`). To ship code: merge to master, then
 
-    kubectl -n posda delete job sync-deploy --ignore-not-found
-    kubectl -n posda apply -f jobs/sync-deploy.yaml
-    kubectl -n posda logs -f job/sync-deploy
+    make sync    # re-runs jobs/sync-deploy.yaml and follows its logs
+
+To inspect the PVC by hand, `make debug` drops you into a shell on it
+(`make debug-clean` removes the pod).
 
 **`web/root-mapping/` must be committed to the repo** (currently untracked):
 the web pod mounts `oneposda/web/root-mapping` at `/www/files`. It holds
@@ -100,7 +101,7 @@ against `web/default.conf.prod` on the prod host** and reconcile before go-live.
 ### 5. Deploy
 
     kubectl apply -k .
-    kubectl -n posda apply -f jobs/sync-deploy.yaml   # seed the code PVC
+    make sync                         # seed the code PVC
     kubectl apply -f dicom-tcp.yaml   # DICOM port 11112 (kube-system, separate)
 
 A freshly created `posda-deploy` PVC is empty, so the app pods crash-loop
