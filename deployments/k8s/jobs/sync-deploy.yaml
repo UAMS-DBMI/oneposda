@@ -1,0 +1,71 @@
+# Updates the code checkout on the posda-deploy Longhorn PVC that the pods
+# run from: a shallow clone of the oneposda repo's master branch (cloned
+# fresh if the PVC is empty, hard-reset to origin/master otherwise).
+# Deliberately NOT in kustomization.yaml; run it on demand after merging to
+# master:
+#
+#     kubectl -n posda delete job sync-deploy --ignore-not-found
+#     kubectl -n posda apply -f jobs/sync-deploy.yaml
+#     kubectl -n posda logs -f job/sync-deploy
+#
+# The same Job performs the initial seeding of the PVC (run it once before
+# the app deployments come up, or they will mount empty code dirs).
+#
+# Notes:
+#   - The repo allows anonymous https clones, so no credentials are needed.
+#   - Submodules (ohif/Viewers, nopperabo/masker, web/mirabelle) are NOT
+#     initialized; nothing the pods mount comes from them.
+#   - Runs as uid 1000 (posda) so the checkout is owned by the user the
+#     app containers run as; fsGroup lets it write to the volume root.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sync-deploy
+  namespace: posda
+  labels:
+    app.kubernetes.io/name: sync-deploy
+    app.kubernetes.io/part-of: posda
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sync-deploy
+        app.kubernetes.io/part-of: posda
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: git
+          image: alpine/git:2.54.0
+          env:
+            # git wants a writable HOME; the image has no uid-1000 user
+            - name: HOME
+              value: /tmp
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              if [ -d /deploy/oneposda/.git ]; then
+                cd /deploy/oneposda
+                git fetch --depth 1 origin master
+                git reset --hard FETCH_HEAD
+                git clean -fdx
+              else
+                rm -rf /deploy/oneposda
+                git clone --depth 1 --branch master \
+                  https://code.imphub.org/scm/pt/oneposda.git /deploy/oneposda
+              fi
+              cd /deploy/oneposda && git log -1 --format='deployed %h %s'
+          volumeMounts:
+            - name: posda-deploy
+              mountPath: /deploy
+      volumes:
+        - name: posda-deploy
+          persistentVolumeClaim:
+            claimName: posda-deploy

@@ -64,10 +64,11 @@ spec:
             - name: nas-public
               mountPath: /html
               subPath: posda/k8s/data/kaleidoscope-files
-            # code-on-NFS: server overlay from docker-compose.prod.yaml
-            - name: nas-public
+            # code-on-PVC: server overlay from docker-compose.prod.yaml
+            - name: posda-deploy
               mountPath: /app/server
-              subPath: posda/k8s/deploy/kaleidoscope-server
+              subPath: oneposda/kaleidoscope/kaleidoscope/server
+              readOnly: true
             - name: nas-public
               mountPath: /home/posda/cache
               subPath: posda/k8s/data/legacy-cache
@@ -75,6 +76,9 @@ spec:
         - name: nas-public
           persistentVolumeClaim:
             claimName: nas-public
+        - name: posda-deploy
+          persistentVolumeClaim:
+            claimName: posda-deploy
         - name: nas-intake
           persistentVolumeClaim:
             claimName: nas-intake

@@ -65,10 +65,11 @@ spec:
             - name: s3-ross-intermediate-archive
               mountPath: /nas/ross/posda-intermediate-archive
               mountPropagation: HostToContainer
-            # code-on-NFS: the FastAPI application
-            - name: nas-public
+            # code-on-PVC: the FastAPI application
+            - name: posda-deploy
               mountPath: /fastapi
-              subPath: posda/k8s/deploy/oneposda/posda/fastapi/app
+              subPath: oneposda/posda/fastapi/app
+              readOnly: true
             - name: posda-env-file
               mountPath: /home/posda/posdatools/posda.env
               subPath: posda.env
@@ -76,6 +77,9 @@ spec:
         - name: nas-public
           persistentVolumeClaim:
             claimName: nas-public
+        - name: posda-deploy
+          persistentVolumeClaim:
+            claimName: posda-deploy
         - name: nas-intake
           persistentVolumeClaim:
             claimName: nas-intake

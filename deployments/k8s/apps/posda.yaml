@@ -10,8 +10,9 @@
 #     on every node, passed through as hostPath. mountPropagation:
 #     HostToContainer makes a host-side remount (after a FUSE crash/restart)
 #     visible to already-running pods.
-#   - Code is NOT baked into the images; the live trees are rsynced to
-#     /nas/public/posda/k8s/deploy/oneposda/posda/ and mounted via subPath
+#   - Code is NOT baked into the images; the live code is a clone of the
+#     oneposda repo (master branch) on the posda-deploy Longhorn RWX PVC,
+#     mounted read-only via subPath and updated by jobs/sync-deploy.yaml
 #     (see README.md).
 #   - /home/posda/cache replaces the posda_cache_alpine docker volume. The
 #     real cache root is $POSDA_CACHE_ROOT on the NAS; this path only holds
@@ -92,9 +93,10 @@ spec:
             - name: s3-ross-intermediate-archive
               mountPath: /nas/ross/posda-intermediate-archive
               mountPropagation: HostToContainer
-            - name: nas-public
+            - name: posda-deploy
               mountPath: /home/posda/posdatools
-              subPath: posda/k8s/deploy/oneposda/posda/posdatools
+              subPath: oneposda/posda/posdatools
+              readOnly: true
             - name: nas-public
               mountPath: /home/posda/cache
               subPath: posda/k8s/data/legacy-cache
@@ -105,6 +107,9 @@ spec:
         - name: nas-public
           persistentVolumeClaim:
             claimName: nas-public
+        - name: posda-deploy
+          persistentVolumeClaim:
+            claimName: posda-deploy
         - name: nas-intake
           persistentVolumeClaim:
             claimName: nas-intake

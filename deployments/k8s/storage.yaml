@@ -1,4 +1,4 @@
-# NFS-backed PersistentVolumes.
+# NFS-backed PersistentVolumes, plus the Longhorn PVC holding the live code.
 #
 # Mount options mirror the current node fstab entries
 # (_netdev is fstab-only and rw is the default, so both are omitted).
@@ -120,3 +120,22 @@ spec:
   resources:
     requests:
       storage: 1Ti
+---
+# The live code, mounted read-only by every posda-family pod. The NAS was
+# too slow for code (Perl stats/opens hundreds of small files at every
+# interpreter start); Longhorn RWX is still NFS behind the scenes (a
+# share-manager pod exports the volume), but it is cluster-local and far
+# lower latency. Holds a shallow clone of the oneposda repo's master
+# branch, updated by jobs/sync-deploy.yaml.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: posda-deploy
+  namespace: posda
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: longhorn
+  resources:
+    requests:
+      storage: 2Gi

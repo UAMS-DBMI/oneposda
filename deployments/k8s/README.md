@@ -7,9 +7,14 @@ for production.
 ## Architecture decisions
 
 - **No code is baked into images.** The `tcia/posda` image is too large to
-  rebuild routinely, so the live code trees are rsynced to the NAS
-  (`/nas/public/posda/deploy/`) and mounted into pods, replacing the compose
-  bind mounts of the local checkout.
+  rebuild routinely. The live code is a shallow clone of the oneposda repo
+  (`https://code.imphub.org/scm/pt/oneposda.git`, **master = production**)
+  on the `posda-deploy` Longhorn RWX PVC, mounted read-only into the pods
+  and updated by `jobs/sync-deploy.yaml`. (The pods originally ran code
+  straight off the NAS, but its small-file read latency made interpreter
+  startup painfully slow. Longhorn RWX is also NFS behind the scenes — a
+  share-manager pod exports the volume — but it is cluster-local and much
+  faster.)
 - **`/nas/public` is a real NFS PersistentVolume** (mounted by k8s itself),
   mounted at both `/nas/public` and `/nas/new/public` since they are the same
   export and the database references both.
@@ -21,7 +26,7 @@ for production.
 - **The database stays external** (`PGHOST=tcia-posdadb-al.ad.uams.edu` in
   `config/database.env`). No database runs in the cluster.
 - **The old `posda_cache_alpine` docker volume** is replaced by
-  `/nas/public/posda/k8s-data/legacy-cache`, mounted at `/home/posda/cache`.
+  `/nas/public/posda/k8s/data/legacy-cache`, mounted at `/home/posda/cache`.
   The real cache is `$POSDA_CACHE_ROOT` (already on the NAS); this path only
   needs to hold the `POSDA_VERSION` marker so the image entrypoint skips
   `setup()`.
@@ -52,24 +57,26 @@ export itself), but it does no harm.
 
 `ingress.yaml`: confirm the hostname (see open questions).
 
-### 3. Stage code and data on the NAS
+### 3. Code on the PVC, data on the NAS
 
-    /nas/public/posda/deploy/
-        posdatools/           <- rsync of posda/posdatools
-        lanterna/             <- rsync of lanterna (thumbs.py, magicka.py, ...)
-        fastapi-app/          <- rsync of posda/fastapi/app
-        steve/                <- rsync of steve
-        ream/                 <- rsync of ream
-        kaleidoscope-server/  <- rsync of kaleidoscope/kaleidoscope/server
-        web/
-            posda-error.html
-            www/import.html
-            www/upload.html
-            root-mapping/     <- symlinks: file_storage_root id -> path.
-                                 Copy from the prod host, but make sure the
-                                 targets are container-valid paths
-                                 (e.g. 16 -> /nas/new/public/posda/storage)
-    /nas/public/posda/k8s-data/
+Code deploys from git: `jobs/sync-deploy.yaml` clones (or hard-resets) the
+oneposda repo's master branch to `oneposda/` on the `posda-deploy` PVC, and
+the pods mount subPaths of that checkout (`posda/posdatools`, `lanterna`,
+`steve`, `ream`, `posda/fastapi/app`, `kaleidoscope/kaleidoscope/server`,
+`web/...`). To ship code: merge to master, then
+
+    kubectl -n posda delete job sync-deploy --ignore-not-found
+    kubectl -n posda apply -f jobs/sync-deploy.yaml
+    kubectl -n posda logs -f job/sync-deploy
+
+**`web/root-mapping/` must be committed to the repo** (currently untracked):
+the web pod mounts `oneposda/web/root-mapping` at `/www/files`. It holds
+symlinks `file_storage_root id -> path`; make sure the targets are
+container-valid paths (e.g. `16 -> /nas/new/public/posda/storage`).
+
+Data dirs stay on the NAS (pods write to them):
+
+    /nas/public/posda/k8s/data/
         legacy-cache/         <- `echo 2 > legacy-cache/POSDA_VERSION`
         kaleidoscope-files/   <- copy contents of the kaleidoscope_files
                                  docker volume from the old prod host
@@ -93,7 +100,11 @@ against `web/default.conf.prod` on the prod host** and reconcile before go-live.
 ### 5. Deploy
 
     kubectl apply -k .
+    kubectl -n posda apply -f jobs/sync-deploy.yaml   # seed the code PVC
     kubectl apply -f dicom-tcp.yaml   # DICOM port 11112 (kube-system, separate)
+
+A freshly created `posda-deploy` PVC is empty, so the app pods crash-loop
+until the first sync Job finishes; they recover on their next restart.
 
 Kustomize hashes the generated ConfigMaps/Secrets, so editing an env file or
 default.conf and re-applying automatically rolls the affected pods.

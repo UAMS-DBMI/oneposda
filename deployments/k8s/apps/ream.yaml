@@ -59,13 +59,15 @@ spec:
             - name: s3-ross-intermediate-archive
               mountPath: /nas/ross/posda-intermediate-archive
               mountPropagation: HostToContainer
-            # code-on-NFS: ream itself
-            - name: nas-public
+            # code-on-PVC: ream itself
+            - name: posda-deploy
               mountPath: /ream
-              subPath: posda/k8s/deploy/oneposda/posda/ream
-            - name: nas-public
+              subPath: oneposda/ream
+              readOnly: true
+            - name: posda-deploy
               mountPath: /home/posda/posdatools
-              subPath: posda/k8s/deploy/oneposda/posda/posdatools
+              subPath: oneposda/posda/posdatools
+              readOnly: true
             - name: nas-public
               mountPath: /home/posda/cache
               subPath: posda/k8s/data/legacy-cache
@@ -76,6 +78,9 @@ spec:
         - name: nas-public
           persistentVolumeClaim:
             claimName: nas-public
+        - name: posda-deploy
+          persistentVolumeClaim:
+            claimName: posda-deploy
         - name: nas-intake
           persistentVolumeClaim:
             claimName: nas-intake

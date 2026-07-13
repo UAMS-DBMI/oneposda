@@ -19,6 +19,9 @@ resources:
 #  - apps/kaleidoscope.yaml
   - apps/web.yaml
 
+# jobs/sync-deploy.yaml is deliberately NOT a resource here: it is applied on
+# demand to update the oneposda checkout on the posda-deploy PVC.
+
 # The *.env sources below are gitignored (they contain credentials).
 # Copy them from the prod host into config/ before running kustomize build.
 # The generated names get a content hash suffix, so editing an env file and
