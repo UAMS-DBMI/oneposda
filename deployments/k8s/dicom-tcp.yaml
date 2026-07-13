@@ -1,0 +1,21 @@
+# Exposes the DICOM receiver (raw TCP, not HTTP -- it cannot go through the
+# regular Ingress) on port 11112 of every node, via RKE2's packaged
+# ingress-nginx.
+#
+# NOT part of the kustomization (it lives in kube-system and would be
+# clobbered by the namespace transformer). Apply separately:
+#
+#     kubectl apply -f dicom-tcp.yaml
+#
+# RKE2 will re-render the rke2-ingress-nginx chart with this config; the
+# controller then listens on 11112 (it runs hostNetwork) and forwards to the
+# posda service.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-ingress-nginx
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    tcp:
+      "11112": "posda/posda:11112"

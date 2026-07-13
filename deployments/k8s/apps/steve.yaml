@@ -1,0 +1,114 @@
+# Periodic job runner. Currently runs on the second prod node; folded into
+# the cluster here. Singleton -- do not scale.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: steve
+  labels:
+    app.kubernetes.io/name: steve
+    app.kubernetes.io/part-of: posda
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: steve
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: steve
+        app.kubernetes.io/part-of: posda
+    spec:
+      containers:
+        - name: steve
+          image: tcia/posda:1.0.4
+          workingDir: /home/posda/posdatools/systemd
+          # Passed through the image entrypoint's catch-all exec.
+          args:
+            - /home/posda/posdatools/systemd/run_in_posda_env.sh
+            - /steve/steve.py
+          envFrom:
+            - secretRef:
+                name: database-env
+            - secretRef:
+                name: common-env
+            - configMapRef:
+                name: posda-env
+          volumeMounts:
+            - name: nas-public
+              mountPath: /nas/public
+            - name: nas-public
+              mountPath: /nas/new/public
+            - name: nas-intake
+              mountPath: /nas/intake
+            - name: nas-nlst
+              mountPath: /nas/nlst
+            - name: s3-posda-archive
+              mountPath: /nas/posda-archive
+              mountPropagation: HostToContainer
+            - name: s3-faspex
+              mountPath: /nas/faspex
+              mountPropagation: HostToContainer
+            - name: s3-pathology
+              mountPath: /nas/pathology
+              mountPropagation: HostToContainer
+            - name: s3-ross-faspex
+              mountPath: /nas/ross/faspex
+              mountPropagation: HostToContainer
+            - name: s3-ross-posda-pathology
+              mountPath: /nas/ross/posda-pathology
+              mountPropagation: HostToContainer
+            - name: s3-ross-intermediate-archive
+              mountPath: /nas/ross/posda-intermediate-archive
+              mountPropagation: HostToContainer
+            # code-on-NFS: steve itself
+            - name: nas-public
+              mountPath: /steve
+              subPath: posda/deploy/steve
+            - name: nas-public
+              mountPath: /home/posda/posdatools
+              subPath: posda/deploy/posdatools
+            - name: nas-public
+              mountPath: /home/posda/cache
+              subPath: posda/k8s-data/legacy-cache
+            - name: posda-env-file
+              mountPath: /home/posda/posdatools/posda.env
+              subPath: posda.env
+      volumes:
+        - name: nas-public
+          persistentVolumeClaim:
+            claimName: nas-public
+        - name: nas-intake
+          persistentVolumeClaim:
+            claimName: nas-intake
+        - name: nas-nlst
+          persistentVolumeClaim:
+            claimName: nas-nlst
+        - name: s3-posda-archive
+          hostPath:
+            path: /nas/posda-archive
+            type: Directory
+        - name: s3-faspex
+          hostPath:
+            path: /nas/faspex
+            type: Directory
+        - name: s3-pathology
+          hostPath:
+            path: /nas/pathology
+            type: Directory
+        - name: s3-ross-faspex
+          hostPath:
+            path: /nas/ross/faspex
+            type: Directory
+        - name: s3-ross-posda-pathology
+          hostPath:
+            path: /nas/ross/posda-pathology
+            type: Directory
+        - name: s3-ross-intermediate-archive
+          hostPath:
+            path: /nas/ross/posda-intermediate-archive
+            type: Directory
+        - name: posda-env-file
+          configMap:
+            name: posda-env-file
