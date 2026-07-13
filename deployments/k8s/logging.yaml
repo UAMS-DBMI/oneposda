@@ -1,0 +1,31 @@
+# 1. ClusterOutput - defines the GELF destination (your Graylog 6 instance)
+apiVersion: logging.banzaicloud.io/v1beta1
+kind: ClusterOutput
+metadata:
+  name: graylog-gelf
+  namespace: cattle-logging-system
+spec:
+  gelf:
+    host: "tcia-graylog-1.ad.uams.edu"   # adjust to your Graylog host
+    port: 12201                          # match your GELF TCP/UDP input port
+    protocol: "tcp"                      # "tcp" or "udp"
+    buffer:
+      flush_mode: interval
+      flush_interval: 5s
+      flush_thread_count: 2
+      retry_type: periodic
+      retry_wait: 5s
+      retry_max_times: 10
+
+---
+# 2. ClusterFlow - routes ALL cluster logs to the GELF output
+apiVersion: logging.banzaicloud.io/v1beta1
+kind: ClusterFlow
+metadata:
+  name: all-logs-to-graylog
+  namespace: cattle-logging-system
+spec:
+  globalOutputRefs:
+    - graylog-gelf
+  match:
+    - select: {}
