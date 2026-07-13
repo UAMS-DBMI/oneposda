@@ -4648,14 +4648,13 @@ async def list_assignment_series_files(
         select
             rdf.file_id,
             coalesce(i.number_of_frames, 1) as num_of_frames,
-            fsr.root_path || '/' || fl.rel_path     as file_path
+            fl.file_storage_root_id || '/' || fl.rel_path     as file_path
         from qc_series qs
         join qc_review qr           on qr.qc_review_id    = qs.qc_review_id
         join recordset_draft_file rdf on rdf.recordset_draft_id = qr.recordset_draft_id
         join file_series fs          on fs.file_id         = rdf.file_id
                                     and fs.series_instance_uid = qs.series_instance_uid
         left join file_location fl      on fl.file_id             = rdf.file_id
-        left join file_storage_root fsr on fsr.file_storage_root_id = fl.file_storage_root_id
         left join file_image fi         on fi.file_id             = rdf.file_id
         left join image i               on i.image_id             = fi.image_id
         left join file_sop_common fsc   on fsc.file_id            = rdf.file_id
