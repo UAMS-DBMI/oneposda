@@ -1,0 +1,107 @@
+# Kaleidoscope. Generates static content into the shared kaleidoscope-files
+# directory, which web serves at /k. No Service: nothing connects to it over
+# the network (verify against default.conf.prod).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kaleidoscope
+  labels:
+    app.kubernetes.io/name: kaleidoscope
+    app.kubernetes.io/part-of: posda
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kaleidoscope
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kaleidoscope
+        app.kubernetes.io/part-of: posda
+    spec:
+      containers:
+        - name: kaleidoscope
+          # prod pins 1.0.14 (dev compose has 1.0.18) -- keeping prod's pin
+          image: tcia/kaleidoscope:1.0.18
+          envFrom:
+            - secretRef:
+                name: database-env
+            - secretRef:
+                name: common-env
+            - configMapRef:
+                name: posda-env
+          env:
+            - name: DEBUG
+              value: "1"
+          volumeMounts:
+            - name: nas-public
+              mountPath: /nas/public
+            - name: nas-public
+              mountPath: /nas/new/public
+            - name: nas-intake
+              mountPath: /nas/intake
+            - name: nas-nlst
+              mountPath: /nas/nlst
+            - name: s3-posda-archive
+              mountPath: /nas/posda-archive
+              mountPropagation: HostToContainer
+            - name: s3-faspex
+              mountPath: /nas/faspex
+              mountPropagation: HostToContainer
+            - name: s3-pathology
+              mountPath: /nas/pathology
+              mountPropagation: HostToContainer
+            - name: s3-ross-faspex
+              mountPath: /nas/ross/faspex
+              mountPropagation: HostToContainer
+            - name: s3-ross-posda-pathology
+              mountPath: /nas/ross/posda-pathology
+              mountPropagation: HostToContainer
+            - name: s3-ross-intermediate-archive
+              mountPath: /nas/ross/posda-intermediate-archive
+              mountPropagation: HostToContainer
+            # replaces the kaleidoscope_files docker volume (shared with web)
+            - name: nas-public
+              mountPath: /html
+              subPath: posda/k8s/data/kaleidoscope-files
+            # code-on-NFS: server overlay from docker-compose.prod.yaml
+            - name: nas-public
+              mountPath: /app/server
+              subPath: posda/k8s/deploy/kaleidoscope-server
+            - name: nas-public
+              mountPath: /home/posda/cache
+              subPath: posda/k8s/data/legacy-cache
+      volumes:
+        - name: nas-public
+          persistentVolumeClaim:
+            claimName: nas-public
+        - name: nas-intake
+          persistentVolumeClaim:
+            claimName: nas-intake
+        - name: nas-nlst
+          persistentVolumeClaim:
+            claimName: nas-nlst
+        - name: s3-posda-archive
+          hostPath:
+            path: /nas/posda-archive
+            type: Directory
+        - name: s3-faspex
+          hostPath:
+            path: /nas/faspex
+            type: Directory
+        - name: s3-pathology
+          hostPath:
+            path: /nas/pathology
+            type: Directory
+        - name: s3-ross-faspex
+          hostPath:
+            path: /nas/ross/faspex
+            type: Directory
+        - name: s3-ross-posda-pathology
+          hostPath:
+            path: /nas/ross/posda-pathology
+            type: Directory
+        - name: s3-ross-intermediate-archive
+          hostPath:
+            path: /nas/ross/posda-intermediate-archive
+            type: Directory

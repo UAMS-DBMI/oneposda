@@ -1,0 +1,122 @@
+# NFS-backed PersistentVolumes.
+#
+# Mount options mirror the current node fstab entries
+# (_netdev is fstab-only and rw is the default, so both are omitted).
+#
+# /nas/public and /nas/new/public are the same export; a single PV/PVC is
+# mounted at both container paths, so only one PV is defined for them.
+#
+# The S3 (rclone/goofys) mounts are NOT defined here -- they are FUSE
+# mounts managed by systemd on each node and reach the pods as hostPath
+# volumes (see the deployment manifests).
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: posda-nas-public
+spec:
+  capacity:
+    storage: 1Ti  # informational only; NFS does not enforce this
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  mountOptions:
+    - nfsvers=4.1
+    - rsize=1048576
+    - wsize=1048576
+    - nconnect=16
+    - hard
+    - tcp
+    - noatime
+  nfs:
+    server: icpdcresnfs.ad.uams.edu
+    path: /TCIA/public
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nas-public
+  namespace: posda
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: posda-nas-public
+  resources:
+    requests:
+      storage: 1Ti
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: posda-nas-intake
+spec:
+  capacity:
+    storage: 1Ti
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  mountOptions:
+    - nfsvers=4.1
+    - rsize=1048576
+    - wsize=1048576
+    - nconnect=16
+    - hard
+    - tcp
+    - noatime
+  nfs:
+    server: icpdcresnfs.ad.uams.edu
+    path: /TCIA/intake
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nas-intake
+  namespace: posda
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: posda-nas-intake
+  resources:
+    requests:
+      storage: 1Ti
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: posda-nas-nlst
+spec:
+  capacity:
+    storage: 1Ti
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  mountOptions:
+    - nfsvers=4.1
+    - rsize=1048576
+    - wsize=1048576
+    - nconnect=16
+    - hard
+    - tcp
+    - noatime
+  nfs:
+    server: icpdcresnfs.ad.uams.edu
+    path: /TCIA/nlst
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nas-nlst
+  namespace: posda
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: posda-nas-nlst
+  resources:
+    requests:
+      storage: 1Ti

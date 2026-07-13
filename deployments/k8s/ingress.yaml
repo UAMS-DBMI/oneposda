@@ -1,0 +1,35 @@
+# HTTP(S) entry point. TLS terminates at the RKE2 ingress-nginx; traffic is
+# forwarded to the web pod's plain-HTTP port.
+#
+# TODO: confirm the hostname. If DNS for tcia-posda-rh-1 will point at the
+# cluster, keep it; if the service gets a new name, update it here AND in
+# common.env (POSDA_EXTERNAL_HOSTNAME / POSDA_API_URL) and posda.env.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: posda
+  labels:
+    app.kubernetes.io/part-of: posda
+  annotations:
+    # the compose nginx used client_max_body_size 0 (unlimited uploads)
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+spec:
+  ingressClassName: nginx
+  # TLS is handled by the upstream nginx proxies
+  # tls:
+  #   - hosts:
+  #       - posda.dbmi.cloud
+  #     secretName: posda-tls
+  rules:
+    - host: posda.uams.edu
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 8080
