@@ -509,7 +509,7 @@ def shiftDate(originalDate, shift_days=2000):
     for fmt in formats:
         try:
             dt = datetime.strptime(originalDate, fmt)
-            shifted = dt - timedelta(days=shift_days)
+            shifted = dt - timedelta(days=int(shift_days))
             return shifted.strftime(fmt)
         except ValueError:
             continue
