@@ -357,7 +357,7 @@ class LinkageChecker:
 
             if i and i % 100 == 0:
                 print(f"  Scanned {i} files; "
-                      f"refs so far: {len(missing_references)}, "
+                      f"total refs scanned: {len(missing_references)}, "
                       f"FOR mismatches so far: {len(for_mismatches)}")
 
         return missing_references, for_mismatches
