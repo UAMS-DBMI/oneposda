@@ -62,13 +62,13 @@ spec:
             # code-on-NFS: ream itself
             - name: nas-public
               mountPath: /ream
-              subPath: posda/deploy/ream
+              subPath: posda/k8s/deploy/oneposda/posda/ream
             - name: nas-public
               mountPath: /home/posda/posdatools
-              subPath: posda/deploy/posdatools
+              subPath: posda/k8s/deploy/oneposda/posda/posdatools
             - name: nas-public
               mountPath: /home/posda/cache
-              subPath: posda/k8s-data/legacy-cache
+              subPath: posda/k8s/data/legacy-cache
             - name: posda-env-file
               mountPath: /home/posda/posdatools/posda.env
               subPath: posda.env

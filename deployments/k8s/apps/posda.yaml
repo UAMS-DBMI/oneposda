@@ -11,7 +11,8 @@
 #     HostToContainer makes a host-side remount (after a FUSE crash/restart)
 #     visible to already-running pods.
 #   - Code is NOT baked into the images; the live trees are rsynced to
-#     /nas/public/posda/deploy/ and mounted via subPath (see README.md).
+#     /nas/public/posda/k8s/deploy/oneposda/posda/ and mounted via subPath
+#     (see README.md).
 #   - /home/posda/cache replaces the posda_cache_alpine docker volume. The
 #     real cache root is $POSDA_CACHE_ROOT on the NAS; this path only holds
 #     the POSDA_VERSION marker (which keeps the entrypoint's setup() from

@@ -58,13 +58,13 @@ spec:
             # code-on-NFS: lanterna scripts
             - name: nas-public
               mountPath: /scripts
-              subPath: posda/deploy/lanterna
+              subPath: posda/k8s/deploy/oneposda/posda/lanterna
             - name: nas-public
               mountPath: /home/posda/posdatools
-              subPath: posda/deploy/posdatools
+              subPath: posda/k8s/deploy/oneposda/posda/posdatools
             - name: nas-public
               mountPath: /home/posda/cache
-              subPath: posda/k8s-data/legacy-cache
+              subPath: posda/k8s/data/legacy-cache
             - name: posda-env-file
               mountPath: /home/posda/posdatools/posda.env
               subPath: posda.env
