@@ -253,7 +253,7 @@ $q2->RunQuery(sub {
 }, sub {});
 my $num_needing_disp = @dispositions_needed;
 
-if($num_needing_disp > 0){
+if($num_needing_disp > 0 && $skip_dispositions != 1){
   $background->WriteToEmail("\n############\n" .
     "$num_needing_disp private tags need dispositions\n");
   my %SeriesNeedingDispositions;
