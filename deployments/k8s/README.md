@@ -72,10 +72,10 @@ the pods mount subPaths of that checkout (`posda/posdatools`, `lanterna`,
 To inspect the PVC by hand, `make debug` drops you into a shell on it
 (`make debug-clean` removes the pod).
 
-**`web/root-mapping/` must be committed to the repo** (currently untracked):
-the web pod mounts `oneposda/web/root-mapping` at `/www/files`. It holds
-symlinks `file_storage_root id -> path`; make sure the targets are
-container-valid paths (e.g. `16 -> /nas/new/public/posda/storage`).
+The `file_storage_root id -> path` mapping lives in the nginx config
+(`config/default.conf`) as one `location /files/<id>/` block per root; make
+sure the paths are valid inside the web container (e.g. `/files/16/` ->
+`/nas/new/public/posda/storage`).
 
 Data dirs stay on the NAS (pods write to them):
 
