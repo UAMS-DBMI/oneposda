@@ -575,6 +575,10 @@ This step should not be needed if your data was imported through CTP",
         caption => "Export Private Tag data",
         action =>  "ExportPrivateTagData",
       },
+      {
+        caption => "Check Volume Geometry",
+        action =>  "VolumeGeometryReport",
+      },
     ],
   },
   # {
