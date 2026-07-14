@@ -24,7 +24,11 @@ TAGS_TO_SCAN = [
 UID_KEYWORDS = set(TAGS_TO_SCAN)
 
 REFERENCE_SEQUENCES_SEG = frozenset({
-    "ReferencedSeriesSequence",        # series UID + image SOP UIDs
+    "ReferencedSeriesSequence",                          # series UID + image SOP UIDs
+    "StudiesContainingOtherReferencedInstancesSequence",  # cross-study series/SOP refs
+    "SharedFunctionalGroupsSequence",                     # DerivationImageSequence -> SourceImageSequence (shared across frames)
+    "PerFrameFunctionalGroupsSequence",                   # DerivationImageSequence -> SourceImageSequence (per-frame)
+    "ReferencedImageEvidenceSequence",                    # evidence/provenance image references
 })
 
 REFERENCE_SEQUENCES_RT = frozenset({
@@ -34,21 +38,25 @@ REFERENCE_SEQUENCES_RT = frozenset({
     "ReferencedRTPlanSequence",            # RTDOSE/RTIMAGE → RTPLAN SOP
     "ReferencedDoseSequence",              # RTPLAN → RTDOSE SOP
     "RelatedRTPlanSequence",               # RTPLAN → related plan SOPs
+    "ReferencedImageSequence",             # RTIMAGE/RTDOSE → source image references
 })
 
 REFERENCE_REPORT_HEADER = [
     "file_id", "modality", "series_instance_uid", "path", "key_path",
     "category", "referenced_uid", "referenced_sop_class", "missing",
     "found_activity_id", "found_timepoint_id", "found_file_id", "note",
-    "candidate_series_uid", "candidate_modality", "candidate_confidence", "candidate_note",
+    # Candidate-suggestion columns disabled for now — suggest_missing_ref_candidates()
+    # isn't part of the current release; re-enable when that logic ships.
+    # "candidate_series_uid", "candidate_modality", "candidate_confidence", "candidate_note",
 ]
 
 FOR_MISMATCH_HEADER = [
     "file_id", "modality", "series_instance_uid", "study_instance_uid", "path", "key_path",
     "referenced_uid", "referenced_sop_class", "referenced_series_uid",
     "file_for_uid", "referenced_for_uid",
-    "candidate_series_uid", "candidate_modality", "candidate_confidence", "all_candidates",
-    "fix_direction",
+    # Candidate-suggestion columns disabled for now — see REFERENCE_REPORT_HEADER above.
+    # "candidate_series_uid", "candidate_modality", "candidate_confidence", "all_candidates",
+    # "fix_direction",
 ]
 
 
@@ -113,10 +121,11 @@ def reference_to_row(entry):
         entry.get("found_timepoint_id", ""),
         entry.get("found_file_id", ""),
         entry.get("note", ""),
-        entry.get("candidate_series_uid", ""),
-        entry.get("candidate_modality", ""),
-        entry.get("candidate_confidence", ""),
-        entry.get("candidate_note", ""),
+        # Candidate-suggestion columns disabled for now — see REFERENCE_REPORT_HEADER.
+        # entry.get("candidate_series_uid", ""),
+        # entry.get("candidate_modality", ""),
+        # entry.get("candidate_confidence", ""),
+        # entry.get("candidate_note", ""),
     )
 
 
@@ -272,6 +281,9 @@ class LinkageChecker:
         """
         missing_references = []
         for_mismatches = []
+        total = len(file_rows)
+        print("Checking References...")
+        progress_interval = max(1, total // 20)  # ~5% increments
         for i, file in enumerate(file_rows):
             try:
                 ds = self.load_dataset(file)
@@ -362,8 +374,9 @@ class LinkageChecker:
                                 "referenced_sop_class": ref_sop_class,
                             })
 
-            if i and i % 100 == 0:
-                print(f"  Scanned {i} files; "
+            if i and i % progress_interval == 0:
+                pct = round(i / total * 100)
+                print(f"  Scanned {i}/{total} files ({pct}%); "
                       f"total refs scanned: {len(missing_references)}, "
                       f"FOR mismatches so far: {len(for_mismatches)}")
 
@@ -846,48 +859,53 @@ class LinkageChecker:
           Found_References    — found within the current activity/timepoint
         """
         activity_id = str(self.args.activity_id)
+
+        def _new_bucket():
+            return {"rows": [], "patients": set(), "studies": set(),
+                     "for_uids": set(), "series": set(), "files": set()}
+
+        buckets = {"missing": _new_bucket(), "external": _new_bucket(), "found": _new_bucket()}
+
         for entry in missing_refs:
-            if entry.get("missing") is False:
-                if str(entry.get("found_activity_id")) == activity_id:
-                    entry["note"] = "In current activity"
-                else:
-                    entry.setdefault("note", "In external activity")
+            missing_flag = entry.get("missing")
+            if missing_flag:
+                bucket = buckets["missing"]
+            else:
+                in_current = str(entry.get("found_activity_id")) == activity_id
+                if missing_flag is False:
+                    if in_current:
+                        entry["note"] = "In current activity"
+                    else:
+                        entry.setdefault("note", "In external activity")
+                bucket = buckets["found"] if in_current else buckets["external"]
 
-        missing_rows  = [reference_to_row(e) for e in missing_refs if e.get("missing")]
-        external_rows = [reference_to_row(e) for e in missing_refs
-                         if not e.get("missing")
-                         and str(e.get("found_activity_id")) != activity_id]
-        found_rows    = [reference_to_row(e) for e in missing_refs
-                         if not e.get("missing")
-                         and str(e.get("found_activity_id")) == activity_id]
+            bucket["rows"].append(reference_to_row(entry))
+            for field, key in (("patient_id", "patients"), ("study_instance_uid", "studies"),
+                               ("file_for_uid", "for_uids"), ("series_instance_uid", "series"),
+                               ("file_id", "files")):
+                val = entry.get(field)
+                if val is not None:
+                    bucket[key].add(val)
 
-        n_missing  = len(missing_rows)
-        n_external = len(external_rows)
-        n_found    = len(found_rows)
+        missing_rows  = buckets["missing"]["rows"]
+        external_rows = buckets["external"]["rows"]
+        found_rows    = buckets["found"]["rows"]
 
-        print(f"Missing (Not in Posda): {n_missing}")
-        print(f"External (Not in current Activity / Timepoint): {n_external}")
-        print(f"Found (In current Activity / Timepoint): {n_found}")
+        print(f"Missing (Not in Posda): {len(missing_rows)}")
+        print(f"External (Not in current Activity / Timepoint): {len(external_rows)}")
+        print(f"Found (In current Activity / Timepoint): {len(found_rows)}")
 
-        def _counts(entries):
+        def _counts(bucket):
             return {
-                "patients": len({e.get("patient_id")           for e in entries} - {None}),
-                "studies":  len({e.get("study_instance_uid")   for e in entries} - {None}),
-                "for_uids": len({e.get("file_for_uid")         for e in entries} - {None}),
-                "series":   len({e.get("series_instance_uid")  for e in entries} - {None}),
-                "files":    len({e.get("file_id")              for e in entries} - {None}),
-                "refs":     len(entries),
+                "patients": len(bucket["patients"]),
+                "studies":  len(bucket["studies"]),
+                "for_uids": len(bucket["for_uids"]),
+                "series":   len(bucket["series"]),
+                "files":    len(bucket["files"]),
+                "refs":     len(bucket["rows"]),
             }
 
-        missing_entries  = [e for e in missing_refs if e.get("missing")]
-        external_entries = [e for e in missing_refs
-                            if not e.get("missing")
-                            and str(e.get("found_activity_id")) != activity_id]
-        found_entries    = [e for e in missing_refs
-                            if not e.get("missing")
-                            and str(e.get("found_activity_id")) == activity_id]
-
-        cm, ce, cf = _counts(missing_entries), _counts(external_entries), _counts(found_entries)
+        cm, ce, cf = _counts(buckets["missing"]), _counts(buckets["external"]), _counts(buckets["found"])
 
         r = self.background.create_report("Reference_Summary")
         summary_writer = csv.writer(r, lineterminator='\n')

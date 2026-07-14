@@ -86,8 +86,10 @@ class GeneralLinkageChecker(LinkageChecker):
             sop_to_file_id,
         )
         missing_references = self.annotate_missing_refs(missing_references)
-        missing_references = self.suggest_missing_ref_candidates(missing_references)
-        for_mismatches     = self.suggest_relink_candidates(for_mismatches)
+        # Candidate suggestion disabled for now — not part of this release; the report
+        # columns it populates are also commented out (see linkage.py).
+        # missing_references = self.suggest_missing_ref_candidates(missing_references)
+        # for_mismatches     = self.suggest_relink_candidates(for_mismatches)
 
         self.create_split_reference_reports(missing_references)
 
