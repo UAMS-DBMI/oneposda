@@ -2,7 +2,10 @@
 """
 Check RT object linkages: walks all RT files (RTSTRUCT, RTPLAN, RTDOSE, RTIMAGE)
 in the activity, finds missing references and Frame of Reference mismatches,
-and generates repair reports and a structural relink worklist for RTSTRUCT files.
+and generates repair reports.
+
+Candidate suggestion and the RTSTRUCT structural relink worklist (Fix script input)
+are not enabled yet — see the comments in run() below.
 
 Future internal-consistency checks (ROI/contour cross-validation) will be added
 to RTLinkageChecker as the Perl CheckStructLinkagesTpId.pl logic is ported.
@@ -58,8 +61,10 @@ class RTLinkageChecker(LinkageChecker):
             for_uids, sop_to_for, sop_to_series, sop_to_file_id,
         )
         missing_refs   = self.annotate_missing_refs(missing_refs)
-        missing_refs   = self.suggest_missing_ref_candidates(missing_refs)
-        for_mismatches = self.suggest_relink_candidates(for_mismatches)
+        # Candidate suggestion disabled for now — not part of this release; the report
+        # columns it populates are also commented out (see linkage.py).
+        # missing_refs   = self.suggest_missing_ref_candidates(missing_refs)
+        # for_mismatches = self.suggest_relink_candidates(for_mismatches)
 
         self.create_split_reference_reports(missing_refs)
 
@@ -70,32 +75,30 @@ class RTLinkageChecker(LinkageChecker):
         self.create_for_mismatch_report(for_mismatches)
         self.create_for_repair_reports(for_mismatches)
 
-        # Relink worklist is RTSTRUCT-specific: structural surgery is needed when
-        # the entire image series reference is wrong (not just a FOR tag edit).
-        # RTPLAN/RTDOSE/RTIMAGE FOR mismatches are handled by the tag-level repair CSVs above.
-        print(DIVIDER)
-        print("Relink Worklist (RTSTRUCT)")
-        print(DIVIDER)
-        seen_relinks = set()
-        relink_items = []
-        for m in for_mismatches:
-            if m.get("modality") != "RTSTRUCT":
-                continue
-            target     = m.get("candidate_series_uid") or m.get("referenced_series_uid")
-            confidence = m.get("candidate_confidence", "")
-            if not target:
-                continue
-            key = (m["file_id"], target)
-            if key not in seen_relinks:
-                seen_relinks.add(key)
-                relink_items.append({
-                    "file_id":              m["file_id"],
-                    "target_series_uid":    target,
-                    "candidate_confidence": confidence,
-                })
-
-        print(f"Found {len(relink_items)} RTSTRUCT file(s) needing structural relink")
-        self.create_relink_report(relink_items)
+        # Relink worklist (RTSTRUCT structural relink, consumed by FixLinkages.py) is not
+        # enabled yet — it depends on suggest_relink_candidates() above, which is disabled.
+        # Uncomment both once the Fix script is ready to ship.
+        #
+        # seen_relinks = set()
+        # relink_items = []
+        # for m in for_mismatches:
+        #     if m.get("modality") != "RTSTRUCT":
+        #         continue
+        #     target     = m.get("candidate_series_uid") or m.get("referenced_series_uid")
+        #     confidence = m.get("candidate_confidence", "")
+        #     if not target:
+        #         continue
+        #     key = (m["file_id"], target)
+        #     if key not in seen_relinks:
+        #         seen_relinks.add(key)
+        #         relink_items.append({
+        #             "file_id":              m["file_id"],
+        #             "target_series_uid":    target,
+        #             "candidate_confidence": confidence,
+        #         })
+        #
+        # print(f"Found {len(relink_items)} RTSTRUCT file(s) needing structural relink")
+        # self.create_relink_report(relink_items)
 
         background.finish("Complete")
 
