@@ -1,6 +1,9 @@
 # Updates the code checkout on the posda-deploy Longhorn PVC that the pods
-# run from: a shallow clone of the oneposda repo's master branch (cloned
-# fresh if the PVC is empty, hard-reset to origin/master otherwise).
+# run from: a blobless partial clone (--filter=blob:none) of the oneposda
+# repo's master branch (cloned fresh if the PVC is empty, hard-reset to
+# origin/master otherwise). Full history + tags are kept (needed for
+# `git describe --tags`, which generates posda/posdatools/versionInfo.txt);
+# only historical file contents are skipped, so the metadata stays small.
 # Deliberately NOT in kustomization.yaml; run it on demand after merging to
 # master:
 #
@@ -53,15 +56,23 @@ spec:
             - |
               if [ -d /deploy/oneposda/.git ]; then
                 cd /deploy/oneposda
-                git fetch --depth 1 origin master
+                if [ -f .git/shallow ]; then
+                  # one-time migration of the old shallow checkout
+                  git fetch --unshallow --filter=blob:none --tags origin master
+                else
+                  git fetch --filter=blob:none --tags origin master
+                fi
                 git reset --hard FETCH_HEAD
                 git clean -fdx
               else
                 rm -rf /deploy/oneposda
-                git clone --depth 1 --branch master \
+                git clone --filter=blob:none --branch master \
                   https://code.imphub.org/scm/pt/oneposda.git /deploy/oneposda
+                cd /deploy/oneposda
               fi
-              cd /deploy/oneposda && git log -1 --format='deployed %h %s'
+              git describe --tags > posda/posdatools/versionInfo.txt
+              git log -1 --format='deployed %h %s'
+              echo "versionInfo.txt: $(cat posda/posdatools/versionInfo.txt)"
           volumeMounts:
             - name: posda-deploy
               mountPath: /deploy

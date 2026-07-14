@@ -7,7 +7,7 @@ for production.
 ## Architecture decisions
 
 - **No code is baked into images.** The `tcia/posda` image is too large to
-  rebuild routinely. The live code is a shallow clone of the oneposda repo
+  rebuild routinely. The live code is a blobless partial clone of the oneposda repo
   (`https://code.imphub.org/scm/pt/oneposda.git`, **master = production**)
   on the `posda-deploy` Longhorn RWX PVC, mounted read-only into the pods
   and updated by `jobs/sync-deploy.yaml`. (The pods originally ran code
@@ -60,7 +60,9 @@ export itself), but it does no harm.
 ### 3. Code on the PVC, data on the NAS
 
 Code deploys from git: `jobs/sync-deploy.yaml` clones (or hard-resets) the
-oneposda repo's master branch to `oneposda/` on the `posda-deploy` PVC, and
+oneposda repo's master branch to `oneposda/` on the `posda-deploy` PVC
+(a blobless clone — full history and tags, so `git describe --tags` works —
+which the Job writes to `posda/posdatools/versionInfo.txt`), and
 the pods mount subPaths of that checkout (`posda/posdatools`, `lanterna`,
 `steve`, `ream`, `posda/fastapi/app`, `kaleidoscope/kaleidoscope/server`,
 `web/...`). To ship code: merge to master, then
