@@ -45,7 +45,7 @@ configMapGenerator:
       - posda.env=config/posda-old.env
   - name: web-nginx-conf
     files:
-      - config/default.conf
+      - config/web.conf
 
 secretGenerator:
   # common.env holds POSDA_API_SYSTEM_TOKEN, database.env holds PGPASSWORD,

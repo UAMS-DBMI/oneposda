@@ -73,7 +73,7 @@ To inspect the PVC by hand, `make debug` drops you into a shell on it
 (`make debug-clean` removes the pod).
 
 The `file_storage_root id -> path` mapping lives in the nginx config
-(`config/default.conf`) as one `location /files/<id>/` block per root; make
+(`config/web.conf`) as one `location /files/<id>/` block per root; make
 sure the paths are valid inside the web container (e.g. `/files/16/` ->
 `/nas/new/public/posda/storage`).
 
@@ -97,7 +97,7 @@ copy the real prod env files into `config/`:
 
 Also `config/nginx.crt` / `config/nginx.key` for TLS.
 
-`config/default.conf` was taken from `web/default.conf` (dev). **Diff it
+`config/web.conf` was taken from `web/default.conf` (dev). **Diff it
 against `web/default.conf.prod` on the prod host** and reconcile before go-live.
 
 ### 5. Deploy
@@ -110,7 +110,7 @@ A freshly created `posda-deploy` PVC is empty, so the app pods crash-loop
 until the first sync Job finishes; they recover on their next restart.
 
 Kustomize hashes the generated ConfigMaps/Secrets, so editing an env file or
-default.conf and re-applying automatically rolls the affected pods.
+web.conf and re-applying automatically rolls the affected pods.
 
 ## Service map (compose -> k8s)
 
