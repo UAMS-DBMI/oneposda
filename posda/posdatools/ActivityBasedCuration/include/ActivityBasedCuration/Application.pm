@@ -3371,7 +3371,7 @@ sub ActivityOperations{
     $http->queue("<p> Possible Operations: </p>");
       $http->queue('<ul>');
       for my $j (@{$i->{operations}}){
-        $http->queue("<li>");
+        $http->queue('<li style="margin-bottom: 5px;">');
         $self->NotSoSimpleButton($http, {
           op => "InvokeNewOperation",
           id => "btn_activity_op_$j->{action}",
@@ -3388,7 +3388,7 @@ sub ActivityOperations{
     $http->queue("<p> Possible Queries: </p>");
       $http->queue('<ul>');
       for my $j (@{$i->{queries}}){
-        $http->queue("<li>");
+        $http->queue('<li style="margin-bottom: 5px;">');
         $self->NotSoSimpleButton($http, {
           op => "$j->{operation}",
           id => "btn_activity_qg$j->{query_list_name}",

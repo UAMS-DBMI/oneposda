@@ -127,7 +127,7 @@ This step should not be needed if your data was imported through CTP",
     },
   {
     id => "6_concheck",
-    name => "Run Consistency Check",
+    name => "Run Consistency Checks",
     description => "Verification that the series data is consistent.",
     operations => [
       {
@@ -137,8 +137,18 @@ This step should not be needed if your data was imported through CTP",
       },
       {
         operation => "InvokeNewOperation",
-        caption => "Check Linkages",
+        caption => "Check ALL Linkages (Preview)",
         action =>  "CheckLinkages",
+      },
+      {
+        operation => "InvokeNewOperation",
+        caption => "Check SEG Linkages (Preview)",
+        action =>  "CheckSegLinkages",
+      },
+      {
+        operation => "InvokeNewOperation",
+        caption => "Check RT Linkages (Preview)",
+        action =>  "CheckRtLinkages",
       },
     ],
   },
@@ -248,25 +258,6 @@ This step should not be needed if your data was imported through CTP",
         query_list_name => "LinkedRtStructs",
       },
     ],
-  },
-  {
-    id => "11_linkrt",
-    name => "Segmentation Objects",
-    description => "Verify that the SEGs are properly " .
-      "linked to the image files.",
-    operations => [
-      {
-        caption => "Segmentation Linkages",
-        action =>  "CheckSegLinkages",
-      },
-    ],
-   queries => [
-      {
-       caption => "Examine Check Results",
-       operation => "SelectQueryGroup",
-       query_list_name => "SegCheckQueries",
-     },
-   ],
   },
   {
     id => "12_send",
@@ -1028,14 +1019,5 @@ This step should not be needed if your data was imported through CTP",
         query => "niftiTimePointReport",
       },
     ],
-  ],
-  SegCheckQueries => [
-    "Queries for examining segmentation linkages",
-    [
-      {
-        caption => "Get Linked File FORs by Activity",
-        query => "GetSegsAndLinkedFORsAfterCheck",
-      },
-    ]
   ],
 );
