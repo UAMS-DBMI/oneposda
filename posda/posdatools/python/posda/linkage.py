@@ -52,13 +52,21 @@ FOR_MISMATCH_HEADER = [
 ]
 
 
-def walk_dataset(ds, depth=0, path=None, key_path=None):
-    """Traverse a pydicom Dataset recursively, yielding (depth, elem, path, key_path)."""
+def walk_dataset(ds, depth=0, path=None, key_path=None, reference_sequences=None):
+    """Traverse a pydicom Dataset recursively, yielding (depth, elem, path, key_path).
+
+    If reference_sequences is given, top-level (depth 0) elements whose keyword isn't in
+    that set are skipped without recursing into them, so large irrelevant sequences (e.g.
+    SegmentSequence, ROIContourSequence) aren't walked when the caller only cares about a
+    handful of named top-level reference sequences.
+    """
     if path is None:
         path = []
     if key_path is None:
         key_path = []
     for elem in ds:
+        if depth == 0 and reference_sequences is not None and elem.keyword not in reference_sequences:
+            continue
         tag_hex = f"({elem.tag.group:04X},{elem.tag.element:04X})"
         keyword = elem.keyword if elem.keyword else tag_hex
         current_path = path + [tag_hex]
@@ -67,23 +75,24 @@ def walk_dataset(ds, depth=0, path=None, key_path=None):
             for i, item in enumerate(elem.value):
                 seq_path = current_path + [f"[{i}]"]
                 seq_key_path = current_key_path + ["|"]
-                yield from walk_dataset(item, depth + 1, seq_path, seq_key_path)
+                yield from walk_dataset(item, depth + 1, seq_path, seq_key_path, reference_sequences)
         elif isinstance(elem.value, Dataset):
-            yield from walk_dataset(elem.value, depth + 1, current_path, current_key_path)
+            yield from walk_dataset(elem.value, depth + 1, current_path, current_key_path, reference_sequences)
         elif elem.tag == (0x7FE0, 0x0010):
             continue
         else:
             yield depth, elem, current_path, current_key_path
 
 
-def walk_dataset_for_referencing(ds):
+def walk_dataset_for_referencing(ds, reference_sequences=None):
     """Walk dataset at depth > 0, yielding UID_KEYWORDS tags and ReferencedSOPClassUID.
 
     ReferencedSOPClassUID is yielded alongside SOP instance UIDs so callers can
     correlate them by shared parent key_path to determine the expected SOP class
-    for each reference.
+    for each reference. reference_sequences, if given, restricts which top-level
+    sequences are walked at all (see walk_dataset).
     """
-    for depth, elem, path, key_path in walk_dataset(ds):
+    for depth, elem, path, key_path in walk_dataset(ds, reference_sequences=reference_sequences):
         if depth > 0 and (elem.keyword in UID_KEYWORDS or
                           elem.keyword == 'ReferencedSOPClassUID'):
             yield depth, elem, path, key_path
@@ -274,9 +283,7 @@ class LinkageChecker:
 
             sop_class_context = {}  # tuple(parent_key_path) → ReferencedSOPClassUID
 
-            for _, elem, path, key_path in walk_dataset_for_referencing(ds):
-                if self.reference_sequences is not None and key_path[0] not in self.reference_sequences:
-                    continue
+            for _, elem, path, key_path in walk_dataset_for_referencing(ds, self.reference_sequences):
                 val = getattr(elem, 'value', None)
                 if not isinstance(val, str):
                     continue
