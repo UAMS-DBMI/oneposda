@@ -30,7 +30,7 @@ DROP TABLE IF EXISTS public.qc_review_assignment CASCADE;
 DROP TABLE IF EXISTS public.user_flag CASCADE;
 DROP TABLE IF EXISTS public.user_favorite CASCADE;
 DROP FUNCTION IF EXISTS public.qc_mark_open_reviews_stale() CASCADE;
-
+DROP FUNCTION IF EXISTS public.notify_transfer_queued() CASCADE;
 
 -- For pre-name change tables
 --DROP TABLE IF EXISTS "public".collection_release_dataset;
