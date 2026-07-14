@@ -521,6 +521,18 @@ ALTER TABLE "public".qc_series_history ADD CONSTRAINT fk_qc_series_history_qc_re
 
 ALTER TABLE "public".qc_series_history ADD CONSTRAINT fk_qc_series_history_who_updated FOREIGN KEY ( who_updated ) REFERENCES auth.users( user_id )   ;
 
+CREATE OR REPLACE FUNCTION public.notify_transfer_queued()
+ RETURNS trigger
+ LANGUAGE plpgsql
+AS $function$
+BEGIN
+    IF NEW.transfer_status = 'queued' THEN
+        PERFORM pg_notify('idc_transfer_channel', NEW.dataset_release_transfer_id::text);
+    END IF;
+    RETURN NEW;
+END;
+$function$;;
+
 CREATE OR REPLACE FUNCTION public.qc_mark_open_reviews_stale()
  RETURNS trigger
  LANGUAGE plpgsql
@@ -533,6 +545,8 @@ BEGIN
   RETURN NULL;
 END;
 $function$;;
+
+CREATE TRIGGER dataset_release_transfer_queued_notify AFTER INSERT OR UPDATE OF transfer_status ON public.dataset_release_transfer FOR EACH ROW EXECUTE FUNCTION notify_transfer_queued();
 
 CREATE TRIGGER trg_recordset_draft_file_stale_del AFTER DELETE ON public.recordset_draft_file REFERENCING OLD TABLE AS changed FOR EACH STATEMENT EXECUTE FUNCTION qc_mark_open_reviews_stale();
 
