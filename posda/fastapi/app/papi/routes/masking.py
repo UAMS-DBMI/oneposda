@@ -485,6 +485,174 @@ async def get_for_visualreview(
     return [x[0] for x in records]
 
 
+class MaskingStatusEntry(BaseModel):
+    count: int
+    masking_status: Optional[str]
+
+class MaskingDicomFileTypeEntry(BaseModel):
+    count: int
+    dicom_file_type: Optional[str]
+
+class MaskingValuesResponse(BaseModel):
+    dicom_file_types: List[MaskingDicomFileTypeEntry]
+    masking_statuses: List[MaskingStatusEntry]
+
+
+@router.get(
+    "/visualreview/{visual_review_instance_id}/values",
+    responses={
+        404: { 'description': "invalid visual review id" },
+    })
+async def get_masking_values_for_vr(
+    visual_review_instance_id: int,
+    db: Database = Depends(),
+    current_user: User = logged_in_user
+) -> MaskingValuesResponse:
+    """
+    Get list of valid values for use in filtering, for the given VR.
+
+    Returns the valid values for: masking_status and dicom_file_type,
+    scoped to IECs in this VR that are flagged for masking.
+    """
+
+    dicom_file_type_query = """\
+        with iecs as (
+            select image_equivalence_class_id
+            from image_equivalence_class
+            natural join masking
+            where visual_review_instance_id = $1
+        )
+        select
+            (
+                select dicom_file_type
+                from image_equivalence_class_input_image
+                natural join dicom_file
+                where image_equivalence_class_input_image.image_equivalence_class_id = iecs.image_equivalence_class_id
+                limit 1
+            ),
+            count(*)
+        from iecs
+        group by 1
+    """
+
+    masking_status_query = """\
+        select
+            masking_status,
+            count(*) as count
+        from
+            image_equivalence_class
+            natural join masking
+        where
+            visual_review_instance_id = $1
+        group by 1
+    """
+
+    dicom_file_types = [dict(x) for x in await db.fetch(dicom_file_type_query, [visual_review_instance_id])]
+    masking_statuses = [dict(x) for x in await db.fetch(masking_status_query, [visual_review_instance_id])]
+
+    if len(dicom_file_types) == 0 and len(masking_statuses) == 0:
+        test_results = await db.fetch("""\
+            select visual_review_instance_id
+            from visual_review_instance
+            where visual_review_instance_id = $1
+        """, (visual_review_instance_id,))
+
+        if len(test_results) == 0:
+            raise HTTPException(detail="invalid visual review id", status_code=404)
+
+    return {
+        'dicom_file_types': dicom_file_types,
+        'masking_statuses': masking_statuses,
+    }
+
+
+class MaskingFilterParameters(BaseModel):
+    dicom_file_type: Optional[str] = '*'
+    masking_status: Optional[str] = '*'
+
+@router.post(
+    "/visualreview/{visual_review_instance_id}/filter",
+    responses={
+        404: { 'description': "invalid visual review id" },
+    })
+async def get_masking_filtered_for_vr(
+    visual_review_instance_id: int,
+    params: MaskingFilterParameters = None,
+    db: Database = Depends(),
+    current_user: User = logged_in_user
+) -> List[int]:
+    """
+    Return a filtered list of IECs flagged for masking in this VR. Use * for wildcard.
+
+    Results are always in ascending order.
+    """
+    query = """\
+        with iecs as (
+            select
+            image_equivalence_class_id,
+            masking_status,
+                (
+                    /*
+                            All files in an IEC must always be of the same dicom_file_type,
+                            so we can just select the first one here for speed
+                    */
+                    select dicom_file_type
+                    from image_equivalence_class_input_image
+                    natural join dicom_file
+                    where image_equivalence_class_input_image.image_equivalence_class_id =
+                            image_equivalence_class.image_equivalence_class_id
+                    limit 1
+                ) dicom_file_type
+            from image_equivalence_class
+            natural join masking
+            where visual_review_instance_id = $1
+        )
+
+        select image_equivalence_class_id
+        from iecs
+        where 1 = 1
+
+    """
+
+    bind_vars = [visual_review_instance_id]
+    bind_count = 1
+
+    if params.dicom_file_type != '*':
+        if params.dicom_file_type is None:
+            query += "and dicom_file_type is null\n"
+        else:
+            bind_count += 1
+            query += f"and dicom_file_type = ${bind_count}\n"
+            bind_vars.append(params.dicom_file_type)
+
+    if params.masking_status != '*':
+        if params.masking_status is None:
+            query += "and masking_status is null\n"
+        else:
+            bind_count += 1
+            query += f"and masking_status = ${bind_count}\n"
+            bind_vars.append(params.masking_status)
+
+    query += "order by 1"
+
+    results = await db.fetch(query, bind_vars)
+
+    # If no results at all are returned, do a second check to see if
+    # the reason is because the VR was invalid.
+    if len(results) == 0:
+        test_results = await db.fetch("""\
+            select visual_review_instance_id
+            from visual_review_instance
+            where visual_review_instance_id = $1
+        """, (visual_review_instance_id,))
+
+        if len(test_results) == 0:
+            raise HTTPException(detail="invalid visual review id", status_code=404)
+
+    # flatten the results (we just want a list of iecs returned)
+    return [x[0] for x in results]
+
+
 @router.get("/{iec}/reviewfiles")
 async def get_iec_review_files(
     iec: int,
