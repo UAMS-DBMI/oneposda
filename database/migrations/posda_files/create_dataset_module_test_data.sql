@@ -254,9 +254,9 @@ INSERT INTO public.transfer_recordset (dataset_release_transfer_id, recordset_re
 
 INSERT INTO public.transfer_idc (
     dataset_release_transfer_id,
-    gcs_url,
+    base_gcs_url,
     dataset_manifest_file_id,
-    recordset_manifest_file_id,
+    file_manifest_file_id,
     clinical_manifest_file_id,
     published,
     "public"

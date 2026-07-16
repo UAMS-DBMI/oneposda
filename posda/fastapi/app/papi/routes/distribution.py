@@ -108,7 +108,7 @@ class DatasetReleaseTransferUpdate(BaseModel):
     transfer_notes: Optional[str] = None
 
 class TransferIdcUpdate(BaseModel):
-    gcs_url: Optional[str] = None
+    base_gcs_url: Optional[str] = None
     published: Optional[bool] = None
     public: Optional[bool] = None
 
@@ -2958,13 +2958,13 @@ async def get_transfer_idc(transfer_id: int, db: Database = Depends()):
     query = """\
         select
             ti.dataset_release_transfer_id,
-            ti.gcs_url,
+            ti.base_gcs_url,
             ti.dataset_manifest_file_id,
             df_d.downloadable_file_id  as dataset_manifest_downloadable_file_id,
             df_d.security_hash         as dataset_manifest_security_hash,
-            ti.recordset_manifest_file_id,
-            df_r.downloadable_file_id  as recordset_manifest_downloadable_file_id,
-            df_r.security_hash         as recordset_manifest_security_hash,
+            ti.file_manifest_file_id,
+            df_r.downloadable_file_id  as file_manifest_downloadable_file_id,
+            df_r.security_hash         as file_manifest_security_hash,
             ti.clinical_manifest_file_id,
             df_c.downloadable_file_id  as clinical_manifest_downloadable_file_id,
             df_c.security_hash         as clinical_manifest_security_hash,
@@ -2972,7 +2972,7 @@ async def get_transfer_idc(transfer_id: int, db: Database = Depends()):
             ti.public
         from transfer_idc ti
         left join downloadable_file df_d on df_d.file_id = ti.dataset_manifest_file_id
-        left join downloadable_file df_r on df_r.file_id = ti.recordset_manifest_file_id
+        left join downloadable_file df_r on df_r.file_id = ti.file_manifest_file_id
         left join downloadable_file df_c on df_c.file_id = ti.clinical_manifest_file_id
         where ti.dataset_release_transfer_id = $1
         """
@@ -2995,20 +2995,20 @@ async def upsert_transfer_idc(
     payload: TransferIdcUpdate,
     db: Database = Depends()):
 
-    if payload.gcs_url is None and payload.published is None and payload.public is None:
+    if payload.base_gcs_url is None and payload.published is None and payload.public is None:
         api_error("VALIDATION_ERROR", "No IDC fields were provided", {}, 422)
 
     query = """\
-        insert into transfer_idc (dataset_release_transfer_id, gcs_url, published, public)
+        insert into transfer_idc (dataset_release_transfer_id, base_gcs_url, published, public)
         values ($1, $2, $3, $4)
         on conflict (dataset_release_transfer_id) do update set
-            gcs_url    = coalesce(excluded.gcs_url,    transfer_idc.gcs_url),
-            published  = coalesce(excluded.published,  transfer_idc.published),
-            public     = coalesce(excluded.public,     transfer_idc.public)
+            base_gcs_url = coalesce(excluded.base_gcs_url, transfer_idc.base_gcs_url),
+            published    = coalesce(excluded.published,    transfer_idc.published),
+            public       = coalesce(excluded.public,       transfer_idc.public)
         returning *
         """
     try:
-        record = await db.fetch(query, [transfer_id, payload.gcs_url, payload.published, payload.public])
+        record = await db.fetch(query, [transfer_id, payload.base_gcs_url, payload.published, payload.public])
     except Exception as e:
         db_error(
             e,
@@ -3341,10 +3341,10 @@ async def generate_idc_recordset_manifest(transfer_id: int, db: Database = Depen
 
             await conn.execute(
                 """
-                insert into transfer_idc (dataset_release_transfer_id, recordset_manifest_file_id)
+                insert into transfer_idc (dataset_release_transfer_id, file_manifest_file_id)
                 values ($1, $2)
                 on conflict (dataset_release_transfer_id) do update
-                    set recordset_manifest_file_id = excluded.recordset_manifest_file_id
+                    set file_manifest_file_id = excluded.file_manifest_file_id
                 """,
                 transfer_id, file_id,
             )
