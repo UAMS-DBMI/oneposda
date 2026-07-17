@@ -1,51 +1,67 @@
+# syntax=docker/dockerfile:1
+
 ###############################################################################
 # Build pydicom-background-editor
 ###############################################################################
-FROM astral/uv:python3.14-trixie as pydicom-bg-builder
+FROM astral/uv:python3.14-trixie AS pydicom-bg-builder
 
-RUN mkdir /build && \
-        cd /build && \
-        git clone https://github.com/quasarj/pydicom-background-editor.git && \
-        cd pydicom-background-editor && \
-        uv build
+RUN <<EOF
+set -e
+mkdir /build
+cd /build
+git clone https://github.com/quasarj/pydicom-background-editor.git
+cd pydicom-background-editor
+uv build
+EOF
 
 ###############################################################################
 # Build Dicom 3 tools
 ###############################################################################
-FROM buildpack-deps:bullseye as d3tbuild
+FROM buildpack-deps:trixie AS d3tbuild
 
-RUN apt-get update && apt-get install -y \
-	xutils-dev
+RUN <<EOF
+set -e
+apt-get update
+apt-get install -y xutils-dev
+EOF
 
 RUN mkdir /build
 COPY get-latest-dicom3tools.sh /build/
 RUN /build/get-latest-dicom3tools.sh
 
-RUN cd /build && \
-	tar xf tools.tar.bz2 && \
-	cd dicom3tools* && \
-	./Configure && \
-	imake -I./config && \
-	make -j $(nproc) World && \
-	make -j $(nproc) && \
-	make install
+RUN <<EOF
+set -e
+cd /build
+tar xf tools.tar.bz2
+cd dicom3tools*
+./Configure
+imake -I./config
+make -j $(nproc) World
+make -j $(nproc)
+make install
+EOF
 
 ################################################################################
 ## Build dcm2niix (for covnerting to nifti)
 ################################################################################
 
-FROM buildpack-deps:bullseye as dcm2niixbuild
+FROM buildpack-deps:trixie AS dcm2niixbuild
 
-RUN apt-get update && apt-get install -y \
-	cmake \
-	git
+RUN <<EOF
+set -e
+apt-get update
+apt-get install -y cmake git
+EOF
 
 RUN git clone https://github.com/rordenlab/dcm2niix.git
-RUN cd dcm2niix && \
-	mkdir build && \
-	cd build && \
-	cmake -DUSE_JPEGLS=ON .. && \
-	make
+RUN <<EOF
+set -e
+cd dcm2niix
+mkdir build
+cd build
+cmake -DUSE_JPEGLS=ON ..
+make
+EOF
 
 ################################################################################
 ################################################################################
@@ -55,41 +71,43 @@ RUN cd dcm2niix && \
 ################################################################################
 ################################################################################
 ################################################################################
-FROM python:3.14-trixie
+FROM python:3.14-slim-trixie
 
-RUN apt-get update && apt-get install -y \
-	libgdcm-tools
-
-
-
-# Base system deps
-
-RUN apt-get update && apt-get install -y \
+# Base system deps and runtime libraries.
+# make is required by cpanm below, even for pure-Perl modules.
+# libopenslide0 is the runtime library for the openslide-python pip package.
+RUN <<EOF
+set -e
+apt-get update
+apt-get install -y --no-install-recommends \
 	time \
 	file \
 	vim \
-	libperl-dev \
 	wget \
-	libssl-dev \
-	python3 \
-	python3-dev \
-	python3-cairo-dev \
-	libcairo2-dev \
+	make \
 	postgresql-client \
-	file \
 	tzdata \
 	unzip \
-	python3-pip \
-	python3-psycopg2 \
-	python3-numpy \
 	redis-tools \
 	procps \
 	rclone \
-	less
+	less \
+	imagemagick \
+	libgdcm-tools \
+	libopenslide0
+rm -rf /var/lib/apt/lists/*
+EOF
+
+# Some scripts have a hardcoded #!/usr/bin/python3, which the python
+# base image does not provide
+RUN ln -s /usr/local/bin/python3 /usr/bin/python3
 
 
 # Perl modules from repos
-RUN apt-get update && apt-get install -y \
+RUN <<EOF
+set -e
+apt-get update
+apt-get install -y \
 	libdata-uuid-perl \
 	libdbd-pg-perl \
 	libdbd-mysql-perl \
@@ -110,7 +128,8 @@ RUN apt-get update && apt-get install -y \
 	libjson-perl \
 	libtext-diff-perl \
 	cpanminus
-
+rm -rf /var/lib/apt/lists/*
+EOF
 
 
 # Perl modules that are not in system repositories
@@ -120,11 +139,12 @@ RUN cpanm --notest \
 
 
 # Install needed python utils
-RUN pip3 install \
+RUN pip3 install --no-cache-dir \
 	xlsx2csv \
 	mysql-connector \
 	python-box \
 	pydicom \
+	psycopg2-binary \
 	redis \
 	tifffile \
 	imagecodecs \
@@ -134,17 +154,17 @@ RUN pip3 install \
 	nibabel \
 	pyarrow \
 	storable \
-	psycopg2-binary
+	Pillow
 
 COPY --from=pydicom-bg-builder /build/pydicom-background-editor/dist/*.whl /
-RUN pip install /*.whl
+RUN pip install --no-cache-dir /*.whl
 
 RUN addgroup --gid 2123 fakeposda
 RUN adduser --system --ingroup fakeposda --uid 1000 posda
 
 COPY --chown=posda:fakeposda fastapi/app /fastapi/
 COPY --chown=posda:fakeposda fastapi/start_api.sh /
-RUN pip3 install -r /fastapi/requirements.txt
+RUN pip3 install --no-cache-dir -r /fastapi/requirements.txt
 
 # Work around issue with volume persmissions
 RUN mkdir -p /home/posda/cache
@@ -155,24 +175,13 @@ COPY docker-entrypoint /
 COPY --chown=posda:fakeposda posda.env /home/posda/posdatools/
 
 WORKDIR /home/posda
-ENV PYTHONPATH /home/posda/posdatools/python
+ENV PYTHONPATH=/home/posda/posdatools/python
 
-COPY --from=d3tbuild /usr/local/bin/* /usr/local/bin/
+# Only these two dicom3tools binaries are actually used
+COPY --from=d3tbuild /usr/local/bin/dciodvfy /usr/local/bin/dcentvfy /usr/local/bin/
 
 # copy dcm2niix into place
 COPY --from=dcm2niixbuild /dcm2niix/build/bin/dcm2niix /usr/local/bin/dcm2niix
-
-## Add Imagemagick
-RUN apt-get update && apt-get install -y \
-	imagemagick \
-	libjpeg-dev
-RUN pip3 install Pillow
-
-# Required for python-openslide above
-RUN apt-get install -y libopenslide-dev
-
-RUN apt-get clean && \
-	rm -rf /var/lib/{apt,dpkg,cache,log}/
 
 # Copy actual posdatools last, to speed up rebuilds
 COPY --chown=posda:fakeposda posdatools /home/posda/posdatools
