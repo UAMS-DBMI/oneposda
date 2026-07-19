@@ -2,10 +2,10 @@ include ../VERSION
 
 TAG=$(shell git rev-parse --short HEAD)
 IMAGE_NAME=tcia/lanterna
-ALLFILES:=$(shell find . -type file)
+ALLFILES:=$(shell find . -type f)
 
 
-last_built: Dockerfile $(ALLFILES) dcm4che-5.22.1-bin.zip
+last_built: Dockerfile $(ALLFILES) dcm4che-5.22.1-bin.zip ../VERSION
 	docker build .  \
 		-t ${IMAGE_NAME}:latest \
 		-t ${IMAGE_NAME}:${TAG} \
