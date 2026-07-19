@@ -7,7 +7,7 @@ metadata:
     app.kubernetes.io/name: thumbs
     app.kubernetes.io/part-of: posda
 spec:
-  replicas: 4
+  replicas: 6
   selector:
     matchLabels:
       app.kubernetes.io/name: thumbs
@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: thumbs
-          image: tcia/lanterna:1.0.3
+          image: tcia/lanterna:1.1.3
           command: ["/scripts/thumbs.py"]
           envFrom:
             - secretRef:
@@ -56,10 +56,10 @@ spec:
               mountPath: /nas/ross/posda-intermediate-archive
               mountPropagation: HostToContainer
             # code-on-PVC: lanterna scripts
-            - name: posda-deploy
-              mountPath: /scripts
-              subPath: oneposda/lanterna
-              readOnly: true
+            # - name: posda-deploy
+            #   mountPath: /scripts
+            #   subPath: oneposda/lanterna
+            #   readOnly: true
             - name: posda-deploy
               mountPath: /home/posda/posdatools
               subPath: oneposda/posda/posdatools

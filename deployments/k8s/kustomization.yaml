@@ -10,13 +10,13 @@ resources:
   - apps/redis.yaml
   - apps/posda.yaml
 #  - apps/posda-workers.yaml
-#  - apps/posda-fast-file-process.yaml
+  - apps/posda-fast-file-process.yaml
   - apps/posda-api.yaml
-#  - apps/thumbs.yaml
-#  - apps/magicka.yaml
+  - apps/thumbs.yaml
+  - apps/magicka.yaml
 #  - apps/steve.yaml
 #  - apps/ream.yaml
-#  - apps/kaleidoscope.yaml
+  - apps/kaleidoscope.yaml
   - apps/web.yaml
 
 # jobs/sync-deploy.yaml is deliberately NOT a resource here: it is applied on

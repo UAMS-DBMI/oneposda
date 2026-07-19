@@ -42,7 +42,7 @@ spec:
     spec:
       containers:
         - name: posda
-          image: tcia/posda:1.0.4
+          image: tcia/posda:1.1.0
           # image ENTRYPOINT is /docker-entrypoint; default CMD "main"
           envFrom:
             - secretRef:

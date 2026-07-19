@@ -25,7 +25,7 @@ spec:
         runAsGroup: 2123
       containers:
         - name: web
-          image: tcia/posda_web:1.0.33
+          image: tcia/posda_web:1.0.35
           ports:
             - name: http
               containerPort: 8080

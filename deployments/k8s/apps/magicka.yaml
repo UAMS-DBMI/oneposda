@@ -7,7 +7,7 @@ metadata:
     app.kubernetes.io/name: magicka
     app.kubernetes.io/part-of: posda
 spec:
-  replicas: 1
+  replicas: 3
   selector:
     matchLabels:
       app.kubernetes.io/name: magicka
@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: magicka
-          image: tcia/lanterna:1.0.3
+          image: tcia/lanterna:1.1.0
           command: ["/scripts/magicka.py"]
           envFrom:
             - secretRef:

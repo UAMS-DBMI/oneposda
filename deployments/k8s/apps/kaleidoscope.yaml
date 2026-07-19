@@ -22,7 +22,7 @@ spec:
       containers:
         - name: kaleidoscope
           # prod pins 1.0.14 (dev compose has 1.0.18) -- keeping prod's pin
-          image: tcia/kaleidoscope:1.0.18
+          image: tcia/kaleidoscope:1.0.14
           envFrom:
             - secretRef:
                 name: database-env
