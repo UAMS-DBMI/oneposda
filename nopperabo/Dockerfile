@@ -1,5 +1,5 @@
 ###############################################################################
-FROM python:3.12-slim as builder-parent
+FROM python:3.14-slim-trixie AS builder-parent
 
 RUN pip install build
 RUN apt-get update \
@@ -8,7 +8,7 @@ RUN apt-get update \
 	&& rm -rf /var/lib/apt/lists/*
 
 ###############################################################################
-FROM builder-parent as builder
+FROM builder-parent AS builder
 
 ARG GIT_COMMIT
 ARG SETUPTOOLS_SCM_PRETEND_VERSION=0.1.dev+g$GIT_COMMIT
@@ -18,7 +18,7 @@ RUN rm -f /masker/.git
 RUN cd /masker && python -m build
 
 ###############################################################################
-FROM python:3.12-slim
+FROM python:3.14-slim-trixie
 
 COPY --from=builder /masker/dist/* /masker/
 
