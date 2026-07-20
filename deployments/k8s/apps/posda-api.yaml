@@ -21,6 +21,12 @@ spec:
         - name: api
           image: tcia/posda:1.0.4
           args: ["api"]
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 2Gi
           envFrom:
             - secretRef:
                 name: database-env

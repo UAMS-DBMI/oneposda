@@ -21,6 +21,12 @@ spec:
         - name: thumbs
           image: tcia/lanterna:1.1.3
           command: ["/scripts/thumbs.py"]
+          resources:
+            requests:
+              cpu: 500m
+              memory: 128Mi
+            limits:
+              memory: 1Gi
           envFrom:
             - secretRef:
                 name: database-env

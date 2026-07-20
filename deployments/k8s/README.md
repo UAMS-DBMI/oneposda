@@ -34,6 +34,29 @@ for production.
   Install Rancher's Logging app (or a Fluent Bit DaemonSet) with a GELF
   output pointed at tcia-graylog-1 to restore shipping to Graylog.
 
+## Resource requests/limits
+
+Values (2026-07-19) were measured with Rancher Monitoring (Prometheus,
+`cattle-monitoring-system`) during a representative ingest: memory requests
+near steady-state, memory limits comfortably above the observed working-set
+peak (DICOM processing is spiky; an OOM-kill loop mid-ingest is worse than
+temporary overuse), CPU requests near sustained (not peak) usage. There are
+deliberately **no CPU limits** — throttling would only slow ingests;
+requests already guarantee fair shares under contention.
+
+To re-measure after workload changes, run these against Prometheus as
+*instant* queries with the lookback window covering the run:
+
+    # peak memory (Mi) per pod -- what limits are judged against
+    sort_desc(max by (pod) (max_over_time(
+        container_memory_working_set_bytes{namespace="posda", container!=""}[6h]
+    )) / 1024 / 1024)
+
+    # sustained CPU (cores) per pod -- basis for requests
+    sort_desc(max by (pod) (avg_over_time(
+        rate(container_cpu_usage_seconds_total{namespace="posda", container!=""}[5m])[6h:5m]
+    )))
+
 ## One-time setup
 
 ### 1. Node prerequisites (every node)

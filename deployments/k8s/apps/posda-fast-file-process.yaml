@@ -21,6 +21,13 @@ spec:
         - name: file-process
           image: tcia/posda:1.0.4
           args: ["file-process"]
+          # Sits at ~600Mi even when idle; the busiest pod during an ingest.
+          resources:
+            requests:
+              cpu: "4"
+              memory: 2Gi
+            limits:
+              memory: 5Gi
           envFrom:
             - secretRef:
                 name: database-env

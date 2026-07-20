@@ -37,6 +37,14 @@ spec:
           env:
             - name: POSDA_WORKER_PRIORITY
               value: "0"
+          # Workers run arbitrary queued jobs (tar builds, checksums, DICOM
+          # edits), so the limit leaves room well above the idle footprint.
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 4Gi
           volumeMounts:
             - name: nas-public
               mountPath: /nas/public
@@ -149,6 +157,13 @@ spec:
           env:
             - name: POSDA_WORKER_PRIORITY
               value: "1"
+          # High-priority queue gets a bigger CPU share than worker-low.
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              memory: 4Gi
           volumeMounts:
             - name: nas-public
               mountPath: /nas/public

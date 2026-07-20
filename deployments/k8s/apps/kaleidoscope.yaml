@@ -23,6 +23,12 @@ spec:
         - name: kaleidoscope
           # prod pins 1.0.14 (dev compose has 1.0.18) -- keeping prod's pin
           image: tcia/kaleidoscope:1.0.14
+          resources:
+            requests:
+              cpu: 500m
+              memory: 128Mi
+            limits:
+              memory: 1Gi
           envFrom:
             - secretRef:
                 name: database-env

@@ -26,6 +26,12 @@ spec:
       containers:
         - name: web
           image: tcia/posda_web:1.0.35
+          resources:
+            requests:
+              cpu: 500m
+              memory: 32Mi
+            limits:
+              memory: 512Mi
           ports:
             - name: http
               containerPort: 8080

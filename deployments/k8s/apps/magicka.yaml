@@ -21,6 +21,14 @@ spec:
         - name: magicka
           image: tcia/lanterna:1.1.0
           command: ["/scripts/magicka.py"]
+          # Projection generation loads whole series into memory; limit sized
+          # for large multi-frame volumes.
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+            limits:
+              memory: 3Gi
           envFrom:
             - secretRef:
                 name: database-env

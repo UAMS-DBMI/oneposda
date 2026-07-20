@@ -28,6 +28,12 @@ spec:
           args:
             - /home/posda/posdatools/systemd/run_in_posda_env.sh
             - /steve/steve.py
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
           envFrom:
             - secretRef:
                 name: database-env

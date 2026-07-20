@@ -44,6 +44,14 @@ spec:
         - name: posda
           image: tcia/posda:1.1.0
           # image ENTRYPOINT is /docker-entrypoint; default CMD "main"
+          # Forks the DICOM receiver and all 646xx sub-apps, so memory scales
+          # with concurrent connections -- hence the wide request/limit gap.
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              memory: 4Gi
           envFrom:
             - secretRef:
                 name: database-env
