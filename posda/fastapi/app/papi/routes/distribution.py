@@ -39,12 +39,14 @@ class DatasetReleaseInsert(BaseModel):
     release_number: int
     release_date: datetime
     release_notes: str
+    release_doi: Optional[str] = None
 
 class DatasetReleaseUpdate(BaseModel):
     dataset_id: Optional[int] = None
     release_number: Optional[int] = None
     release_date: Optional[datetime] = None
     release_notes: Optional[str] = None
+    release_doi: Optional[str] = None
 
 class DatasetReleaseRecordsetRequest(BaseModel):
     recordset_release_ids: list[int]
@@ -100,6 +102,7 @@ class RecordsetReleaseInsert(BaseModel):
     release_number: int
     release_date: datetime
     release_notes: str
+    release_doi: Optional[str] = None
 
 class DatasetReleaseTransferUpdate(BaseModel):
     transfer_name: Optional[str] = None
@@ -719,7 +722,8 @@ async def get_releases_for_dataset(
             d.dataset_id,
             dr.release_number,
             dr.release_date,
-            dr.release_notes
+            dr.release_notes,
+            dr.release_doi
         from
             dataset d
             join dataset_release dr using (dataset_id)
@@ -749,15 +753,16 @@ async def create_dataset_release(
     db: Database = Depends()):
 
     query = """\
-        insert into dataset_release (dataset_id, release_number, release_date, release_notes, when_created, who_created, when_updated, who_updated)
-        values ($1, $2, $3, $4, now(), $5, now(), $5)
-        returning dataset_release_id, dataset_id, release_number, release_date, release_notes
+        insert into dataset_release (dataset_id, release_number, release_date, release_notes, release_doi, when_created, who_created, when_updated, who_updated)
+        values ($1, $2, $3, $4, $5, now(), $6, now(), $6)
+        returning dataset_release_id, dataset_id, release_number, release_date, release_notes, release_doi
     """
     values = [
         dataset_id,
         payload.release_number,
         payload.release_date,
         payload.release_notes,
+        payload.release_doi,
         current_user.user_id,
     ]
 
@@ -783,6 +788,7 @@ async def get_dataset_release(release_id: int, db: Database = Depends()):
             dr.release_number,
             dr.release_date,
             dr.release_notes,
+            dr.release_doi,
             dr.when_created,
             dr.who_created,
             dr.when_updated,
@@ -833,6 +839,11 @@ async def update_dataset_release(
         values.append(payload.release_notes)
         idx += 1
 
+    if payload.release_doi is not None:
+        updates.append(f"release_doi = ${idx}")
+        values.append(payload.release_doi)
+        idx += 1
+
     if not updates:
         api_error("VALIDATION_ERROR", "No dataset release fields were provided", {}, 422)
 
@@ -853,6 +864,7 @@ async def update_dataset_release(
             release_number,
             release_date,
             release_notes,
+            release_doi,
             when_created,
             who_created,
             when_updated,
@@ -1572,6 +1584,7 @@ async def get_recordset_releases(recordset_id: int, db: Database = Depends()):
             r.release_number,
             r.release_date,
             r.release_notes,
+            r.release_doi,
             r.when_created,
             r.who_created,
             r.when_updated,
@@ -1588,6 +1601,7 @@ async def get_recordset_releases(recordset_id: int, db: Database = Depends()):
             r.release_number,
             r.release_date,
             r.release_notes,
+            r.release_doi,
             r.when_created,
             r.who_created,
             r.when_updated,
@@ -2563,12 +2577,13 @@ async def create_recordset_release(
             release_number,
             release_date,
             release_notes,
+            release_doi,
             when_created,
             who_created,
             when_updated,
             who_updated
         )
-        values ($1, $2, $3, $4, now(), $5, now(), $5)
+        values ($1, $2, $3, $4, $5, now(), $6, now(), $6)
         returning recordset_release_id;
     """
 
@@ -2605,6 +2620,7 @@ async def create_recordset_release(
                 payload.release_number,
                 payload.release_date,
                 payload.release_notes,
+                payload.release_doi,
                 current_user.user_id,
             )
 
@@ -2648,6 +2664,7 @@ async def get_recordset_release(release_id: int, db: Database = Depends()):
             r.release_number,
             r.release_date,
             r.release_notes,
+            r.release_doi,
             r.when_created,
             r.who_created,
             r.when_updated,
@@ -2662,6 +2679,7 @@ async def get_recordset_release(release_id: int, db: Database = Depends()):
             r.release_number,
             r.release_date,
             r.release_notes,
+            r.release_doi,
             r.when_created,
             r.who_created,
             r.when_updated,
