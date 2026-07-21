@@ -1,13 +1,9 @@
 DROP TABLE IF EXISTS public.transfer_recordset CASCADE;
-DROP TABLE IF EXISTS public.transfer_idc_file CASCADE;
+DROP TABLE IF EXISTS public.transfer_file CASCADE;
 DROP TABLE IF EXISTS public.transfer_idc CASCADE;
-DROP TABLE IF EXISTS public.transfer_gc_file CASCADE;
 DROP TABLE IF EXISTS public.transfer_gc CASCADE;
-DROP TABLE IF EXISTS public.transfer_aspera_file CASCADE;
 DROP TABLE IF EXISTS public.transfer_aspera CASCADE;
-DROP TABLE IF EXISTS public.transfer_wp_file CASCADE;
 DROP TABLE IF EXISTS public.transfer_wp CASCADE;
-DROP TABLE IF EXISTS public.transfer_nbia_file CASCADE;
 DROP TABLE IF EXISTS public.transfer_nbia CASCADE;
 DROP TABLE IF EXISTS public.recordset_draft_file CASCADE;
 DROP TABLE IF EXISTS public.recordset_draft CASCADE;
