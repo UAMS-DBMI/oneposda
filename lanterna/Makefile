@@ -1,21 +1,10 @@
-include ../VERSION
+IMAGE_NAME := lanterna
 
-TAG=$(shell git rev-parse --short HEAD)
-IMAGE_NAME=tcia/lanterna
-ALLFILES:=$(shell find . -type f)
+include ../common.mk
 
-
-last_built: Dockerfile $(ALLFILES) dcm4che-5.22.1-bin.zip ../VERSION
-	docker build .  \
-		-t ${IMAGE_NAME}:latest \
-		-t ${IMAGE_NAME}:${TAG} \
-		-t ${IMAGE_NAME}:${POSDA_IMG_VERSION} 
-	date > last_built
-
-push: last_built
-	docker image push ${IMAGE_NAME}:latest
-	docker image push ${IMAGE_NAME}:${TAG}
-	docker image push ${IMAGE_NAME}:${POSDA_IMG_VERSION} 
+build: dcm4che-5.22.1-bin.zip
 
 dcm4che-5.22.1-bin.zip: 
 	curl "https://master.dl.sourceforge.net/project/dcm4che/dcm4che3/5.22.1/dcm4che-5.22.1-bin.zip?viasf=1" --output $@
+dcm4che-5.34.3-bin.zip: 
+	curl "https://master.dl.sourceforge.net/project/dcm4che/dcm4che3/5.34.3/dcm4che-5.34.3-bin.zip?viasf=1" --output $@

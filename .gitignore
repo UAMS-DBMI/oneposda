@@ -7,6 +7,7 @@ last_built
 /api.env
 /exodus.env
 /ingest.env
+.make
 .rediscli_history
 /tags
 

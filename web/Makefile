@@ -1,36 +1,17 @@
-include ../VERSION
+IMAGE_NAME := posda_web
 
-TAG=$(shell git rev-parse --short HEAD)
-MIRABELLE_COMMIT=$(shell git --git-dir=mirabelle/.git rev-parse HEAD)
+MIRABELLE_COMMIT := $(shell git --git-dir=mirabelle/.git rev-parse HEAD)
 
-IMAGE_NAME=tcia/posda_web
+# There are some filenames with spaces further down
+MAXDEPTH := 2
 
-.PHONY: push clean
+include ../common.mk
 
-default: build
-
-build: last_built 
-
-last_built: Dockerfile default.conf
+## Must override the standard rule from common.mk so we can include
+## the build-arg for MIRABELLE_COMMIT
+$(STAMP_DIR)/image.stamp: ../common.mk Dockerfile $(shell find . -maxdepth $(MAXDEPTH) -type f -not -name "image.stamp") | $(STAMP_DIR)
 	docker build .  \
-		-t ${IMAGE_NAME}:latest \
-		-t ${IMAGE_NAME}:${TAG} \
-		-t ${IMAGE_NAME}:${POSDA_IMG_VERSION} \
+		-t $(REGISTRY)/${IMAGE_NAME}:${GIT_TAG} \
+		-t $(REGISTRY)/${IMAGE_NAME}:$(POSDA_IMG_VERSION) \
 		--build-arg MIRABELLE_COMMIT="${MIRABELLE_COMMIT}"
-	date > last_built
-
-push: last_built
-	docker image push ${IMAGE_NAME}:${POSDA_IMG_VERSION} 
-	docker image push ${IMAGE_NAME}:${TAG}
-	docker image push ${IMAGE_NAME}:latest
-
-clean:
-	rm -f last_built
-
-
-dev: Dockerfile
-	docker run -it \
-		-p 4200:4200 \
-		-v $(PWD):/work \
-		-w /work \
-		node:16-alpine sh
+	touch $@

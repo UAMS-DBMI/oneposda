@@ -1,6 +1,9 @@
-include ../VERSION
+IMAGE_NAME := nopperabo
 
-.PHONY: build clean
+default_override: build-special
+include ../common.mk
+
+.PHONY: build-special push
 
 SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MASKER := $(shell git rev-parse HEAD)
 
@@ -18,40 +21,12 @@ dist/nopperabo-0.1.0-py3-none-any.whl: masker/dist/masker-1.0.3-py3-none-any.whl
 # Build actual docker image
 # carefully get the git commit from the masker submodule
 .ONESHELL:
-build: Dockerfile # masker/dist/masker-1.0.3-py3-none-any.whl dist/nopperabo-0.1.0-py3-none-any.whl
-	docker build --build-arg GIT_COMMIT=$(shell git --git-dir=masker/.git rev-parse --short HEAD) -t tcia/nopperabo:${POSDA_IMG_VERSION} .
+build-special: Dockerfile # masker/dist/masker-1.0.3-py3-none-any.whl dist/nopperabo-0.1.0-py3-none-any.whl
+	docker build --build-arg GIT_COMMIT=$(shell git --git-dir=masker/.git rev-parse --short HEAD) \
+		-t $(REGISTRY)/$(IMAGE_NAME):${POSDA_IMG_VERSION} \
+		-t $(REGISTRY)/${IMAGE_NAME}:${GIT_TAG} \
+		.
 
-run: 
-	docker run \
-		-it \
-		--rm \
-		tcia/nopperabo:${POSDA_IMG_VERSION} --hostname tcia-posda-rh-1.ad.uams.edu --token "e9a63bc2-bfa5-4299-afb3-c844fb2ef38b" --debug true
-run-local: 
-	docker run \
-		-it \
-		--rm \
-		--network oneposda_default \
-		-e LOGURU_LEVEL=INFO \
-		-e POSDA_EXTERNAL_HOSTNAME=web:8080 \
-		-e POSDA_API_SYSTEM_TOKEN=e9a63bc2-bfa5-4299-afb3-c844fb2ef38b \
-		tcia/nopperabo:${POSDA_IMG_VERSION}
-
-test:
-	docker run \
-		-it \
-		--rm \
-		tcia/nopperabo:${POSDA_IMG_VERSION} --help
-bash:
-	docker run \
-		-it \
-		-v ${PWD}:/scripts \
-		--network oneposda_default \
-		--entrypoint /bin/bash \
-		tcia/nopperabo:${POSDA_IMG_VERSION}
-
-clean:
-	rm -rf dist
-	rm -rf masker/dist
-
-push: build
-	docker image push tcia/nopperabo:${POSDA_IMG_VERSION}
+push: 
+	docker image push $(REGISTRY)/${IMAGE_NAME}:${GIT_TAG}
+	docker image push $(REGISTRY)/${IMAGE_NAME}:${POSDA_IMG_VERSION} 
