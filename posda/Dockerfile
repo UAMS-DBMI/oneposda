@@ -20,25 +20,22 @@ EOF
 FROM buildpack-deps:trixie AS d3tbuild
 
 RUN <<EOF
-set -e
-apt-get update
-apt-get install -y xutils-dev
+	set -e
+	apt-get update
+	apt-get install -y xutils-dev
 EOF
 
 RUN mkdir /build
-COPY get-latest-dicom3tools.sh /build/
-RUN /build/get-latest-dicom3tools.sh
+RUN git clone https://code.imphub.org/scm/pt/dicom3tools.git /build/dicom3tools
 
 RUN <<EOF
-set -e
-cd /build
-tar xf tools.tar.bz2
-cd dicom3tools*
-./Configure
-imake -I./config
-make -j $(nproc) World
-make -j $(nproc)
-make install
+	set -e
+	cd /build/dicom3tools/src
+	./Configure
+	imake -I./config
+	make -j $(nproc) World
+	make -j $(nproc)
+	make install
 EOF
 
 ################################################################################
