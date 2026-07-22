@@ -1,0 +1,825 @@
+#!/usr/bin/env python3
+"""Full disk/directory import utility for Posda.
+
+Combines the scan/report/import workflows into a single command:
+
+    posda-import scan /storage             # walk a tree -> files.plist
+    find /storage -name '*.dcm' | \\
+        posda-import scan -                # read filenames from stdin
+    posda-import report files.plist        # size statistics
+    posda-import import files.plist        # upload each file to Posda
+    posda-import import files.plist --in-place
+
+A "plist" is a text file with one JSON object per line, each holding the
+filename, size and ctime of a file found during a scan.
+"""
+
+from __future__ import annotations
+
+import argparse
+import enum
+import hashlib
+import json
+import math
+import os
+import random
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
+from typing import Any, TextIO
+
+# Transfer syntaxes Posda accepts without decompression: explicit VR little
+# endian, and implicit VR little endian.
+RAW_TRANSFER_SYNTAXES = frozenset({"1.2.840.10008.1.2.1", "1.2.840.10008.1.2"})
+
+DEFAULT_PLIST = "files.plist"
+DEFAULT_BASE_URL = "http://localhost"
+
+DEFAULT_RETRIES = 5
+DEFAULT_RETRY_DELAY = 1.0
+MAX_RETRY_DELAY = 60.0
+
+# Statuses worth retrying: the request may well succeed later. Other 4xx
+# responses mean Posda rejected the request itself, and retrying it
+# unchanged would just fail the same way.
+RETRYABLE_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+
+# The progress bar currently drawn on stderr, if any. Tracked so that log
+# messages can wipe it before writing and redraw it afterwards, instead of
+# leaving half a bar in the middle of the output.
+_active_progress: ProgressBar | None = None
+
+
+def _print_around_progress(*args: Any, stream: TextIO) -> None:
+    """Write a line, wiping and redrawing the progress bar around it."""
+    if _active_progress is not None:
+        _active_progress.clear()
+    print(*args, file=stream)
+    if _active_progress is not None:
+        _active_progress.render(force=True)
+
+
+def printe(*args: Any) -> None:
+    """Print, but to stderr, without trampling an active progress bar."""
+    _print_around_progress(*args, stream=sys.stderr)
+
+
+def printo(*args: Any) -> None:
+    """Print to stdout without trampling an active progress bar."""
+    _print_around_progress(*args, stream=sys.stdout)
+
+
+# ---------------------------------------------------------------------------
+# progress
+# ---------------------------------------------------------------------------
+
+
+def format_duration(seconds: float) -> str:
+    """Format a number of seconds as a compact human readable duration."""
+    if seconds < 0 or not math.isfinite(seconds):
+        return "--"
+
+    seconds = int(seconds)
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    if minutes:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
+
+
+class ProgressBar:
+    """A single-line progress bar drawn on stderr.
+
+    When stderr is not a terminal (a log file, a pipe) redrawing in place
+    would just produce noise, so progress is emitted as ordinary lines at
+    a coarse interval instead.
+    """
+
+    MIN_REDRAW_INTERVAL = 0.1  # seconds, when interactive
+    LOG_INTERVAL = 0.02  # fraction of total, when not interactive
+
+    def __init__(self, total: int, stream: TextIO | None = None) -> None:
+        self.total = total
+        self.stream = stream if stream is not None else sys.stderr
+        self.interactive = self.stream.isatty()
+        self.count = 0
+        self.status = ""
+        self.started = time.monotonic()
+        self.last_render = 0.0
+        self.last_logged_fraction = -1.0
+        self.drawn = False
+
+    @property
+    def fraction(self) -> float:
+        if self.total <= 0:
+            return 0.0
+        return min(self.count / self.total, 1.0)
+
+    def eta(self) -> float:
+        """Seconds remaining, estimated from the average rate so far."""
+        elapsed = time.monotonic() - self.started
+        if self.count == 0 or self.total <= 0:
+            return math.inf
+        return (elapsed / self.count) * max(self.total - self.count, 0)
+
+    def advance(self, status: str = "") -> None:
+        """Record one completed item and redraw if it's time to."""
+        self.count += 1
+        self.status = status
+        self.render()
+
+    def _line(self) -> str:
+        percent = f"{self.fraction * 100:5.1f}%"
+        counts = f"{self.count:,}/{self.total:,}"
+        tail = f"{percent} {counts}"
+        if self.status:
+            tail += f"  {self.status}"
+        tail += f"  eta {format_duration(self.eta())}"
+
+        if not self.interactive:
+            return tail
+
+        # Give the bar whatever width is left over, within reason.
+        width = shutil.get_terminal_size((80, 24)).columns
+        bar_width = max(min(width - len(tail) - 4, 40), 10)
+        filled = int(bar_width * self.fraction)
+        bar = "=" * filled + " " * (bar_width - filled)
+        return f"[{bar}] {tail}"
+
+    def render(self, force: bool = False) -> None:
+        now = time.monotonic()
+
+        if self.interactive:
+            if not force and now - self.last_render < self.MIN_REDRAW_INTERVAL:
+                return
+            self.last_render = now
+            # \x1b[K clears from the cursor to the end of the line, so a
+            # shorter line can't leave debris from a longer previous one.
+            self.stream.write("\r" + self._line() + "\x1b[K")
+            self.stream.flush()
+            self.drawn = True
+            return
+
+        # Non-interactive: one line per LOG_INTERVAL of progress.
+        if not force and self.fraction - self.last_logged_fraction < self.LOG_INTERVAL:
+            return
+        self.last_logged_fraction = self.fraction
+        self.stream.write(self._line() + "\n")
+        self.stream.flush()
+
+    def clear(self) -> None:
+        """Erase the bar so something else can write to the stream."""
+        if self.interactive and self.drawn:
+            self.stream.write("\r\x1b[K")
+            self.stream.flush()
+            self.drawn = False
+
+    def close(self) -> None:
+        """Draw the final state and move off the bar's line."""
+        self.render(force=True)
+        if self.interactive and self.drawn:
+            self.stream.write("\n")
+            self.stream.flush()
+            self.drawn = False
+
+
+def count_lines(filename: str) -> int:
+    """Count the lines in a file, reading it in chunks.
+
+    Used to give the progress bar a total. Reading the plist twice costs
+    far less than holding it in memory, and a plain newline count is fast
+    even for a full-disk plist.
+    """
+    total = 0
+    ends_with_newline = True
+
+    with open(filename, "rb") as infile:
+        while chunk := infile.read(1024 * 1024):
+            total += chunk.count(b"\n")
+            ends_with_newline = chunk.endswith(b"\n")
+
+    if not ends_with_newline:
+        total += 1  # a final line with no trailing newline
+
+    return total
+
+
+# ---------------------------------------------------------------------------
+# scan
+# ---------------------------------------------------------------------------
+
+
+def walk_filenames(path: str) -> Iterator[str]:
+    """Yield every file below path, recursively."""
+    for dirpath, _dirnames, filenames in os.walk(path):
+        for filename in filenames:
+            yield os.path.join(dirpath, filename)
+
+
+def read_filenames(stream: TextIO) -> Iterator[str]:
+    """Yield filenames from a stream, one per line."""
+    for line in stream:
+        filename = line.strip()
+        if filename:
+            yield filename
+
+
+def stat_file(filename: str) -> dict[str, Any] | None:
+    """Return the plist entry for one file, or None if it can't be stat'ed."""
+    try:
+        stat = os.stat(filename)
+    except OSError:
+        # Some strange files can't be read; just skip them
+        return None
+
+    return {
+        "filename": filename,
+        "size": stat.st_size,
+        "ctime": stat.st_ctime,
+    }
+
+
+def scan(path: str, output: str) -> None:
+    """Stat every file under path and write a plist.
+
+    A path of "-" reads the filenames from stdin instead of walking a tree.
+    """
+    filenames = read_filenames(sys.stdin) if path == "-" else walk_filenames(path)
+
+    # The plist is often written into the tree being scanned; don't list it.
+    output_path = os.path.abspath(output)
+
+    written = skipped = 0
+    with open(output, "w") as outfile:
+        for filename in filenames:
+            if os.path.abspath(filename) == output_path:
+                continue
+            entry = stat_file(filename)
+            if entry is None:
+                skipped += 1
+                continue
+            outfile.write(json.dumps(entry) + "\n")
+            written += 1
+
+    printe(f"Wrote {written} files to {output} ({skipped} skipped)")
+
+
+# ---------------------------------------------------------------------------
+# report
+# ---------------------------------------------------------------------------
+
+
+def human_size(size: float, precision: int = 2) -> str:
+    """Format a byte count as a human readable string."""
+    suffixes = ["B", "KB", "MB", "GB", "TB"]
+    index = 0
+    while size > 1024 and index < len(suffixes) - 1:
+        index += 1
+        size = size / 1024.0
+    return f"{size:.{precision}f}{suffixes[index]}"
+
+
+def read_plist(filename: str) -> Iterator[dict[str, Any]]:
+    """Yield each entry of a plist file."""
+    with open(filename) as infile:
+        for lineno, line in enumerate(infile, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError as err:
+                raise ValueError(f"{filename}:{lineno}: invalid JSON: {err}") from err
+
+
+@dataclass
+class SizeStats:
+    """Summary statistics over the file sizes in a plist."""
+
+    count: int
+    total: int
+    minimum: int
+    maximum: int
+    mean: float
+    stdev: float
+
+
+def summarize_sizes(sizes: Iterator[int]) -> SizeStats:
+    """Compute size statistics in a single streaming pass.
+
+    Plists for a full disk can hold tens of millions of entries, so the sizes
+    are accumulated rather than held in memory.
+    """
+    count = 0
+    total = 0
+    total_squares = 0
+    minimum = None
+    maximum = None
+
+    for size in sizes:
+        count += 1
+        total += size
+        total_squares += size * size
+        if minimum is None or size < minimum:
+            minimum = size
+        if maximum is None or size > maximum:
+            maximum = size
+
+    if count == 0:
+        raise ValueError("plist contains no entries")
+
+    mean = total / count
+    # Population standard deviation, matching numpy's default.
+    variance = max(total_squares / count - mean * mean, 0.0)
+
+    return SizeStats(
+        count=count,
+        total=total,
+        minimum=minimum,
+        maximum=maximum,
+        mean=mean,
+        stdev=math.sqrt(variance),
+    )
+
+
+def report(plist: str) -> None:
+    """Print a statistical report about the files in a plist."""
+    stats = summarize_sizes(entry["size"] for entry in read_plist(plist))
+
+    print(
+        f"""\
+Report:
+    Length: {stats.count}
+    Total:  {human_size(stats.total)}
+    Min:    {human_size(stats.minimum)}
+    Max:    {human_size(stats.maximum)}
+    Mean:   {human_size(stats.mean)}
+    Std:    {human_size(stats.stdev)}
+"""
+    )
+
+
+# ---------------------------------------------------------------------------
+# import
+# ---------------------------------------------------------------------------
+
+
+def md5sum(filename: str) -> str:
+    """Return the hex md5 digest of a file."""
+    digest = hashlib.md5()
+    with open(filename, "rb") as infile:
+        for chunk in iter(lambda: infile.read(4096), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+class RetryPolicy:
+    """How hard to try before giving up on a request."""
+
+    def __init__(
+        self,
+        retries: int = DEFAULT_RETRIES,
+        delay: float = DEFAULT_RETRY_DELAY,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self.retries = retries
+        self.delay = delay
+        self.sleep = sleep
+
+    def backoff(self, attempt: int) -> float:
+        """Seconds to wait before attempt number `attempt` (1-based retry).
+
+        Doubles each time, capped, with jitter so that a batch of workers
+        hitting a struggling server don't all retry in lockstep.
+        """
+        base = min(self.delay * (2 ** (attempt - 1)), MAX_RETRY_DELAY)
+        return base * random.uniform(0.5, 1.0)
+
+
+def is_retryable(error: Exception | None, status: int | None) -> bool:
+    """Decide whether a failed request is worth repeating."""
+    if error is not None:
+        # Connection resets, timeouts, DNS failures: all transient.
+        return True
+    return status in RETRYABLE_STATUSES
+
+
+def request_with_retry(
+    send: Callable[[], Any], description: str, policy: RetryPolicy
+) -> Any:
+    """Call send() until it returns a non-retryable response.
+
+    `send` must build and issue the request from scratch each time it is
+    called -- it is not enough to reuse a prepared request, because an
+    upload body is a stream that a failed attempt may already have
+    consumed.
+
+    Returns the final response. Raises the last exception if every attempt
+    ended in an error rather than a response.
+    """
+    import requests
+
+    last_error: Exception | None = None
+
+    for attempt in range(policy.retries + 1):
+        if attempt > 0:
+            wait = policy.backoff(attempt)
+            printe(
+                f"Retrying {description} in {wait:.1f}s "
+                f"(attempt {attempt + 1} of {policy.retries + 1})"
+            )
+            policy.sleep(wait)
+
+        response = None
+        last_error = None
+        try:
+            response = send()
+        except requests.RequestException as err:
+            last_error = err
+
+        status = None if response is None else response.status_code
+        if not is_retryable(last_error, status):
+            return response
+
+        reason = last_error if last_error is not None else f"HTTP {status}"
+        printe(f"{description} failed: {reason}")
+
+    if response is not None:
+        return response
+    raise last_error
+
+
+class PosdaImportApi:
+    """Thin client for the Posda import API."""
+
+    def __init__(self, base_url: str, policy: RetryPolicy) -> None:
+        self.url = f"{base_url.rstrip('/')}/papi/v1/import/"
+        self.policy = policy
+
+    def create_event(self, comment: str) -> int:
+        import requests
+
+        response = request_with_retry(
+            lambda: requests.put(self.url + "event", params={"source": comment}),
+            "creating import event",
+            self.policy,
+        )
+        response.raise_for_status()
+        return response.json()["import_event_id"]
+
+    def close_event(self, import_event_id: int) -> None:
+        import requests
+
+        response = request_with_retry(
+            lambda: requests.post(self.url + f"event/{import_event_id}/close"),
+            f"closing import event {import_event_id}",
+            self.policy,
+        )
+        response.raise_for_status()
+
+    def add_file(
+        self, filename: str, import_event_id: int, original_file: str
+    ) -> tuple[int, Any]:
+        """Upload the contents of a file to Posda."""
+        import requests
+
+        params = {
+            "import_event_id": import_event_id,
+            "digest": md5sum(filename),
+            "localpath": original_file,
+        }
+
+        def send() -> Any:
+            # Re-open per attempt: a retried upload needs a body positioned
+            # back at the start of the file.
+            with open(filename, "rb") as infile:
+                return requests.put(self.url + "file", params=params, data=infile)
+
+        response = request_with_retry(send, f"uploading {filename}", self.policy)
+        return self._decode(response)
+
+    def add_file_in_place(self, filename: str, import_event_id: int) -> tuple[int, Any]:
+        """Register a file with Posda without moving or copying it."""
+        import requests
+
+        params = {"import_event_id": import_event_id, "localpath": filename}
+        response = request_with_retry(
+            lambda: requests.post(self.url + "file_in_place", params=params),
+            f"importing {filename} in place",
+            self.policy,
+        )
+        return self._decode(response)
+
+    @staticmethod
+    def _decode(response: Any) -> tuple[int, Any]:
+        try:
+            return response.status_code, response.json()
+        except ValueError:
+            return response.status_code, response.content
+
+
+def get_transfer_syntax(filename: str) -> str | None:
+    """Return the transfer syntax UID of a DICOM file, or None if unreadable."""
+    try:
+        import pydicom
+
+        dataset = pydicom.dcmread(filename)
+        return dataset.file_meta.TransferSyntaxUID
+    except Exception as err:  # pydicom raises a wide variety of errors
+        printe(f"Could not read transfer syntax of {filename}: {err}")
+        return None
+
+
+def decompress_if_needed(filename: str) -> tuple[str | None, str]:
+    """Convert the transfer syntax of a file to raw, if needed.
+
+    The converted file is stored in a temporary location.
+
+    Returns (filename, original_filename). If conversion was necessary,
+    filename is the temporary file, and original_filename is the original
+    name prefixed with "decompressed;" -- Posda uses that prefix to record
+    that the stored bytes differ from the ones on disk. If no conversion was
+    needed, both values are the original filename. If conversion failed,
+    filename is None.
+    """
+    syntax = get_transfer_syntax(filename)
+    if syntax is None or syntax in RAW_TRANSFER_SYNTAXES:
+        return filename, filename
+
+    converted = tempfile.mktemp(prefix="posda-import")
+    subprocess.run(["gdcmconv", "-w", "-i", filename, "-o", converted], check=False)
+
+    if not os.path.exists(converted):
+        printe(f"Decompression failed for {filename} ({syntax})")
+        return None, filename
+
+    return converted, f"decompressed;{filename}"
+
+
+class ImportOutcome(enum.Enum):
+    """What happened to one file."""
+
+    CREATED = "created"  # Posda stored a new file record
+    EXISTING = "existing"  # Posda already had this file
+    FAILED = "failed"
+
+
+@dataclass
+class ImportTally:
+    """Running totals for an import run."""
+
+    created: int = 0
+    existing: int = 0
+    failures: list[str] = field(default_factory=list)
+
+    @property
+    def imported(self) -> int:
+        return self.created + self.existing
+
+    @property
+    def failed(self) -> int:
+        return len(self.failures)
+
+    def record(self, outcome: ImportOutcome, filename: str) -> None:
+        if outcome is ImportOutcome.CREATED:
+            self.created += 1
+        elif outcome is ImportOutcome.EXISTING:
+            self.existing += 1
+        else:
+            self.failures.append(filename)
+
+    def summary(self) -> str:
+        """One-line counts, short enough to sit inside the progress bar."""
+        return (
+            f"new {self.created:,}  existing {self.existing:,}  failed {self.failed:,}"
+        )
+
+
+def import_one_file(
+    api: PosdaImportApi,
+    import_event_id: int,
+    entry: dict[str, Any],
+    in_place: bool,
+    decompress: bool,
+    print_ids: bool = False,
+) -> ImportOutcome:
+    """Import a single plist entry and report what happened to it."""
+    import requests
+
+    filename = entry["filename"]
+
+    try:
+        if in_place:
+            code, result = api.add_file_in_place(filename, import_event_id)
+        else:
+            original_file = filename
+            if decompress:
+                filename, original_file = decompress_if_needed(filename)
+                if filename is None:
+                    return ImportOutcome.FAILED
+            try:
+                code, result = api.add_file(filename, import_event_id, original_file)
+            finally:
+                if original_file.startswith("decompressed;"):
+                    os.unlink(filename)
+    except requests.RequestException as err:
+        # Every retry errored out. Give up on this file, not the whole run.
+        printe(f"Giving up on {filename}: {err}")
+        return ImportOutcome.FAILED
+    except OSError as err:
+        printe(f"Could not read {filename}: {err}")
+        return ImportOutcome.FAILED
+
+    if code != 200:
+        printe(f"{filename}: HTTP {code}: {result}")
+        return ImportOutcome.FAILED
+
+    if print_ids:
+        printo(f"{'C' if result['created'] else ' '}|{result['file_id']}")
+
+    return ImportOutcome.CREATED if result["created"] else ImportOutcome.EXISTING
+
+
+def report_failures(failures: list[str], limit: int = 20) -> None:
+    """Summarize the files that could not be imported."""
+    if not failures:
+        return
+
+    printe(f"\n{len(failures)} file(s) failed to import:")
+    for filename in failures[:limit]:
+        printe(f"    {filename}")
+    if len(failures) > limit:
+        printe(f"    ... and {len(failures) - limit} more")
+
+
+def import_plist(
+    plist: str,
+    base_url: str,
+    comment: str,
+    in_place: bool,
+    decompress: bool,
+    policy: RetryPolicy,
+    print_ids: bool = False,
+    show_progress: bool = True,
+) -> int:
+    """Import every file listed in a plist under a single import event.
+
+    Returns the number of files that failed.
+    """
+    global _active_progress
+
+    total = count_lines(plist)
+    api = PosdaImportApi(base_url, policy)
+    import_event_id = api.create_event(comment)
+
+    # Announce the event id before the work starts: a long import can be
+    # inspected in Posda while it is still running, and if the run dies
+    # this is the id you need to clean up after it.
+    printe(f"Import event {import_event_id}: importing {total:,} files from {plist}")
+
+    tally = ImportTally()
+    progress = ProgressBar(total) if show_progress else None
+    _active_progress = progress
+
+    try:
+        for entry in read_plist(plist):
+            outcome = import_one_file(
+                api, import_event_id, entry, in_place, decompress, print_ids
+            )
+            tally.record(outcome, entry["filename"])
+            if progress is not None:
+                progress.advance(tally.summary())
+    finally:
+        if progress is not None:
+            progress.close()
+        _active_progress = None
+        api.close_event(import_event_id)
+
+    printe(
+        f"Imported {tally.imported:,} of {total:,} files: "
+        f"{tally.created:,} new, {tally.existing:,} already existing, "
+        f"{tally.failed:,} failed"
+    )
+    report_failures(tally.failures)
+    print(import_event_id)
+
+    return tally.failed
+
+
+# ---------------------------------------------------------------------------
+# command line
+# ---------------------------------------------------------------------------
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="posda-import",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    subparsers = parser.add_subparsers(dest="mode", required=True)
+
+    scan_parser = subparsers.add_parser(
+        "scan", help="walk a directory and record every file into a plist"
+    )
+    scan_parser.add_argument(
+        "path", help='directory to walk, or "-" to read filenames from stdin'
+    )
+    scan_parser.add_argument(
+        "-o",
+        "--output",
+        default=DEFAULT_PLIST,
+        help=f"where to write the plist (default: {DEFAULT_PLIST})",
+    )
+
+    report_parser = subparsers.add_parser(
+        "report", help="print size statistics for a plist"
+    )
+    report_parser.add_argument("plist", nargs="?", default=DEFAULT_PLIST)
+
+    import_parser = subparsers.add_parser(
+        "import", help="import every file in a plist into Posda"
+    )
+    import_parser.add_argument("plist", nargs="?", default=DEFAULT_PLIST)
+    import_parser.add_argument(
+        "--in-place",
+        action="store_true",
+        help="register files where they are instead of uploading their contents",
+    )
+    import_parser.add_argument(
+        "--decompress",
+        action="store_true",
+        help="convert non-raw transfer syntaxes with gdcmconv before uploading",
+    )
+    import_parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    import_parser.add_argument("--comment", default="CLI API Import")
+    import_parser.add_argument(
+        "--retries",
+        type=int,
+        default=DEFAULT_RETRIES,
+        help=f"retries after a failed request (default: {DEFAULT_RETRIES}, 0 disables)",
+    )
+    import_parser.add_argument(
+        "--retry-delay",
+        type=float,
+        default=DEFAULT_RETRY_DELAY,
+        help=(
+            "seconds before the first retry, doubling each time up to "
+            f"{MAX_RETRY_DELAY:.0f}s (default: {DEFAULT_RETRY_DELAY})"
+        ),
+    )
+    import_parser.add_argument(
+        "--print-ids",
+        action="store_true",
+        help="print 'C|<file_id>' on stdout for every file, as older versions did",
+    )
+    import_parser.add_argument(
+        "--no-progress", action="store_true", help="don't draw the progress bar"
+    )
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.mode == "scan":
+        scan(args.path, args.output)
+    elif args.mode == "report":
+        report(args.plist)
+    elif args.mode == "import":
+        if args.in_place and args.decompress:
+            parser.error(
+                "--decompress cannot be used with --in-place: an in-place import "
+                "reads the file from disk, so a decompressed copy would be ignored"
+            )
+        if args.retries < 0:
+            parser.error("--retries cannot be negative")
+
+        failed = import_plist(
+            args.plist,
+            args.base_url,
+            args.comment,
+            args.in_place,
+            args.decompress,
+            RetryPolicy(retries=args.retries, delay=args.retry_delay),
+            print_ids=args.print_ids,
+            show_progress=not args.no_progress,
+        )
+        # Non-zero exit so a wrapping script can notice an incomplete import.
+        return 1 if failed else 0
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
