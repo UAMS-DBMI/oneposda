@@ -3460,8 +3460,8 @@ async def generate_idc_dataset_manifest(transfer_id: int, db: Database = Depends
     })
 
 
-@router.post("/transfers/{transfer_id}/idc/recordset-manifest/generate")
-async def generate_idc_recordset_manifest(transfer_id: int, db: Database = Depends()):
+@router.post("/transfers/{transfer_id}/idc/file-manifest/generate")
+async def generate_idc_file_manifest(transfer_id: int, db: Database = Depends()):
     query = """
         WITH files AS (
             SELECT
