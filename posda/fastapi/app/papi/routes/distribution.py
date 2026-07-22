@@ -40,6 +40,7 @@ class DatasetReleaseInsert(BaseModel):
     release_date: datetime
     release_notes: str
     release_doi: Optional[str] = None
+    release_status: Optional[str] = "draft"
 
 class DatasetReleaseUpdate(BaseModel):
     dataset_id: Optional[int] = None
@@ -47,6 +48,7 @@ class DatasetReleaseUpdate(BaseModel):
     release_date: Optional[datetime] = None
     release_notes: Optional[str] = None
     release_doi: Optional[str] = None
+    release_status: Optional[str] = None
 
 class DatasetReleaseRecordsetRequest(BaseModel):
     recordset_release_ids: list[int]
@@ -709,6 +711,226 @@ async def get_recordsets_for_dataset(
     return list_response(records)
 
 
+# A dataset release lifecycle: draft (being assembled) -> released (final on our
+# side) -> live (a destination has published it externally, so the next change
+# needs a new version number rather than an in-place overwrite). Retracted is
+# terminal and withdraws the version.
+DATASET_RELEASE_STATUSES = ("draft", "released", "live", "retracted")
+
+# "Latest release" means the highest release_number that has not been retracted.
+# A draft still counts -- a release being assembled is the one you want to see.
+# Used everywhere latest is resolved so the definition cannot drift; note that
+# datasets/Detail.tsx resolves latest client-side and must match.
+NOT_RETRACTED = "release_status <> 'retracted'"
+
+
+def validate_release_status(value: Optional[str]):
+    if value is not None and value not in DATASET_RELEASE_STATUSES:
+        api_error(
+            "VALIDATION_ERROR",
+            f"release_status must be one of {', '.join(DATASET_RELEASE_STATUSES)}",
+            {"field": "release_status", "value": value},
+            422,
+        )
+
+
+# Recordsets with their current cycle position: open draft, QC rollup over that
+# draft's reviews, latest frozen release, and whether that release is bundled
+# into the dataset's latest release. One row per recordset.
+DATASET_CYCLE_RECORDSETS_SQL = """\
+    with rs as (
+        select rs.recordset_id, rs.recordset_name, rt.recordset_type_name
+        from recordset rs
+        join recordset_type rt using (recordset_type_id)
+        where rs.dataset_id = $1
+    ),
+    open_draft as (
+        select distinct on (d.recordset_id)
+            d.recordset_id,
+            d.recordset_draft_id,
+            d.draft_name,
+            d.draft_status,
+            (select count(*)::int
+               from recordset_draft_file f
+              where f.recordset_draft_id = d.recordset_draft_id) as file_count
+        from recordset_draft d
+        where d.recordset_id in (select recordset_id from rs)
+          and d.draft_status not in ('published', 'deleted')
+        order by d.recordset_id, d.recordset_draft_id desc
+    ),
+    latest_rel as (
+        select distinct on (r.recordset_id)
+            r.recordset_id,
+            r.recordset_release_id,
+            r.release_number,
+            r.release_date
+        from recordset_release r
+        where r.recordset_id in (select recordset_id from rs)
+        order by r.recordset_id, r.release_number desc
+    ),
+    qc as (
+        select
+            od.recordset_id,
+            count(*)::int as reviews_total,
+            count(*) filter (where v.review_status = 'open')::int as reviews_open,
+            count(*) filter (where v.review_status = 'stale')::int as reviews_stale,
+            count(*) filter (where v.review_status = 'complete')::int as reviews_complete,
+            coalesce(sum(s.total), 0)::int as series_total,
+            coalesce(sum(s.pending), 0)::int as series_pending,
+            coalesce(sum(s.approved), 0)::int as series_approved
+        from open_draft od
+        join qc_review v on v.recordset_draft_id = od.recordset_draft_id
+        left join (
+            select qc_review_id,
+                count(*) as total,
+                count(*) filter (where qc_status = 'pending') as pending,
+                count(*) filter (where qc_status = 'approved') as approved
+            from qc_series group by qc_review_id
+        ) s on s.qc_review_id = v.qc_review_id
+        where v.review_status <> 'cancelled'
+        group by od.recordset_id
+    ),
+    bundled as (
+        select drr.recordset_release_id
+        from dataset_release_recordset drr
+        where drr.dataset_release_id = $2
+    )
+    select
+        rs.recordset_id,
+        rs.recordset_name,
+        rs.recordset_type_name,
+        od.recordset_draft_id,
+        od.draft_name,
+        od.draft_status,
+        od.file_count,
+        lr.recordset_release_id,
+        lr.release_number,
+        lr.release_date,
+        coalesce(q.reviews_total, 0) as reviews_total,
+        coalesce(q.reviews_open, 0) as reviews_open,
+        coalesce(q.reviews_stale, 0) as reviews_stale,
+        coalesce(q.reviews_complete, 0) as reviews_complete,
+        coalesce(q.series_total, 0) as series_total,
+        coalesce(q.series_pending, 0) as series_pending,
+        coalesce(q.series_approved, 0) as series_approved,
+        (lr.recordset_release_id is not null
+         and lr.recordset_release_id in (select recordset_release_id from bundled))
+            as in_latest_dataset_release
+    from rs
+    left join open_draft od using (recordset_id)
+    left join latest_rel lr using (recordset_id)
+    left join qc q using (recordset_id)
+    order by rs.recordset_id;
+    """
+
+
+def build_cycle_recordset(row):
+    """Nest one flat cycle row into the recordset shape the UI consumes."""
+    return {
+        "recordset_id": row["recordset_id"],
+        "recordset_name": row["recordset_name"],
+        "recordset_type_name": row["recordset_type_name"],
+        "open_draft": {
+            "recordset_draft_id": row["recordset_draft_id"],
+            "draft_name": row["draft_name"],
+            "draft_status": row["draft_status"],
+            "file_count": row["file_count"],
+        } if row["recordset_draft_id"] is not None else None,
+        "qc": {
+            "reviews_total": row["reviews_total"],
+            "open": row["reviews_open"],
+            "stale": row["reviews_stale"],
+            "complete": row["reviews_complete"],
+            "series_total": row["series_total"],
+            "series_pending": row["series_pending"],
+            "series_approved": row["series_approved"],
+        },
+        "latest_release": {
+            "recordset_release_id": row["recordset_release_id"],
+            "release_number": row["release_number"],
+            "release_date": row["release_date"],
+        } if row["recordset_release_id"] is not None else None,
+        "in_latest_dataset_release": row["in_latest_dataset_release"],
+    }
+
+
+@router.get("/datasets/{dataset_id}/cycle")
+# Release-cycle rollup for a dataset: per-recordset pipeline position (draft ->
+# QC -> frozen), the latest dataset release those releases fan into, and its
+# transfers. Read-only; drives the cycle workspace and derived dashboard tasks.
+async def get_dataset_cycle(dataset_id: int, db: Database = Depends()):
+    dataset_q = """\
+        select d.dataset_id, d.dataset_name, dt.dataset_type_name
+        from dataset d
+        join dataset_type dt using (dataset_type_id)
+        where d.dataset_id = $1;
+        """
+
+    release_q = f"""\
+        select dr.dataset_release_id, dr.release_number, dr.release_date,
+               dr.release_doi, dr.release_status
+        from dataset_release dr
+        where dr.dataset_id = $1
+          and dr.{NOT_RETRACTED}
+        order by dr.release_number desc
+        limit 1;
+        """
+
+    transfers_q = """\
+        select
+            drt.dataset_release_transfer_id,
+            drt.destination_id,
+            td.destination_name,
+            td.destination_abbr,
+            drt.transfer_name,
+            drt.transfer_status
+        from dataset_release_transfer drt
+        join transfer_destination td using (destination_id)
+        where drt.dataset_release_id = $1
+        order by td.destination_name;
+        """
+
+    try:
+        dataset_rows = await db.fetch(dataset_q, [dataset_id])
+    except Exception as e:
+        db_error(e, operation="fetching dataset cycle", context={"dataset_id": dataset_id})
+
+    if not dataset_rows:
+        api_error("NOT_FOUND", "Dataset not found", {"dataset_id": dataset_id}, 404)
+
+    try:
+        release_rows = await db.fetch(release_q, [dataset_id])
+        latest_release = release_rows[0] if release_rows else None
+        latest_release_id = latest_release["dataset_release_id"] if latest_release else None
+
+        recordset_rows = await db.fetch(
+            DATASET_CYCLE_RECORDSETS_SQL, [dataset_id, latest_release_id]
+        )
+
+        transfer_rows = (
+            await db.fetch(transfers_q, [latest_release_id]) if latest_release_id else []
+        )
+    except Exception as e:
+        db_error(e, operation="fetching dataset cycle", context={"dataset_id": dataset_id})
+
+    dataset = dataset_rows[0]
+
+    return item_response({
+        "dataset_id": dataset["dataset_id"],
+        "dataset_name": dataset["dataset_name"],
+        "dataset_type_name": dataset["dataset_type_name"],
+        "recordsets": [build_cycle_recordset(r) for r in recordset_rows],
+        "latest_dataset_release": {
+            "dataset_release_id": latest_release["dataset_release_id"],
+            "release_number": latest_release["release_number"],
+            "release_date": latest_release["release_date"],
+            "release_doi": latest_release["release_doi"],
+            "release_status": latest_release["release_status"],
+            "transfers": [dict(t) for t in transfer_rows],
+        } if latest_release else None,
+    })
+
+
 @router.get("/datasets/{dataset_id}/releases")
 # List dataset releases by dataset
 async def get_releases_for_dataset(
@@ -716,22 +938,28 @@ async def get_releases_for_dataset(
     latest_only: Optional[bool] = Query(default=None),
     db: Database = Depends()):
 
-    query = """\
+    query = f"""\
         select
             dr.dataset_release_id,
             d.dataset_id,
             dr.release_number,
             dr.release_date,
             dr.release_notes,
-            dr.release_doi
+            dr.release_doi,
+            dr.release_status
         from
             dataset d
             join dataset_release dr using (dataset_id)
         where
             d.dataset_id = $1
-        order by
-            dr.release_number desc
         """
+
+    # Latest excludes retracted versions; the unfiltered list keeps them so the
+    # history stays auditable.
+    if latest_only is True:
+        query += f"\n and dr.{NOT_RETRACTED}"
+
+    query += "\norder by dr.release_number desc"
 
     if latest_only is True:
         query += "\nlimit 1"
@@ -752,10 +980,12 @@ async def create_dataset_release(
     current_user: User = logged_in_user,
     db: Database = Depends()):
 
+    validate_release_status(payload.release_status)
+
     query = """\
-        insert into dataset_release (dataset_id, release_number, release_date, release_notes, release_doi, when_created, who_created, when_updated, who_updated)
-        values ($1, $2, $3, $4, $5, now(), $6, now(), $6)
-        returning dataset_release_id, dataset_id, release_number, release_date, release_notes, release_doi
+        insert into dataset_release (dataset_id, release_number, release_date, release_notes, release_doi, release_status, when_created, who_created, when_updated, who_updated)
+        values ($1, $2, $3, $4, $5, $6, now(), $7, now(), $7)
+        returning dataset_release_id, dataset_id, release_number, release_date, release_notes, release_doi, release_status
     """
     values = [
         dataset_id,
@@ -763,6 +993,7 @@ async def create_dataset_release(
         payload.release_date,
         payload.release_notes,
         payload.release_doi,
+        payload.release_status or "draft",
         current_user.user_id,
     ]
 
@@ -789,6 +1020,7 @@ async def get_dataset_release(release_id: int, db: Database = Depends()):
             dr.release_date,
             dr.release_notes,
             dr.release_doi,
+            dr.release_status,
             dr.when_created,
             dr.who_created,
             dr.when_updated,
@@ -844,6 +1076,12 @@ async def update_dataset_release(
         values.append(payload.release_doi)
         idx += 1
 
+    if payload.release_status is not None:
+        validate_release_status(payload.release_status)
+        updates.append(f"release_status = ${idx}")
+        values.append(payload.release_status)
+        idx += 1
+
     if not updates:
         api_error("VALIDATION_ERROR", "No dataset release fields were provided", {}, 422)
 
@@ -865,6 +1103,7 @@ async def update_dataset_release(
             release_date,
             release_notes,
             release_doi,
+            release_status,
             when_created,
             who_created,
             when_updated,

@@ -150,13 +150,16 @@ CREATE  TABLE "public".dataset_release (
 	release_date         timestamptz  NOT NULL  ,
 	release_notes        text    ,
 	release_doi          text    ,
+	release_status       text DEFAULT 'draft'::text NOT NULL  ,
 	when_created         timestamptz    ,
 	who_created          integer    ,
 	when_updated         timestamptz    ,
 	who_updated          integer    ,
 	CONSTRAINT pk_dataset_release PRIMARY KEY ( dataset_release_id ),
-	CONSTRAINT unq_dataset_release_release_doi UNIQUE ( release_doi ) 
+	CONSTRAINT unq_dataset_release_release_doi UNIQUE ( release_doi )
  ) ;
+
+COMMENT ON COLUMN "public".dataset_release.release_status IS 'draft | released | live | retracted';
 
 CREATE UNIQUE INDEX unq_dataset_release_release_number ON "public".dataset_release ( dataset_id, release_number ) ;
 
