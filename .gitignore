@@ -1,4 +1,5 @@
 last_built
+.make
 docker-compose.yaml
 ream.env
 common.env
