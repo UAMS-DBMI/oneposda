@@ -1,29 +1,29 @@
-FROM node:16-alpine as dashboard-builder
+FROM node:16-alpine AS dashboard-builder
 RUN apk --update add make
 COPY dashboard /dashboard
 RUN cd /dashboard && \
     make
 
-FROM node:16-alpine as quince-builder
+FROM node:16-alpine AS quince-builder
 RUN apk --update add make
 COPY quince /quince
 RUN cd /quince && \
 	make
 
-FROM node:16-alpine as roots-builder
+FROM node:16-alpine AS roots-builder
 RUN apk --update add make
 COPY dicom-root /roots
 RUN cd /roots && \
 	make
 
-FROM node:16-alpine as kohlrabi-builder
+FROM node:16-alpine AS kohlrabi-builder
 RUN apk --update add make
 COPY Kohlrabi /kohlrabi
 RUN cd /kohlrabi && \
   make
 
-#FROM node:16-alpine as mirabelle-builder
-FROM oven/bun:1.3-alpine as mirabelle-builder
+#FROM node:16-alpine AS mirabelle-builder
+FROM oven/bun:1.3-alpine AS mirabelle-builder
 RUN apk --update add make
 # receive commit from env and re-export to container
 ARG MIRABELLE_COMMIT=unknown

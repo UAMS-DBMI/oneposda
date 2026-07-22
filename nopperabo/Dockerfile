@@ -23,7 +23,8 @@ FROM python:3.14-slim-trixie
 COPY --from=builder /masker/dist/* /masker/
 
 # # Install masker itself
-RUN PYTHONDONTWRITEBYTECODE=1 pip install --no-cache-dir /masker/*.whl
+RUN PYTHONDONTWRITEBYTECODE=1 pip install --no-cache-dir /masker/*.whl \
+ && rm -f /masker/*.whl
 
 # Install nopperabo and it's deps
 COPY gelf_wrapper.py start.sh pyproject.toml README.md src/nopperabo/nopperabo.py /scripts/
