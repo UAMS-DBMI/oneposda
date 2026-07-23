@@ -47,7 +47,7 @@ def _params(slug: str = None, search: str = None, status: str = "publish,draft",
 async def wp_client():
     async with httpx.AsyncClient(
         auth=(WP_USER, WP_PASSWORD),
-        timeout=30.0
+        timeout=240.0
     ) as client:
         yield client
 

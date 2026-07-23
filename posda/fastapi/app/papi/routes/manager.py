@@ -4,6 +4,7 @@ from typing import Optional
 from pydantic import BaseModel
 
 from .auth import logged_in_user
+from .distribution import api_error, db_error
 from ..util import Database
 from ..util.wp import (
     wp_get, wp_post, wp_patch, wp_delete, wp_get_paged, wp_get_media_paged,
@@ -427,6 +428,59 @@ class WpObjectMapUpdate(BaseModel):
 
 
 # ----------------------------
+# Attach a recordset's Download onto its dataset's WP page
+# ----------------------------
+
+# collection_downloads / result_downloads are plain int arrays of Download
+# CPT post IDs -- confirmed against a live WP response, not embedded objects.
+DATASET_DOWNLOADS_FIELD = {
+    "collection": "collection_downloads",
+    "analysis_result": "result_downloads",
+}
+
+async def _attach_download_to_dataset(db: Database, recordset_id: int, download_wp_object_id: int) -> Optional[str]:
+    """Adds a recordset's linked Download post ID to its dataset's WP page
+    (collection_downloads / result_downloads). Doesn't remove stale IDs left
+    behind when a recordset is unlinked or relinked to a different download --
+    that reconciliation isn't handled yet. Returns an error message on
+    failure, None on success or when there's nothing to attach to."""
+    rs_rows = await db.fetch("SELECT dataset_id FROM recordset WHERE recordset_id = $1", [recordset_id])
+    if not rs_rows:
+        return None
+    dataset_id = rs_rows[0]["dataset_id"]
+
+    map_rows = await db.fetch(
+        "SELECT wp_object_type, wp_object_id FROM wp_object_map "
+        "WHERE posda_object_type = 'dataset' AND posda_object_id = $1",
+        [dataset_id],
+    )
+    if not map_rows:
+        return None  # dataset has no WP page yet -- nothing to attach to
+
+    wp_object_type = map_rows[0]["wp_object_type"]
+    wp_object_id = map_rows[0]["wp_object_id"]
+    field_name = DATASET_DOWNLOADS_FIELD.get(wp_object_type)
+    entry = WP_TYPE_MAP.get(wp_object_type)
+    if not field_name or not entry:
+        return None
+    endpoint_key, _formatter = entry
+
+    try:
+        item = await wp_get(f"{wp_url(endpoint_key)}/{wp_object_id}")
+        if item is None:
+            return f"The dataset's WordPress {wp_object_type} (id={wp_object_id}) no longer exists."
+        current = item.get(field_name) or []
+        if download_wp_object_id in current:
+            return None
+        await wp_patch(f"{wp_url(endpoint_key)}/{wp_object_id}", {field_name: [*current, download_wp_object_id]})
+    except httpx.HTTPStatusError as e:
+        return f"Linked, but could not update the dataset's {field_name}: {e.response.text}"
+    except Exception as e:
+        return f"Linked, but could not update the dataset's {field_name}: {type(e).__name__}: {e}"
+    return None
+
+
+# ----------------------------
 # wp_object_map CRUD
 # ----------------------------
 
@@ -474,7 +528,12 @@ async def create_wp_object_map(payload: WpObjectMapInsert, db: Database = Depend
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
-    return {"data": dict(rows[0])}
+    result = {"data": dict(rows[0])}
+    if payload.posda_object_type == "recordset" and payload.wp_object_type == "download":
+        warning = await _attach_download_to_dataset(db, payload.posda_object_id, payload.wp_object_id)
+        if warning:
+            result["warning"] = warning
+    return result
 
 
 @router.put("/wp-object-map/{map_id}")
@@ -502,7 +561,13 @@ async def update_wp_object_map(map_id: int, payload: WpObjectMapUpdate, db: Data
          payload.wp_view_url         if payload.wp_view_url         is not None else current["wp_view_url"],
          payload.parent_wp_object_id if payload.parent_wp_object_id is not None else current["parent_wp_object_id"]],
     )
-    return {"data": dict(updated[0])}
+    new_row = dict(updated[0])
+    result = {"data": new_row}
+    if new_row["posda_object_type"] == "recordset" and new_row["wp_object_type"] == "download":
+        warning = await _attach_download_to_dataset(db, new_row["posda_object_id"], new_row["wp_object_id"])
+        if warning:
+            result["warning"] = warning
+    return result
 
 
 @router.delete("/wp-object-map/{map_id}")
@@ -513,6 +578,111 @@ async def delete_wp_object_map(map_id: int, db: Database = Depends()):
     if not rows:
         raise HTTPException(status_code=404, detail="Mapping not found")
     return {"data": {"deleted": True, "map_id": map_id}}
+
+
+# ----------------------------
+# Create a new WP object (draft) and link it
+# ----------------------------
+
+class WpObjectCreate(BaseModel):
+    posda_object_type: str
+    posda_object_id: int
+    wp_object_type: str
+    title: str
+    slug: Optional[str] = None
+    parent_wp_object_id: Optional[int] = None
+
+class WpObjectStatusUpdate(BaseModel):
+    status: str  # "draft" | "publish"
+
+def _slugify(title: str) -> str:
+    import re
+    return re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+
+@router.post("/wp-objects")
+async def create_wp_object(payload: WpObjectCreate, db: Database = Depends()):
+    entry = WP_TYPE_MAP.get(payload.wp_object_type)
+    if not entry:
+        api_error("VALIDATION_ERROR", f"Unsupported wp_object_type: {payload.wp_object_type}", {}, 400)
+    endpoint_key, formatter = entry
+    slug = payload.slug or _slugify(payload.title)
+
+    try:
+        item = await wp_post(wp_url(endpoint_key), {
+            "title": payload.title,
+            "slug": slug,
+            "status": "draft",
+        })
+    except httpx.HTTPStatusError as e:
+        api_error("WP_ERROR", f"WordPress rejected the request: {e.response.text}", {}, e.response.status_code)
+    except Exception as e:
+        api_error("WP_ERROR", f"Could not reach WordPress: {e}", {}, 500)
+
+    try:
+        formatted = formatter(item)
+    except Exception as e:
+        api_error(
+            "INTERNAL_ERROR",
+            f"WP {endpoint_key} created (id={item.get('id')}) but its response could not be parsed: {type(e).__name__}: {e}",
+            {}, 500,
+        )
+
+    try:
+        map_rows = await db.fetch(
+            """
+            INSERT INTO wp_object_map
+                (posda_object_type, posda_object_id, wp_object_type, wp_object_id,
+                 wp_edit_url, wp_view_url, parent_wp_object_id, when_synced)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+            ON CONFLICT ON CONSTRAINT unq_wp_object_map_posda_object DO UPDATE SET
+                wp_object_type      = excluded.wp_object_type,
+                wp_object_id        = excluded.wp_object_id,
+                wp_edit_url         = excluded.wp_edit_url,
+                wp_view_url         = excluded.wp_view_url,
+                parent_wp_object_id = excluded.parent_wp_object_id,
+                when_synced         = excluded.when_synced
+            RETURNING *
+            """,
+            [payload.posda_object_type, payload.posda_object_id,
+             payload.wp_object_type, formatted["id"],
+             formatted["edit_url"], formatted["view_url"], payload.parent_wp_object_id],
+        )
+    except Exception as e:
+        db_error(e, operation="linking new WordPress object", context={
+            "posda_object_type": payload.posda_object_type,
+            "posda_object_id": payload.posda_object_id,
+        })
+
+    result = {"data": {"map": dict(map_rows[0]), "object": formatted}}
+    if payload.posda_object_type == "recordset" and payload.wp_object_type == "download":
+        warning = await _attach_download_to_dataset(db, payload.posda_object_id, formatted["id"])
+        if warning:
+            result["warning"] = warning
+    return result
+
+
+@router.put("/wp-objects/{map_id}/status")
+async def update_wp_object_status(map_id: int, payload: WpObjectStatusUpdate, db: Database = Depends()):
+    rows = await db.fetch(
+        "SELECT wp_object_type, wp_object_id FROM wp_object_map WHERE map_id = $1", [map_id]
+    )
+    if not rows:
+        api_error("NOT_FOUND", "Mapping not found", {"map_id": map_id}, 404)
+
+    entry = WP_TYPE_MAP.get(rows[0]["wp_object_type"])
+    if not entry:
+        api_error("VALIDATION_ERROR", f"Unsupported wp_object_type: {rows[0]['wp_object_type']}", {}, 400)
+    endpoint_key, formatter = entry
+
+    try:
+        item = await wp_patch(f"{wp_url(endpoint_key)}/{rows[0]['wp_object_id']}", {"status": payload.status})
+    except httpx.HTTPStatusError as e:
+        api_error("WP_ERROR", f"WordPress rejected the request: {e.response.text}", {}, e.response.status_code)
+    except Exception as e:
+        api_error("WP_ERROR", f"Could not reach WordPress: {e}", {}, 500)
+
+    await db.execute("UPDATE wp_object_map SET when_synced = now() WHERE map_id = $1", [map_id])
+    return {"data": formatter(item)}
 
 
 # ----------------------------

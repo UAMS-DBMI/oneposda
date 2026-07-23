@@ -53,6 +53,15 @@ class DatasetReleaseUpdate(BaseModel):
 class DatasetReleaseRecordsetRequest(BaseModel):
     recordset_release_ids: list[int]
 
+class CycleDraftItem(BaseModel):
+    recordset_id: int
+    activity_timepoint_id: int
+    draft_name: Optional[str] = None
+
+class CycleDraftsRequest(BaseModel):
+    items: list[CycleDraftItem]
+    draft_notes: Optional[str] = None
+
 class DatasetReleaseTransferInsert(BaseModel):
     destination_id: int
     transfer_name: str
@@ -794,6 +803,22 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
         select drr.recordset_release_id
         from dataset_release_recordset drr
         where drr.dataset_release_id = $2
+    ),
+    dest as (
+        select
+            rd.recordset_id,
+            array_agg(rd.destination_id order by td.destination_abbr) as destination_ids,
+            array_agg(td.destination_abbr order by td.destination_abbr) as destination_abbrs,
+            array_agg(rd.default_display order by td.destination_abbr) as destination_defaults
+        from recordset_destination rd
+        join transfer_destination td using (destination_id)
+        where rd.recordset_id in (select recordset_id from rs)
+        group by rd.recordset_id
+    ),
+    wp_download as (
+        select posda_object_id as recordset_id, wp_object_id, wp_edit_url
+        from wp_object_map
+        where posda_object_type = 'recordset' and wp_object_type = 'download'
     )
     select
         rs.recordset_id,
@@ -815,11 +840,19 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
         coalesce(q.series_approved, 0) as series_approved,
         (lr.recordset_release_id is not null
          and lr.recordset_release_id in (select recordset_release_id from bundled))
-            as in_latest_dataset_release
+            as in_latest_dataset_release,
+        dest.destination_ids,
+        dest.destination_abbrs,
+        dest.destination_defaults,
+        (wp_download.recordset_id is not null) as wp_linked,
+        wp_download.wp_edit_url,
+        wp_download.wp_object_id as wp_download_object_id
     from rs
     left join open_draft od using (recordset_id)
     left join latest_rel lr using (recordset_id)
     left join qc q using (recordset_id)
+    left join dest using (recordset_id)
+    left join wp_download using (recordset_id)
     order by rs.recordset_id;
     """
 
@@ -851,6 +884,17 @@ def build_cycle_recordset(row):
             "release_date": row["release_date"],
         } if row["recordset_release_id"] is not None else None,
         "in_latest_dataset_release": row["in_latest_dataset_release"],
+        "destinations": [
+            {"destination_id": dest_id, "destination_abbr": abbr, "default_display": is_default}
+            for dest_id, abbr, is_default in zip(
+                row["destination_ids"] or [],
+                row["destination_abbrs"] or [],
+                row["destination_defaults"] or [],
+            )
+        ],
+        "wp_linked": row["wp_linked"],
+        "wp_edit_url": row["wp_edit_url"],
+        "wp_download_object_id": row["wp_download_object_id"],
     }
 
 
@@ -890,6 +934,15 @@ async def get_dataset_cycle(dataset_id: int, db: Database = Depends()):
         order by td.destination_name;
         """
 
+    # A dataset can only ever have one wp_object_map row (unique constraint on
+    # posda_object_type + posda_object_id), so existence alone tells us it's
+    # linked -- no need to filter by wp_object_type (collection vs analysis_result).
+    wp_collection_q = """\
+        select 1 from wp_object_map
+        where posda_object_type = 'dataset' and posda_object_id = $1
+        limit 1;
+        """
+
     try:
         dataset_rows = await db.fetch(dataset_q, [dataset_id])
     except Exception as e:
@@ -910,6 +963,8 @@ async def get_dataset_cycle(dataset_id: int, db: Database = Depends()):
         transfer_rows = (
             await db.fetch(transfers_q, [latest_release_id]) if latest_release_id else []
         )
+
+        wp_collection_rows = await db.fetch(wp_collection_q, [dataset_id])
     except Exception as e:
         db_error(e, operation="fetching dataset cycle", context={"dataset_id": dataset_id})
 
@@ -920,6 +975,7 @@ async def get_dataset_cycle(dataset_id: int, db: Database = Depends()):
         "dataset_name": dataset["dataset_name"],
         "dataset_type_name": dataset["dataset_type_name"],
         "recordsets": [build_cycle_recordset(r) for r in recordset_rows],
+        "dataset_wp_linked": bool(wp_collection_rows),
         "latest_dataset_release": {
             "dataset_release_id": latest_release["dataset_release_id"],
             "release_number": latest_release["release_number"],
@@ -929,6 +985,134 @@ async def get_dataset_cycle(dataset_id: int, db: Database = Depends()):
             "transfers": [dict(t) for t in transfer_rows],
         } if latest_release else None,
     })
+
+
+@router.post("/datasets/{dataset_id}/cycle/drafts")
+# Start a cycle: create a draft per recordset and populate it from the chosen
+# activity timepoint, in one transaction. All-or-nothing -- the guided wizard
+# confirms exactly what will be written, so a partial apply would be a lie.
+async def create_cycle_drafts(
+    dataset_id: int,
+    payload: CycleDraftsRequest,
+    current_user: User = logged_in_user,
+    db: Database = Depends()):
+
+    if not payload.items:
+        api_error("VALIDATION_ERROR", "No recordsets were provided", {"items": []}, 422)
+
+    recordset_ids = [item.recordset_id for item in payload.items]
+    if len(set(recordset_ids)) != len(recordset_ids):
+        api_error(
+            "VALIDATION_ERROR",
+            "Each recordset may appear only once",
+            {"recordset_ids": recordset_ids},
+            422,
+        )
+
+    owned_q = """
+        select recordset_id from recordset where recordset_id = $1 and dataset_id = $2
+        """
+    open_draft_q = """
+        select recordset_draft_id from recordset_draft
+        where recordset_id = $1 and draft_status not in ('published', 'deleted')
+        limit 1
+        """
+    timepoint_q = "select activity_timepoint_id from activity_timepoint where activity_timepoint_id = $1"
+    latest_release_q = """
+        select recordset_release_id, release_number
+        from recordset_release
+        where recordset_id = $1
+        order by release_number desc
+        limit 1
+        """
+    insert_draft_q = """
+        insert into recordset_draft
+            (recordset_id, draft_name, draft_status, draft_notes,
+             cloned_from_release_id, when_created, who_created, when_updated, who_updated)
+        values ($1, $2, 'open', $3, $4, now(), $5, now(), $5)
+        returning recordset_draft_id, recordset_id, draft_name, draft_status
+        """
+    populate_q = """
+        insert into recordset_draft_file (recordset_draft_id, file_id)
+        select $1, file_id from activity_timepoint_file where activity_timepoint_id = $2
+        """
+    count_q = "select count(*)::int as file_count from recordset_draft_file where recordset_draft_id = $1"
+
+    created = []
+
+    try:
+        async with db.transaction() as conn:
+            for item in payload.items:
+                owned = await conn.fetch(owned_q, item.recordset_id, dataset_id)
+                if not owned:
+                    api_error(
+                        "VALIDATION_ERROR",
+                        f"Recordset {item.recordset_id} does not belong to dataset {dataset_id}",
+                        {"recordset_id": item.recordset_id, "dataset_id": dataset_id},
+                        422,
+                    )
+
+                # One open draft per recordset -- the policy the cycle view assumes.
+                existing = await conn.fetch(open_draft_q, item.recordset_id)
+                if existing:
+                    api_error(
+                        "CONFLICT",
+                        f"Recordset {item.recordset_id} already has an open draft",
+                        {
+                            "recordset_id": item.recordset_id,
+                            "recordset_draft_id": existing[0]["recordset_draft_id"],
+                        },
+                        409,
+                    )
+
+                timepoint = await conn.fetch(timepoint_q, item.activity_timepoint_id)
+                if not timepoint:
+                    api_error(
+                        "NOT_FOUND",
+                        f"Timepoint {item.activity_timepoint_id} not found",
+                        {"activity_timepoint_id": item.activity_timepoint_id},
+                        404,
+                    )
+
+                latest = await conn.fetch(latest_release_q, item.recordset_id)
+                cloned_from = latest[0]["recordset_release_id"] if latest else None
+                next_number = (latest[0]["release_number"] + 1) if latest else None
+                draft_name = item.draft_name or (
+                    f"Version {next_number} Draft" if next_number else "Initial Draft"
+                )
+
+                rows = await conn.fetch(
+                    insert_draft_q,
+                    item.recordset_id,
+                    draft_name,
+                    payload.draft_notes,
+                    cloned_from,
+                    current_user.user_id,
+                )
+                draft = rows[0]
+
+                await conn.execute(populate_q, draft["recordset_draft_id"], item.activity_timepoint_id)
+                counted = await conn.fetch(count_q, draft["recordset_draft_id"])
+
+                created.append({
+                    "recordset_id": draft["recordset_id"],
+                    "recordset_draft_id": draft["recordset_draft_id"],
+                    "draft_name": draft["draft_name"],
+                    "draft_status": draft["draft_status"],
+                    "activity_timepoint_id": item.activity_timepoint_id,
+                    "file_count": counted[0]["file_count"] if counted else 0,
+                })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db_error(
+            e,
+            operation="starting cycle drafts",
+            context={"dataset_id": dataset_id},
+        )
+
+    return item_response({"dataset_id": dataset_id, "drafts": created})
 
 
 @router.get("/datasets/{dataset_id}/releases")
@@ -2031,6 +2215,36 @@ async def update_recordset_destination(
         )
 
     return item_response(record[0])
+
+
+@router.delete("/recordsets/{recordset_id}/destinations/{destination_id}")
+# Remove a destination configuration from a recordset
+async def delete_recordset_destination(recordset_id: int, destination_id: int, db: Database = Depends()):
+    try:
+        rows = await db.fetch(
+            """
+            delete from recordset_destination
+            where recordset_id = $1 and destination_id = $2
+            returning recordset_id, destination_id
+            """,
+            [recordset_id, destination_id],
+        )
+    except Exception as e:
+        db_error(
+            e,
+            operation="deleting recordset destination",
+            context={"recordset_id": recordset_id, "destination_id": destination_id},
+        )
+
+    if not rows:
+        api_error(
+            "NOT_FOUND",
+            "Destination configuration not found",
+            {"recordset_id": recordset_id, "destination_id": destination_id},
+            404,
+        )
+
+    return item_response({"deleted": True, "recordset_id": recordset_id, "destination_id": destination_id})
 
 # -----------------------------------------RECORDSET DRAFTS-----------------------------------------------
 
