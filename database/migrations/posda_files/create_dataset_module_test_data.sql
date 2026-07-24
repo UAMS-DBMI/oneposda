@@ -167,16 +167,18 @@ INSERT INTO public.recordset (
     (9, 'Radiology 06 Untouched', 1, 4, 2, null, true, NOW(), 0, NOW(), 0);
 SELECT setval(pg_get_serial_sequence('public.recordset', 'recordset_id'), COALESCE(MAX(recordset_id), 0), true) FROM public.recordset;
 
+-- transfer_mode_id is hardcoded per destination in the frontend (hidden from
+-- the user): idc/gc/nbia -> grouped bundle (2), wp/asp -> single dataset (1).
 INSERT INTO public.recordset_destination (recordset_id, destination_id, default_display, transfer_mode_id) VALUES
     (1, 1, true,  2), -- Radiology public: IDC default, grouped bundle
-    (1, 5, false, 1), -- Radiology public: NBIA alternative, single dataset
+    (1, 5, false, 2), -- Radiology public: NBIA alternative, grouped bundle
     (2, 1, true,  2), -- Radiology public: IDC default, grouped bundle
-    (2, 5, false, 1), -- Radiology public: NBIA alternative, single dataset
-    (3, 2, true,  1), -- Radiology limited: General Commons default, single dataset
+    (2, 5, false, 2), -- Radiology public: NBIA alternative, grouped bundle
+    (3, 2, true,  2), -- Radiology limited: General Commons default, grouped bundle
     (4, 3, true,  1), -- Clinical public: WordPress default, single dataset
     (4, 1, false, 2), -- Clinical public: IDC alternative, grouped bundle
     (5, 1, true,  2), -- Annotation public: IDC default, grouped bundle
-    (6, 2, true,  1), -- Annotation limited: General Commons default, single dataset
+    (6, 2, true,  2), -- Annotation limited: General Commons default, grouped bundle
     (7, 1, true,  2), -- Pseudo-MIDI first cycle: IDC default, grouped bundle
     (8, 1, true,  2), -- Pseudo-MIDI frozen: IDC default, grouped bundle
     (9, 1, true,  2); -- Empty cycle: IDC default, grouped bundle
