@@ -2,6 +2,7 @@ from fastapi import Depends, APIRouter, HTTPException, Query
 from typing import Optional
 from pydantic import BaseModel
 from datetime import datetime
+import asyncio
 import asyncpg
 import csv
 import hashlib
@@ -804,6 +805,20 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
         from dataset_release_recordset drr
         where drr.dataset_release_id = $2
     ),
+    last_bundled as (
+        -- Highest dataset release that *any* of this recordset's releases
+        -- was ever bundled into -- distinct from in_latest_dataset_release,
+        -- which only checks the dataset's *current* latest release. A
+        -- recordset can sit at its own v3 while the dataset cuts newer
+        -- releases around it (carry-forward), so this can be ahead of or
+        -- behind the recordset's own latest_release.
+        select rr.recordset_id, max(dr.release_number) as last_bundled_release_number
+        from recordset_release rr
+        join dataset_release_recordset drr on drr.recordset_release_id = rr.recordset_release_id
+        join dataset_release dr on dr.dataset_release_id = drr.dataset_release_id
+        where rr.recordset_id in (select recordset_id from rs)
+        group by rr.recordset_id
+    ),
     dest as (
         select
             rd.recordset_id,
@@ -841,6 +856,7 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
         (lr.recordset_release_id is not null
          and lr.recordset_release_id in (select recordset_release_id from bundled))
             as in_latest_dataset_release,
+        lb.last_bundled_release_number,
         dest.destination_ids,
         dest.destination_abbrs,
         dest.destination_defaults,
@@ -851,6 +867,7 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
     left join open_draft od using (recordset_id)
     left join latest_rel lr using (recordset_id)
     left join qc q using (recordset_id)
+    left join last_bundled lb using (recordset_id)
     left join dest using (recordset_id)
     left join wp_download using (recordset_id)
     order by rs.recordset_id;
@@ -884,6 +901,7 @@ def build_cycle_recordset(row):
             "release_date": row["release_date"],
         } if row["recordset_release_id"] is not None else None,
         "in_latest_dataset_release": row["in_latest_dataset_release"],
+        "last_bundled_dataset_release_number": row["last_bundled_release_number"],
         "destinations": [
             {"destination_id": dest_id, "destination_abbr": abbr, "default_display": is_default}
             for dest_id, abbr, is_default in zip(
@@ -896,6 +914,36 @@ def build_cycle_recordset(row):
         "wp_edit_url": row["wp_edit_url"],
         "wp_download_object_id": row["wp_download_object_id"],
     }
+
+
+async def count_orphaned_wp_downloads(wp_object_type: str, wp_object_id: int, attached_ids: set) -> int:
+    """Downloads listed on the dataset's WP page that aren't the current
+    download for any recordset here -- left behind by unlinking/relinking a
+    recordset's download, or added directly in WordPress. Mirrors the check
+    the Setup stage used to run client-side, moved server-side so it can gate
+    setup completion consistently everywhere the cycle payload is read.
+    Best-effort: a WordPress hiccup shouldn't fail the whole cycle page, so
+    any error here just reports zero orphans rather than raising."""
+    endpoint_key = "Collection" if wp_object_type == "collection" else "Analysis Result"
+    downloads_field = "collection_downloads" if wp_object_type == "collection" else "result_downloads"
+    try:
+        item = await wp_get(f"{wp_url(endpoint_key)}/{wp_object_id}")
+        if item is None:
+            return 0
+        listed_ids = item.get(downloads_field) or []
+        orphaned_ids = [i for i in listed_ids if i not in attached_ids]
+        if not orphaned_ids:
+            return 0
+        statuses = await asyncio.gather(
+            *(wp_get(f"{wp_url('Download')}/{i}") for i in orphaned_ids),
+            return_exceptions=True,
+        )
+        return sum(
+            1 for s in statuses
+            if isinstance(s, dict) and s.get("status") != "trash"
+        )
+    except Exception:
+        return 0
 
 
 @router.get("/datasets/{dataset_id}/cycle")
@@ -936,9 +984,10 @@ async def get_dataset_cycle(dataset_id: int, db: Database = Depends()):
 
     # A dataset can only ever have one wp_object_map row (unique constraint on
     # posda_object_type + posda_object_id), so existence alone tells us it's
-    # linked -- no need to filter by wp_object_type (collection vs analysis_result).
+    # linked. Selecting the full row (not just `1`) lets the orphan check below
+    # know which WP object to read the download list from.
     wp_collection_q = """\
-        select 1 from wp_object_map
+        select wp_object_type, wp_object_id from wp_object_map
         where posda_object_type = 'dataset' and posda_object_id = $1
         limit 1;
         """
@@ -970,12 +1019,25 @@ async def get_dataset_cycle(dataset_id: int, db: Database = Depends()):
 
     dataset = dataset_rows[0]
 
+    orphaned_download_count = 0
+    if wp_collection_rows:
+        attached_ids = {
+            r["wp_download_object_id"] for r in recordset_rows
+            if r["wp_download_object_id"] is not None
+        }
+        orphaned_download_count = await count_orphaned_wp_downloads(
+            wp_collection_rows[0]["wp_object_type"],
+            wp_collection_rows[0]["wp_object_id"],
+            attached_ids,
+        )
+
     return item_response({
         "dataset_id": dataset["dataset_id"],
         "dataset_name": dataset["dataset_name"],
         "dataset_type_name": dataset["dataset_type_name"],
         "recordsets": [build_cycle_recordset(r) for r in recordset_rows],
         "dataset_wp_linked": bool(wp_collection_rows),
+        "orphaned_download_count": orphaned_download_count,
         "latest_dataset_release": {
             "dataset_release_id": latest_release["dataset_release_id"],
             "release_number": latest_release["release_number"],
@@ -2134,6 +2196,13 @@ async def update_recordset_destination(
         limit 1
     """
 
+    has_any_query = """\
+        select 1
+        from recordset_destination
+        where recordset_id = $1
+        limit 1
+    """
+
     clear_default_query = """\
         update recordset_destination
         set default_display = false
@@ -2189,14 +2258,19 @@ async def update_recordset_destination(
                         422,
                     )
 
-                if payload.default_display is True:
+                # A recordset's first destination is always its default --
+                # never leave one with destinations but none marked default.
+                has_any = await conn.fetch(has_any_query, recordset_id)
+                effective_default = True if not has_any else payload.default_display
+
+                if effective_default is True:
                     await conn.execute(clear_default_query, recordset_id, destination_id)
 
                 record = await conn.fetch(
                     insert_query,
                     recordset_id,
                     destination_id,
-                    payload.default_display,
+                    effective_default,
                     payload.default_transfer_mode_id,
                 )
     except Exception as e:
@@ -2218,17 +2292,38 @@ async def update_recordset_destination(
 
 
 @router.delete("/recordsets/{recordset_id}/destinations/{destination_id}")
-# Remove a destination configuration from a recordset
+# Remove a destination configuration from a recordset. If the deleted row was
+# the default and others remain, promote the lowest destination_id to default
+# -- a recordset with any destinations should never be left with none marked
+# default. The user can re-pick the right one afterward via the edit modal.
 async def delete_recordset_destination(recordset_id: int, destination_id: int, db: Database = Depends()):
     try:
-        rows = await db.fetch(
-            """
-            delete from recordset_destination
-            where recordset_id = $1 and destination_id = $2
-            returning recordset_id, destination_id
-            """,
-            [recordset_id, destination_id],
-        )
+        async with db.transaction() as conn:
+            rows = await conn.fetch(
+                """
+                delete from recordset_destination
+                where recordset_id = $1 and destination_id = $2
+                returning recordset_id, destination_id, default_display
+                """,
+                recordset_id, destination_id,
+            )
+
+            if rows and rows[0]["default_display"]:
+                await conn.execute(
+                    """
+                    update recordset_destination
+                    set default_display = true
+                    where recordset_id = $1
+                      and destination_id = (
+                          select destination_id
+                          from recordset_destination
+                          where recordset_id = $1
+                          order by destination_id
+                          limit 1
+                      )
+                    """,
+                    recordset_id,
+                )
     except Exception as e:
         db_error(
             e,
