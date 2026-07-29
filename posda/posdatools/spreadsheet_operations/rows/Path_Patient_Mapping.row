@@ -1,6 +1,6 @@
 :operation_name: Path_Patient_Mapping
 :command_line: PathologyCreatePatientMapping.py <?bkgrnd_id?> <activity_id> <notify>
 :operation_type: background_process
-:input_line_format: <patient_id>&<original_file_name>&<collection_name>&<site_name>&<study_name>&<image_id>&<clinical_trial_subject_id>&<shift_date>&<base_date>
+:input_line_format: <patient_id>&<original_file_name>&<collection_name>&<site_name>&<study_name>&<image_id>&<clinical_trial_subject_id>&<shift_date>&<base_date>&<reg_date>
 :tags: ['pathology','patient_mapping']
 :can_chain:

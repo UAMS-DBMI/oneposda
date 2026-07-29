@@ -45,7 +45,7 @@ def get_relpath(file_id):
         return call_api(str, 0)
 
 def  set_mapping(file_id,patient_id,collection_name,site_name,study_name,image_id,clinical_trial_subject_id,shift_date,base_date,reg_date):
-        str = "/setmapping/{}/{}/{}/{}/{}/{}/{}/{}/{}".format(file_id,patient_id,collection_name,site_name,study_name,image_id,clinical_trial_subject_id,shift_date,base_date,reg_date)
+        str = "/setmapping/{}/{}/{}/{}/{}/{}/{}/{}/{}/{}".format(file_id,patient_id,collection_name,site_name,study_name,image_id,clinical_trial_subject_id,shift_date,base_date,reg_date)
         return call_api(str, 2)
 
 def main(pargs,records,filenames):
@@ -82,7 +82,7 @@ def main(pargs,records,filenames):
             print("Mapping record {} not found in activity".format(my_path));
 
 
-    print("Pathology patient mapping created.\n{0} files mapped out of {1} files in mapping.\nActivity total files {2}.\n".format(
+    print("Pathology patient mapping finished.\n{0} files mapped out of {1} files in mapping.\nActivity total files {2}.\n".format(
     count, len(filenames), len(myFiles)))
     background.finish("Complete")
 

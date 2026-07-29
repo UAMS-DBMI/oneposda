@@ -478,42 +478,51 @@ def editImageDesc(filename,details):
             f"{changes} ImageDescription fields modified"
         )
 def changeDate(originalDate, details):
-    split_details = details.split(':', 1)
+    split_details = details.split(':')
     action = split_details[0].lower()
     og_date = formatDate(originalDate)
+    if og_date is None:
+        print(f"WARNING: Could not edit date '{originalDate}'")
+        return originalDate
     if action == 'shift':
         new_date = shiftDate(og_date, split_details[1])
     elif action == 'baseline':
-
         base_date = formatDate(split_details[1])
         reg_date = formatDate(split_details[2])
-        calc_shift = (abs(base_date - reg_date)).days
+        calc_shift = (reg_date - base_date).days
         new_date = shiftDate(og_date, calc_shift)
     else:
         new_date = shiftDate(og_date)
     return new_date
 
-def formatDate(str_date):
-        formats = [
-            "%m/%d/%y",
-            "%m/%d/%Y",
-            "%Y-%m-%d",
-            "%Y/%m/%d",
-        ]
+from datetime import datetime
 
-        for fmt in formats:
-            try:
-                dt = datetime.strptime(str_date, fmt)
-                test = dt - timedelta(days=int('100'))
-            except ValueError:
-                continue
-        print(f"WARNING: Could not parse date '{str_date}'")
-        return dt
+def formatDate(str_date):
+    formats = [
+        "%m/%d/%y",
+        "%m/%d/%Y",
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+        "%m-%d-%Y",
+        "%m-%d-%y",
+        "%d/%m/%Y",
+        "%d-%m-%Y",
+        "%Y%m%d"
+    ]
+
+    for fmt in formats:
+        try:
+            return datetime.strptime(str_date, fmt)
+        except ValueError:
+            pass
+
+    print(f"WARNING: Could not parse date '{str_date}'")
+    return None
 
 def shiftDate(originalDate, shift_days=2000):
-    originalDate = originalDate.strip()
-    shifted = originalDate - timedelta(days=int(shift_days))
-    return shifted.strftime(fmt)
+    #originalDate = originalDate.strip()
+    shifted = originalDate - timedelta(days=abs(int(shift_days)))
+    return shifted.strftime("%m/%d/%y")
 
 
 def blackout(im1, l,l_dims, dims, coords):
