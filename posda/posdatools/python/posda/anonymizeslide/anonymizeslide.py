@@ -480,42 +480,41 @@ def editImageDesc(filename,details):
 def changeDate(originalDate, details):
     split_details = details.split(':', 1)
     action = split_details[0].lower()
+    og_date = formatDate(originalDate)
     if action == 'shift':
-        new_date = shiftDate(originalDate, split_details[1])
+        new_date = shiftDate(og_date, split_details[1])
     elif action == 'baseline':
-        d1 = datetime.strptime(originalDate, "%Y-%m-%d").date()
-        d2 = datetime.strptime(split_details[1], "%Y-%m-%d").date()
-        calc_shift = (d1 - d2).days
-        new_date = shiftDate(originalDate, calc_shift)
+
+        base_date = formatDate(split_details[1])
+        reg_date = formatDate(split_details[2])
+        calc_shift = (abs(base_date - reg_date)).days
+        new_date = shiftDate(og_date, calc_shift)
     else:
-        new_date = shiftDate(originalDate)
+        new_date = shiftDate(og_date)
     return new_date
 
+def formatDate(str_date):
+        formats = [
+            "%m/%d/%y",
+            "%m/%d/%Y",
+            "%Y-%m-%d",
+            "%Y/%m/%d",
+        ]
+
+        for fmt in formats:
+            try:
+                dt = datetime.strptime(str_date, fmt)
+                test = dt - timedelta(days=int('100'))
+            except ValueError:
+                continue
+        print(f"WARNING: Could not parse date '{str_date}'")
+        return dt
+
 def shiftDate(originalDate, shift_days=2000):
-    """
-    Shift a date backward while preserving its original format.
-    Returns the original value unchanged if parsing fails.
-    """
-
     originalDate = originalDate.strip()
+    shifted = originalDate - timedelta(days=int(shift_days))
+    return shifted.strftime(fmt)
 
-    formats = [
-        "%m/%d/%y",
-        "%m/%d/%Y",
-        "%Y-%m-%d",
-        "%Y/%m/%d",
-    ]
-
-    for fmt in formats:
-        try:
-            dt = datetime.strptime(originalDate, fmt)
-            shifted = dt - timedelta(days=int(shift_days))
-            return shifted.strftime(fmt)
-        except ValueError:
-            continue
-
-    print(f"WARNING: Could not parse date '{originalDate}'")
-    return originalDate
 
 def blackout(im1, l,l_dims, dims, coords):
     im = Image.new("RGB", (im1.size[0], im1.size[1]))

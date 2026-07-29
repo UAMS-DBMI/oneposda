@@ -44,8 +44,8 @@ def get_relpath(file_id):
         str = "/find_relpath/{}".format(file_id)
         return call_api(str, 0)
 
-def  set_mapping(file_id,patient_id,collection_name,site_name,study_name,image_id,clinical_trial_subject_id,shift_date,base_date):
-        str = "/setmapping/{}/{}/{}/{}/{}/{}/{}/{}/{}".format(file_id,patient_id,collection_name,site_name,study_name,image_id,clinical_trial_subject_id,shift_date,base_date)
+def  set_mapping(file_id,patient_id,collection_name,site_name,study_name,image_id,clinical_trial_subject_id,shift_date,base_date,reg_date):
+        str = "/setmapping/{}/{}/{}/{}/{}/{}/{}/{}/{}".format(file_id,patient_id,collection_name,site_name,study_name,image_id,clinical_trial_subject_id,shift_date,base_date,reg_date)
         return call_api(str, 2)
 
 def main(pargs,records,filenames):
@@ -74,7 +74,7 @@ def main(pargs,records,filenames):
             j = filenames.index(my_path)
             rec = records[j]
             try:
-                set_mapping(f['file_id'], rec['patient_id'], rec['collection_name'], rec['site_name'],  rec['study_id'], rec['image_id'], rec['clinical_trial_subject_id'],rec['shift_date'],rec['base_date'])
+                set_mapping(f['file_id'], rec['patient_id'], rec['collection_name'], rec['site_name'],  rec['study_id'], rec['image_id'], rec['clinical_trial_subject_id'],rec['shift_date'],rec['base_date'],rec['reg_date'])
                 print("Mapping created for {}".format(rec['patient_id']));
             except  Exception as e:
                 print('Error! Mapping found but not set! {} : {}'.format(f['file_id'],e))
@@ -107,7 +107,7 @@ if __name__ == "__main__":
 
 
     for line in sys.stdin:
-        patient_id, original_file_name, collection_name, site_name, study_id, image_id, clinical_trial_subject_id, shift_date, base_date = (line.rstrip()).split('&')
+        patient_id, original_file_name, collection_name, site_name, study_id, image_id, clinical_trial_subject_id, shift_date, base_date, reg_date = (line.rstrip()).split('&')
         mappingData = {}
         mappingData['patient_id'] = patient_id
         mappingData['original_file_name'] = original_file_name
@@ -124,6 +124,10 @@ if __name__ == "__main__":
             mappingData['base_date'] = base_date
         else:
             mappingData['base_date'] = '0'
+        if  reg_date:
+            mappingData['reg_date'] = reg_date
+        else:
+            mappingData['reg_date'] = '0'
         records.append(mappingData)
         filenames.append(original_file_name)
 

@@ -526,7 +526,7 @@ sub metaEditButtonPress(){
   my $row = (decode_json($self->{client}->responseContent()))->[0];
   if($row){
     if ($row->{base_date} && $row->{base_date} ne '0') {
-        $self->{details} = 'baseline:' . $row->{base_date};
+        $self->{details} = 'baseline:' . $row->{base_date} . ':' . $row->{reg_date};
     }
     elsif ($row->{shift_date} && $row->{shift_date} ne '0') {
         $self->{details} = 'shift:' . $row->{shift_date};
