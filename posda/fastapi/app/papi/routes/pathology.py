@@ -507,7 +507,7 @@ async def editBulkMeta(pathology_visual_review_instance_id: int, db: Database = 
         if mydates[0]["shift_date"] != '0':
             mydata["edit_details"] = 'shift:' + mydates[0]["shift_date"]
         elif mydates[0]["base_date"] != '0':
-            mydata["edit_details"] = 'base:' + mydates[0]["base_date"] + ':' + mydates[0]["reg_date"]
+            mydata["edit_details"] = 'baseline:' + mydates[0]["base_date"] + ':' + mydates[0]["reg_date"]
 
         await db.execute("""\
         INSERT INTO pathology_edit_queue
