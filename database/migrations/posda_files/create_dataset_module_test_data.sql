@@ -281,9 +281,10 @@ INSERT INTO public.dataset_release (
     -- dataset needs a new version number rather than an in-place overwrite.
     (1, 1, 1, NOW(), 'Initial Release', 'live', NOW(), 0, NOW(), 0),
     (2, 2, 1, NOW(), 'Initial Release', 'released', NOW(), 0, NOW(), 0),
-    -- Draft: still being assembled. Recordset release 8 is frozen and ready to
-    -- be added to it, so this dataset reads as "assembling v1".
-    (3, 3, 1, NOW(), 'Assembling first release', 'draft', NOW(), 0, NOW(), 0);
+    -- Draft: still being assembled, so release_date is null (set only when
+    -- release_status transitions to released). Recordset release 8 is frozen
+    -- and ready to be added to it, so this dataset reads as "assembling v1".
+    (3, 3, 1, NULL, 'Assembling first release', 'draft', NOW(), 0, NOW(), 0);
 SELECT setval(pg_get_serial_sequence('public.dataset_release', 'dataset_release_id'), COALESCE(MAX(dataset_release_id), 0), true) FROM public.dataset_release;
 
 -- Recordset release 7 (recordset 3 v2) is intentionally absent: it is frozen
