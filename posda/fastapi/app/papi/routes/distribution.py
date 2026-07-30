@@ -37,9 +37,13 @@ class DatasetUpdate(BaseModel):
     active: Optional[bool] = None
 
 class DatasetReleaseInsert(BaseModel):
-    release_number: int
-    release_date: datetime
-    release_notes: str
+    # Omit to auto-assign the next unused number for this dataset -- lets
+    # "start next cycle" create a draft release without asking for one.
+    release_number: Optional[int] = None
+    # Null while draft -- set when release_status transitions to 'released'
+    # (either explicitly here, or auto-stamped by update_dataset_release).
+    release_date: Optional[datetime] = None
+    release_notes: Optional[str] = None
     release_doi: Optional[str] = None
     release_status: Optional[str] = "draft"
 
@@ -1227,10 +1231,26 @@ async def create_dataset_release(
     db: Database = Depends()):
 
     validate_release_status(payload.release_status)
+    release_status = payload.release_status or "draft"
 
+    open_draft_q = """
+        select dataset_release_id from dataset_release
+        where dataset_id = $1 and release_status = 'draft'
+        limit 1
+    """
+
+    # release_number auto-assigns to the next unused number for this dataset
+    # when omitted. release_date stays null while draft; if a release is
+    # created directly as 'released' with no explicit date, stamp it now
+    # rather than leaving a released release with no date.
     query = """\
         insert into dataset_release (dataset_id, release_number, release_date, release_notes, release_doi, release_status, when_created, who_created, when_updated, who_updated)
-        values ($1, $2, $3, $4, $5, $6, now(), $7, now(), $7)
+        values (
+            $1,
+            coalesce($2::int, (select coalesce(max(release_number), 0) + 1 from dataset_release where dataset_id = $1)),
+            coalesce($3::timestamptz, case when $6 = 'released' then now() end),
+            $4, $5, $6, now(), $7, now(), $7
+        )
         returning dataset_release_id, dataset_id, release_number, release_date, release_notes, release_doi, release_status
     """
     values = [
@@ -1239,12 +1259,32 @@ async def create_dataset_release(
         payload.release_date,
         payload.release_notes,
         payload.release_doi,
-        payload.release_status or "draft",
+        release_status,
         current_user.user_id,
     ]
 
     try:
-        record = await db.fetch(query, values)
+        async with db.transaction() as conn:
+            # One draft dataset_release per dataset -- the policy the cycle
+            # view assumes ("Start Next Cycle" is only offered when none
+            # exists, but the guard belongs here so it holds regardless of
+            # caller, e.g. the standalone releases/Create.tsx form).
+            if release_status == "draft":
+                existing = await conn.fetch(open_draft_q, dataset_id)
+                if existing:
+                    api_error(
+                        "CONFLICT",
+                        f"Dataset {dataset_id} already has a draft release",
+                        {
+                            "dataset_id": dataset_id,
+                            "dataset_release_id": existing[0]["dataset_release_id"],
+                        },
+                        409,
+                    )
+
+            record = await conn.fetch(query, *values)
+    except HTTPException:
+        raise
     except Exception as e:
         db_error(e, operation="creating dataset release", context={"dataset_id": dataset_id})
 
@@ -1327,6 +1367,11 @@ async def update_dataset_release(
         updates.append(f"release_status = ${idx}")
         values.append(payload.release_status)
         idx += 1
+
+        # release_date is null while draft; publishing (-> released) stamps it
+        # now unless the caller already set an explicit date above.
+        if payload.release_status == "released" and payload.release_date is None:
+            updates.append("release_date = coalesce(release_date, now())")
 
     if not updates:
         api_error("VALIDATION_ERROR", "No dataset release fields were provided", {}, 422)
@@ -2273,6 +2318,8 @@ async def update_recordset_destination(
                     effective_default,
                     payload.default_transfer_mode_id,
                 )
+    except HTTPException:
+        raise
     except Exception as e:
         db_error(
             e,
