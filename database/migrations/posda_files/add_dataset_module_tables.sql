@@ -329,7 +329,7 @@ CREATE  TABLE "public".transfer_idc (
 	dataset_release_transfer_id integer  NOT NULL  ,
 	base_gcs_url         text    ,
 	dataset_manifest_file_id integer    ,
-	file_manifest_file_id integer    ,
+	imaging_manifest_file_id integer    ,
 	clinical_manifest_file_id integer    ,
 	published            boolean    ,
 	"public"             boolean    ,
@@ -338,7 +338,7 @@ CREATE  TABLE "public".transfer_idc (
 
 ALTER TABLE "public".transfer_idc ADD CONSTRAINT fk_transfer_idc_file_dataset_manifest FOREIGN KEY ( dataset_manifest_file_id ) REFERENCES "public"."file"( file_id ) ON DELETE RESTRICT  ;
 
-ALTER TABLE "public".transfer_idc ADD CONSTRAINT fk_transfer_idc_file_recordset_manifest FOREIGN KEY ( file_manifest_file_id ) REFERENCES "public"."file"( file_id ) ON DELETE RESTRICT  ;
+ALTER TABLE "public".transfer_idc ADD CONSTRAINT fk_transfer_idc_file_imaging_manifest FOREIGN KEY ( imaging_manifest_file_id ) REFERENCES "public"."file"( file_id ) ON DELETE RESTRICT  ;
 
 ALTER TABLE "public".transfer_idc ADD CONSTRAINT fk_transfer_idc_file_clinical_manifest FOREIGN KEY ( clinical_manifest_file_id ) REFERENCES "public"."file"( file_id ) ON DELETE RESTRICT  ;
 
