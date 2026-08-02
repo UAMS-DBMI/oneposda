@@ -108,11 +108,21 @@ class RecordsetDraftUpdate(BaseModel):
     draft_status: Optional[str] = "open"
     cloned_from_release_id: Optional[int] = None
 
+class RecordsetDraftFileItem(BaseModel):
+    file_id: int
+    # Optional -- when omitted, sourced from file_import for non-DICOM files
+    # (DICOM stays null). The same file_id may appear multiple times in one
+    # request under different names (content-identical files, e.g. blank
+    # segmentations for different subjects).
+    file_name: Optional[str] = None
+
 class RecordsetDraftFileAdd(BaseModel):
-    file_ids: list[int]
+    files: list[RecordsetDraftFileItem]
 
 class RecordsetDraftFileRemove(BaseModel):
-    file_ids: list[int]
+    # Membership ids, not file_ids -- removing one named copy must not remove
+    # the other copies of the same content in the draft.
+    recordset_draft_file_ids: list[int]
 
 class RecordsetReleaseInsert(BaseModel):
     release_number: int
@@ -1099,8 +1109,18 @@ async def create_cycle_drafts(
         returning recordset_draft_id, recordset_id, draft_name, draft_status
         """
     populate_q = """
-        insert into recordset_draft_file (recordset_draft_id, file_id)
-        select $1, file_id from activity_timepoint_file where activity_timepoint_id = $2
+        insert into recordset_draft_file (recordset_draft_id, file_id, file_name)
+        select $1, atf.file_id,
+               case when f.is_dicom_file then null
+                    else (select fi.file_name
+                          from file_import fi
+                          where fi.file_id = atf.file_id
+                          order by fi.file_import_time desc nulls last, fi.import_event_id desc
+                          limit 1)
+               end
+        from activity_timepoint_file atf
+        join file f on f.file_id = atf.file_id
+        where atf.activity_timepoint_id = $2
         """
     count_q = "select count(*)::int as file_count from recordset_draft_file where recordset_draft_id = $1"
 
@@ -2430,11 +2450,11 @@ async def create_recordset_draft(
     """
 
     clone_files_query = """\
-        insert into recordset_draft_file (recordset_draft_id, file_id)
-        select $1, rrf.file_id
+        insert into recordset_draft_file (recordset_draft_id, file_id, file_name)
+        select $1, rrf.file_id, rrf.file_name
         from recordset_release_file rrf
         where rrf.recordset_release_id = $2
-        on conflict do nothing;
+        on conflict (recordset_draft_id, file_id, file_name) do nothing;
     """
 
     values = [
@@ -2630,10 +2650,10 @@ async def get_recordset_draft_files(
     db: Database = Depends()):
 
     list_q = f"""\
-        select rf.file_id
+        select rf.recordset_draft_file_id, rf.file_id, rf.file_name
         from recordset_draft_file rf
         where rf.recordset_draft_id = $1
-        order by rf.file_id
+        order by rf.file_name nulls first, rf.file_id
         {page_clause(page, limit)}
         """
     count_q = "select count(*) as total from recordset_draft_file where recordset_draft_id = $1"
@@ -2737,11 +2757,24 @@ async def add_recordset_draft_files(
     payload: RecordsetDraftFileAdd,
     db: Database = Depends()):
 
+    # $3 = caller-supplied name; when null, fall back to the file's most-recent
+    # file_import name for non-DICOM files (DICOM stays null). The same file_id
+    # may be added more than once under different names -- the unique index is
+    # on (recordset_draft_id, file_id, file_name), so only an exact repeat of a
+    # (file, name) pair is skipped.
     add_query = """
-            insert into recordset_draft_file (recordset_draft_id, file_id)
-            values ($1, $2)
-            on conflict do nothing
-            returning file_id;
+            insert into recordset_draft_file (recordset_draft_id, file_id, file_name)
+            values ($1, $2, coalesce($3,
+                (select case when f.is_dicom_file then null
+                             else (select fi.file_name
+                                   from file_import fi
+                                   where fi.file_id = $2
+                                   order by fi.file_import_time desc nulls last, fi.import_event_id desc
+                                   limit 1)
+                        end
+                 from file f where f.file_id = $2)))
+            on conflict (recordset_draft_id, file_id, file_name) do nothing
+            returning recordset_draft_file_id, file_id, file_name;
         """
 
     count_query = """
@@ -2750,27 +2783,30 @@ async def add_recordset_draft_files(
             where recordset_draft_id = $1
         """
 
-    file_ids = payload.file_ids
-
-    if not file_ids:
+    if not payload.files:
         api_error(
             "VALIDATION_ERROR",
             "No files to add",
-            {"file_ids": []},
+            {"files": []},
             422,
         )
 
-    added_file_ids = []
-    exists_file_ids = []
+    added = []
+    skipped = []
 
     try:
         async with db.transaction() as conn:
-            for file_id in file_ids:
-                record = await conn.fetch(add_query, draft_id, file_id)
+            for item in payload.files:
+                record = await conn.fetch(add_query, draft_id, item.file_id, item.file_name)
                 if record:
-                    added_file_ids.append(record[0]["file_id"])
-                elif file_id not in exists_file_ids:
-                    exists_file_ids.append(file_id)
+                    added.append({
+                        "recordset_draft_file_id": record[0]["recordset_draft_file_id"],
+                        "file_id": record[0]["file_id"],
+                        "file_name": record[0]["file_name"],
+                    })
+                else:
+                    # Already present under this exact (file_id, file_name).
+                    skipped.append({"file_id": item.file_id, "file_name": item.file_name})
 
             count_record = await conn.fetch(count_query, draft_id)
     except Exception as e:
@@ -2783,8 +2819,8 @@ async def add_recordset_draft_files(
     return item_response(
         {
             "draft_id": draft_id,
-            "added_file_ids": added_file_ids,
-            "exists_file_ids": exists_file_ids,
+            "added": added,
+            "skipped": skipped,
             "current_count": count_record[0]["current_count"] if count_record else 0,
         }
     )
@@ -2797,10 +2833,12 @@ async def remove_recordset_draft_files(
     payload: RecordsetDraftFileRemove,
     db: Database = Depends()):
 
+    # Remove by membership id, scoped to this draft -- deleting one named copy
+    # must leave the draft's other copies of the same content intact.
     remove_query = """
             delete from recordset_draft_file
-            where recordset_draft_id = $1 and file_id = $2
-            returning file_id;
+            where recordset_draft_id = $1 and recordset_draft_file_id = $2
+            returning recordset_draft_file_id;
         """
     count_query = """
             select count(*) as current_count
@@ -2808,27 +2846,25 @@ async def remove_recordset_draft_files(
             where recordset_draft_id = $1
         """
 
-    file_ids = payload.file_ids
-
-    if not file_ids:
+    if not payload.recordset_draft_file_ids:
         api_error(
             "VALIDATION_ERROR",
             "No files to remove",
-            {"file_ids": []},
+            {"recordset_draft_file_ids": []},
             422,
         )
 
-    removed_file_ids = []
-    not_exists_file_ids = []
+    removed = []
+    not_found = []
 
     try:
         async with db.transaction() as conn:
-            for file_id in file_ids:
-                record = await conn.fetch(remove_query, draft_id, file_id)
+            for rdf_id in payload.recordset_draft_file_ids:
+                record = await conn.fetch(remove_query, draft_id, rdf_id)
                 if record:
-                    removed_file_ids.append(record[0]["file_id"])
-                elif file_id not in not_exists_file_ids:
-                    not_exists_file_ids.append(file_id)
+                    removed.append(record[0]["recordset_draft_file_id"])
+                elif rdf_id not in not_found:
+                    not_found.append(rdf_id)
 
             count_record = await conn.fetch(count_query, draft_id)
     except Exception as e:
@@ -2841,8 +2877,8 @@ async def remove_recordset_draft_files(
     return item_response(
         {
             "draft_id": draft_id,
-            "removed_file_ids": removed_file_ids,
-            "not_exists_file_ids": not_exists_file_ids,
+            "removed_recordset_draft_file_ids": removed,
+            "not_found_recordset_draft_file_ids": not_found,
             "current_count": count_record[0]["current_count"] if count_record else 0,
         }
     )
@@ -3183,8 +3219,8 @@ async def create_recordset_release(
     """
 
     q_copy_files = """
-        insert into recordset_release_file (recordset_release_id, file_id)
-        select $1, file_id
+        insert into recordset_release_file (recordset_release_id, file_id, file_name)
+        select $1, file_id, file_name
         from recordset_draft_file
         where recordset_draft_id = $2;
     """
@@ -3305,10 +3341,10 @@ async def get_recordset_release_files(
     db: Database = Depends()):
 
     list_q = f"""\
-        select rf.file_id
+        select rf.recordset_release_file_id, rf.file_id, rf.file_name
         from recordset_release_file rf
         where rf.recordset_release_id = $1
-        order by rf.file_id
+        order by rf.file_name nulls first, rf.file_id
         {page_clause(page, limit)}
         """
     count_q = "select count(*) as total from recordset_release_file where recordset_release_id = $1"
