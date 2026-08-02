@@ -3575,9 +3575,9 @@ async def get_transfer_idc(transfer_id: int, db: Database = Depends()):
             ti.dataset_manifest_file_id,
             df_d.downloadable_file_id  as dataset_manifest_downloadable_file_id,
             df_d.security_hash         as dataset_manifest_security_hash,
-            ti.file_manifest_file_id,
-            df_r.downloadable_file_id  as file_manifest_downloadable_file_id,
-            df_r.security_hash         as file_manifest_security_hash,
+            ti.imaging_manifest_file_id,
+            df_r.downloadable_file_id  as imaging_manifest_downloadable_file_id,
+            df_r.security_hash         as imaging_manifest_security_hash,
             ti.clinical_manifest_file_id,
             df_c.downloadable_file_id  as clinical_manifest_downloadable_file_id,
             df_c.security_hash         as clinical_manifest_security_hash,
@@ -3585,7 +3585,7 @@ async def get_transfer_idc(transfer_id: int, db: Database = Depends()):
             ti.public
         from transfer_idc ti
         left join downloadable_file df_d on df_d.file_id = ti.dataset_manifest_file_id
-        left join downloadable_file df_r on df_r.file_id = ti.file_manifest_file_id
+        left join downloadable_file df_r on df_r.file_id = ti.imaging_manifest_file_id
         left join downloadable_file df_c on df_c.file_id = ti.clinical_manifest_file_id
         where ti.dataset_release_transfer_id = $1
         """
@@ -3816,8 +3816,8 @@ async def generate_idc_dataset_manifest(transfer_id: int, db: Database = Depends
     })
 
 
-@router.post("/transfers/{transfer_id}/idc/file-manifest/generate")
-async def generate_idc_file_manifest(transfer_id: int, db: Database = Depends()):
+@router.post("/transfers/{transfer_id}/idc/imaging-manifest/generate")
+async def generate_idc_imaging_manifest(transfer_id: int, db: Database = Depends()):
     query = """
         WITH files AS (
             SELECT
@@ -3888,7 +3888,7 @@ async def generate_idc_file_manifest(transfer_id: int, db: Database = Depends())
     try:
         rows = await db.fetch(query, [transfer_id])
     except Exception as e:
-        db_error(e, operation="querying files for IDC recordset manifest", context={"transfer_id": transfer_id})
+        db_error(e, operation="querying files for IDC imaging manifest", context={"transfer_id": transfer_id})
 
     if not rows:
         api_error("NOT_FOUND", "No radiology DICOM files found for this transfer", {}, 404)
@@ -3954,15 +3954,15 @@ async def generate_idc_file_manifest(transfer_id: int, db: Database = Depends())
 
             await conn.execute(
                 """
-                insert into transfer_idc (dataset_release_transfer_id, file_manifest_file_id)
+                insert into transfer_idc (dataset_release_transfer_id, imaging_manifest_file_id)
                 values ($1, $2)
                 on conflict (dataset_release_transfer_id) do update
-                    set file_manifest_file_id = excluded.file_manifest_file_id
+                    set imaging_manifest_file_id = excluded.imaging_manifest_file_id
                 """,
                 transfer_id, file_id,
             )
     except Exception as e:
-        db_error(e, operation="storing IDC recordset manifest", context={"transfer_id": transfer_id})
+        db_error(e, operation="storing IDC imaging manifest", context={"transfer_id": transfer_id})
 
     return item_response({
         "file_id":              file_id,

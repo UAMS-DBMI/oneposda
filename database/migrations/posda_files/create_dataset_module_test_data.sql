@@ -341,7 +341,7 @@ INSERT INTO public.transfer_idc (
     dataset_release_transfer_id,
     base_gcs_url,
     dataset_manifest_file_id,
-    file_manifest_file_id,
+    imaging_manifest_file_id,
     clinical_manifest_file_id,
     published,
     "public"
