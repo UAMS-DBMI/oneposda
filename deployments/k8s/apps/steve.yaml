@@ -22,7 +22,7 @@ spec:
     spec:
       containers:
         - name: steve
-          image: tcia/posda:1.0.4
+          image: registry.dbmi.cloud/posda:1.1.5
           workingDir: /home/posda/posdatools/systemd
           # Passed through the image entrypoint's catch-all exec.
           args:

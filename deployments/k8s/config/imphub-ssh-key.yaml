@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: imphub-ssh-key
+type: Opaque
+stringData:
+  id_ed25519: |
+    -----BEGIN OPENSSH PRIVATE KEY-----
+    b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+    QyNTUxOQAAACD8MbBS9c+1lTEEoH8H34LiA6AUGLs+WNjo4sBfQlH7MgAAAKjiUpr44lKa
+    +AAAAAtzc2gtZWQyNTUxOQAAACD8MbBS9c+1lTEEoH8H34LiA6AUGLs+WNjo4sBfQlH7Mg
+    AAAEAJVud5y8+pf8yRy+7JyIJeyYBzlto1JhdzclfNFmLZ9/wxsFL1z7WVMQSgfwffguID
+    oBQYuz5Y2OjiwF9CUfsyAAAAIHF1YXNhckBRdWFzYXJzLU1CUC00LmFkLnVhbXMuZWR1AQ
+    IDBAU=
+    -----END OPENSSH PRIVATE KEY-----
+  id_ed25519.pub: |
+    ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPwxsFL1z7WVMQSgfwffguIDoBQYuz5Y2OjiwF9CUfsy none@k8s-update-job
+  known_hosts: |
+    [imphub-rh7-01.ad.uams.edu]:7999 ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQCe9c5S8Mu7br7JxOY1nIrjcoNdKjVvViUEXRzLOf+Oj24n1+k3qE1NiRiaH6m0eZhLoLqB58a2HNYuyZDPIBNZnxog3XmfmxyAvtFh/QLC3WDg+uwfRE8YSUKNJNs2EmA49lDFI9kdX1rkV2psCCQqbf7/gnzXWefc8ewXyV56Knm2PfPp5iVP69L5It9jc39p2w+tTrFcwwCVtuzAAMcQ520+MOmWoN9yR6GTOVnvyt/BruWBWOwnscDQ6+iUvzyHDp+tZ843+C7pGosmVXu1Wcxctoj+B8fbVWf32fuN9IYPmcmQOerQ3dvrA8vH6bj4pADIvXKHq62j/UyzVlvL

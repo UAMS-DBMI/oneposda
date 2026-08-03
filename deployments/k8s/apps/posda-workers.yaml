@@ -11,7 +11,7 @@ metadata:
     app.kubernetes.io/name: posda-worker-low
     app.kubernetes.io/part-of: posda
 spec:
-  replicas: 3
+  replicas: 5
   selector:
     matchLabels:
       app.kubernetes.io/name: posda-worker-low
@@ -41,7 +41,7 @@ spec:
           # edits), so the limit leaves room well above the idle footprint.
           resources:
             requests:
-              cpu: 250m
+              cpu: "1"
               memory: 512Mi
             limits:
               memory: 4Gi
@@ -131,7 +131,7 @@ metadata:
     app.kubernetes.io/name: posda-worker-high
     app.kubernetes.io/part-of: posda
 spec:
-  replicas: 4
+  replicas: 6
   selector:
     matchLabels:
       app.kubernetes.io/name: posda-worker-high
@@ -160,7 +160,7 @@ spec:
           # High-priority queue gets a bigger CPU share than worker-low.
           resources:
             requests:
-              cpu: 500m
+              cpu: "1"
               memory: 512Mi
             limits:
               memory: 4Gi

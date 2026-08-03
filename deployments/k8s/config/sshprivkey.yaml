@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: sshprivkey
+type: Opaque
+stringData:
+  id_ed25519: |
+    -----BEGIN OPENSSH PRIVATE KEY-----
+    b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+    QyNTUxOQAAACD8MbBS9c+1lTEEoH8H34LiA6AUGLs+WNjo4sBfQlH7MgAAAKjiUpr44lKa
+    +AAAAAtzc2gtZWQyNTUxOQAAACD8MbBS9c+1lTEEoH8H34LiA6AUGLs+WNjo4sBfQlH7Mg
+    AAAEAJVud5y8+pf8yRy+7JyIJeyYBzlto1JhdzclfNFmLZ9/wxsFL1z7WVMQSgfwffguID
+    oBQYuz5Y2OjiwF9CUfsyAAAAIHF1YXNhckBRdWFzYXJzLU1CUC00LmFkLnVhbXMuZWR1AQ
+    IDBAU=
+    -----END OPENSSH PRIVATE KEY-----

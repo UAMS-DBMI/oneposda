@@ -9,15 +9,16 @@ resources:
   - ingress.yaml
   - apps/redis.yaml
   - apps/posda.yaml
-#  - apps/posda-workers.yaml
+  - apps/posda-workers.yaml
   - apps/posda-fast-file-process.yaml
   - apps/posda-api.yaml
   - apps/thumbs.yaml
   - apps/magicka.yaml
-#  - apps/steve.yaml
-#  - apps/ream.yaml
+  - apps/steve.yaml
+  - apps/ream.yaml
   - apps/kaleidoscope.yaml
   - apps/web.yaml
+  - apps/push.yaml
 
 # jobs/sync-deploy.yaml is deliberately NOT a resource here: it is applied on
 # demand to update the oneposda checkout on the posda-deploy PVC.
@@ -59,6 +60,9 @@ secretGenerator:
   - name: ream-env
     envs:
       - config/ream.env
+  - name: push-env
+    envs:
+      - config/push.env
   # The cert/key pair the web nginx expects at /nginx.crt and /nginx.key.
   - name: web-certs
     files:

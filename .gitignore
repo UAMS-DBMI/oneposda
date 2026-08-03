@@ -6,6 +6,7 @@ database.env
 nbia.env
 api.env
 exodus.env
+push.env
 .rediscli_history
 tags
 

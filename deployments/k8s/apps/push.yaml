@@ -1,0 +1,48 @@
+# Submits files to DCM4CHEE. First sends them to ROSS (s3 object store)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: push
+  labels:
+    app.kubernetes.io/name: push
+    app.kubernetes.io/part-of: posda
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: push
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: push
+        app.kubernetes.io/part-of: posda
+    spec:
+      containers:
+        - name: push
+          image: registry.dbmi.cloud/push:1.1.6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          envFrom:
+            - secretRef:
+                name: database-env
+            - secretRef:
+                name: common-env
+            - secretRef:
+                name: ream-env
+            - secretRef:
+                name: push-env
+            - configMapRef:
+                name: posda-env
+          volumeMounts:
+            - name: nas-public
+              mountPath: /nas/public
+      volumes:
+        - name: nas-public
+          persistentVolumeClaim:
+            claimName: nas-public
