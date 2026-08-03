@@ -1,3 +1,4 @@
 redis
 requests
 fire
+pydicom>=3
