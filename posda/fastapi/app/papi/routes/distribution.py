@@ -6,13 +6,16 @@ import asyncio
 import asyncpg
 import csv
 import hashlib
+import httpx
 import io
 import os
 import secrets
+import tempfile
 from .auth import logged_in_user, User
+from . import importer
 
 from ..util import Database
-from ..util.wp import wp_get, wp_url
+from ..util.wp import wp_get, wp_url, wp_client
 
 FILE_STORAGE_PATH = os.getenv("FILE_STORAGE_PATH", "/home/posda/cache/created")
 FILE_STORAGE_ROOT = int(os.getenv("FILE_STORAGE_ROOT_ID", "3"))
@@ -58,15 +61,6 @@ class DatasetReleaseUpdate(BaseModel):
 class DatasetReleaseRecordsetRequest(BaseModel):
     recordset_release_ids: list[int]
 
-class CycleDraftItem(BaseModel):
-    recordset_id: int
-    activity_timepoint_id: int
-    draft_name: Optional[str] = None
-
-class CycleDraftsRequest(BaseModel):
-    items: list[CycleDraftItem]
-    draft_notes: Optional[str] = None
-
 class DatasetReleaseTransferInsert(BaseModel):
     destination_id: int
     transfer_name: str
@@ -96,10 +90,15 @@ class DestinationUpdate(BaseModel):
     default_transfer_mode_id: Optional[int] = None
 
 class RecordsetDraftInsert(BaseModel):
-    draft_name: str
+    # Name is optional -- auto-generated ("Version N Draft" / "Initial Draft")
+    # when omitted. A draft has a single source: an activity timepoint, a
+    # release to clone, or neither (empty). The two source fields are mutually
+    # exclusive.
+    draft_name: Optional[str] = None
     draft_status: Optional[str] = "open"
     draft_notes:  Optional[str] = None
     cloned_from_release_id: Optional[int] = None
+    activity_timepoint_id: Optional[int] = None
 
 class RecordsetDraftUpdate(BaseModel):
     recordset_id: Optional[int] = None
@@ -1061,144 +1060,6 @@ async def get_dataset_cycle(dataset_id: int, db: Database = Depends()):
             "transfers": [dict(t) for t in transfer_rows],
         } if latest_release else None,
     })
-
-
-@router.post("/datasets/{dataset_id}/cycle/drafts")
-# Start a cycle: create a draft per recordset and populate it from the chosen
-# activity timepoint, in one transaction. All-or-nothing -- the guided wizard
-# confirms exactly what will be written, so a partial apply would be a lie.
-async def create_cycle_drafts(
-    dataset_id: int,
-    payload: CycleDraftsRequest,
-    current_user: User = logged_in_user,
-    db: Database = Depends()):
-
-    if not payload.items:
-        api_error("VALIDATION_ERROR", "No recordsets were provided", {"items": []}, 422)
-
-    recordset_ids = [item.recordset_id for item in payload.items]
-    if len(set(recordset_ids)) != len(recordset_ids):
-        api_error(
-            "VALIDATION_ERROR",
-            "Each recordset may appear only once",
-            {"recordset_ids": recordset_ids},
-            422,
-        )
-
-    owned_q = """
-        select recordset_id from recordset where recordset_id = $1 and dataset_id = $2
-        """
-    open_draft_q = """
-        select recordset_draft_id from recordset_draft
-        where recordset_id = $1 and draft_status not in ('published', 'deleted')
-        limit 1
-        """
-    timepoint_q = "select activity_timepoint_id from activity_timepoint where activity_timepoint_id = $1"
-    latest_release_q = """
-        select recordset_release_id, release_number
-        from recordset_release
-        where recordset_id = $1
-        order by release_number desc
-        limit 1
-        """
-    insert_draft_q = """
-        insert into recordset_draft
-            (recordset_id, draft_name, draft_status, draft_notes,
-             cloned_from_release_id, when_created, who_created, when_updated, who_updated)
-        values ($1, $2, 'open', $3, $4, now(), $5, now(), $5)
-        returning recordset_draft_id, recordset_id, draft_name, draft_status
-        """
-    populate_q = """
-        insert into recordset_draft_file (recordset_draft_id, file_id, file_name)
-        select $1, atf.file_id,
-               case when f.is_dicom_file then null
-                    else (select fi.file_name
-                          from file_import fi
-                          where fi.file_id = atf.file_id
-                          order by fi.file_import_time desc nulls last, fi.import_event_id desc
-                          limit 1)
-               end
-        from activity_timepoint_file atf
-        join file f on f.file_id = atf.file_id
-        where atf.activity_timepoint_id = $2
-        """
-    count_q = "select count(*)::int as file_count from recordset_draft_file where recordset_draft_id = $1"
-
-    created = []
-
-    try:
-        async with db.transaction() as conn:
-            for item in payload.items:
-                owned = await conn.fetch(owned_q, item.recordset_id, dataset_id)
-                if not owned:
-                    api_error(
-                        "VALIDATION_ERROR",
-                        f"Recordset {item.recordset_id} does not belong to dataset {dataset_id}",
-                        {"recordset_id": item.recordset_id, "dataset_id": dataset_id},
-                        422,
-                    )
-
-                # One open draft per recordset -- the policy the cycle view assumes.
-                existing = await conn.fetch(open_draft_q, item.recordset_id)
-                if existing:
-                    api_error(
-                        "CONFLICT",
-                        f"Recordset {item.recordset_id} already has an open draft",
-                        {
-                            "recordset_id": item.recordset_id,
-                            "recordset_draft_id": existing[0]["recordset_draft_id"],
-                        },
-                        409,
-                    )
-
-                timepoint = await conn.fetch(timepoint_q, item.activity_timepoint_id)
-                if not timepoint:
-                    api_error(
-                        "NOT_FOUND",
-                        f"Timepoint {item.activity_timepoint_id} not found",
-                        {"activity_timepoint_id": item.activity_timepoint_id},
-                        404,
-                    )
-
-                latest = await conn.fetch(latest_release_q, item.recordset_id)
-                cloned_from = latest[0]["recordset_release_id"] if latest else None
-                next_number = (latest[0]["release_number"] + 1) if latest else None
-                draft_name = item.draft_name or (
-                    f"Version {next_number} Draft" if next_number else "Initial Draft"
-                )
-
-                rows = await conn.fetch(
-                    insert_draft_q,
-                    item.recordset_id,
-                    draft_name,
-                    payload.draft_notes,
-                    cloned_from,
-                    current_user.user_id,
-                )
-                draft = rows[0]
-
-                await conn.execute(populate_q, draft["recordset_draft_id"], item.activity_timepoint_id)
-                counted = await conn.fetch(count_q, draft["recordset_draft_id"])
-
-                created.append({
-                    "recordset_id": draft["recordset_id"],
-                    "recordset_draft_id": draft["recordset_draft_id"],
-                    "draft_name": draft["draft_name"],
-                    "draft_status": draft["draft_status"],
-                    "activity_timepoint_id": item.activity_timepoint_id,
-                    "file_count": counted[0]["file_count"] if counted else 0,
-                })
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        db_error(
-            e,
-            operation="starting cycle drafts",
-            context={"dataset_id": dataset_id},
-        )
-
-    return item_response({"dataset_id": dataset_id, "drafts": created})
 
 
 @router.get("/datasets/{dataset_id}/releases")
@@ -2411,87 +2272,125 @@ async def delete_recordset_destination(recordset_id: int, destination_id: int, d
 # -----------------------------------------RECORDSET DRAFTS-----------------------------------------------
 
 @router.post("/recordsets/{recordset_id}/drafts")
-# Create draft release
+# Create one recordset draft from any single source -- an activity timepoint, a
+# previous release (clone), or empty. Auto-names when no name is given and
+# enforces one open draft per recordset (the policy the cycle view assumes).
 async def create_recordset_draft(
     recordset_id: int,
     payload: RecordsetDraftInsert,
     current_user: User = logged_in_user,
     db: Database = Depends()):
 
-    if not payload.draft_name.strip():
+    if payload.activity_timepoint_id is not None and payload.cloned_from_release_id is not None:
         api_error(
             "VALIDATION_ERROR",
-            "Required recordset draft fields must be non-empty",
-            {"required": ["draft_name"]},
+            "A draft has a single source: provide activity_timepoint_id OR cloned_from_release_id, not both",
+            {
+                "activity_timepoint_id": payload.activity_timepoint_id,
+                "cloned_from_release_id": payload.cloned_from_release_id,
+            },
             422,
         )
 
-    query = """\
+    open_draft_q = """
+        select recordset_draft_id from recordset_draft
+        where recordset_id = $1 and draft_status not in ('published', 'deleted')
+        limit 1
+        """
+    latest_release_q = """
+        select recordset_release_id, release_number
+        from recordset_release
+        where recordset_id = $1
+        order by release_number desc
+        limit 1
+        """
+    timepoint_q = "select activity_timepoint_id from activity_timepoint where activity_timepoint_id = $1"
+    validate_release_q = "select 1 from recordset_release where recordset_release_id = $1 limit 1"
+    insert_draft_q = """\
         insert into recordset_draft (
-            recordset_id,
-            cloned_from_release_id,
-            draft_name,
-            draft_notes,
-            draft_status,
-            when_created,
-            when_updated,
-            who_created,
-            who_updated
+            recordset_id, cloned_from_release_id, draft_name, draft_notes, draft_status,
+            when_created, when_updated, who_created, who_updated
         )
         values ($1, $2, $3, $4, $5, now(), now(), $6, $6)
         returning *;
     """
-
-    validate_release_query = """\
-        select 1
-        from recordset_release
-        where recordset_release_id = $1
-        limit 1;
-    """
-
-    clone_files_query = """\
+    # Non-DICOM files carry their file_import name; DICOM stays null (see the
+    # add_dataset_module_tables DDL / file-name notes).
+    populate_from_timepoint_q = """
+        insert into recordset_draft_file (recordset_draft_id, file_id, file_name)
+        select $1, atf.file_id,
+               case when f.is_dicom_file then null
+                    else (select fi.file_name
+                          from file_import fi
+                          where fi.file_id = atf.file_id
+                          order by fi.file_import_time desc nulls last, fi.import_event_id desc
+                          limit 1)
+               end
+        from activity_timepoint_file atf
+        join file f on f.file_id = atf.file_id
+        where atf.activity_timepoint_id = $2
+        """
+    clone_from_release_q = """\
         insert into recordset_draft_file (recordset_draft_id, file_id, file_name)
         select $1, rrf.file_id, rrf.file_name
         from recordset_release_file rrf
         where rrf.recordset_release_id = $2
         on conflict (recordset_draft_id, file_id, file_name) do nothing;
     """
-
-    values = [
-        recordset_id,
-        payload.cloned_from_release_id,
-        payload.draft_name,
-        payload.draft_notes,
-        payload.draft_status,
-        current_user.user_id,
-    ]
+    count_q = "select count(*)::int as file_count from recordset_draft_file where recordset_draft_id = $1"
 
     try:
         async with db.transaction() as conn:
-            if payload.cloned_from_release_id is not None:
-                release_record = await conn.fetch(
-                    validate_release_query,
-                    payload.cloned_from_release_id,
+            # One open draft per recordset.
+            existing = await conn.fetch(open_draft_q, recordset_id)
+            if existing:
+                api_error(
+                    "CONFLICT",
+                    "Recordset already has an open draft",
+                    {"recordset_id": recordset_id, "recordset_draft_id": existing[0]["recordset_draft_id"]},
+                    409,
                 )
 
-                if not release_record:
-                    api_error(
-                        "VALIDATION_ERROR",
-                        "Invalid cloned_from_release_id",
-                        {
-                            "cloned_from_release_id": payload.cloned_from_release_id,
-                        },
-                        422,
-                    )
-
-            record = await conn.fetch(query, *values)
-
+            # Validate the chosen source before writing anything.
+            if payload.activity_timepoint_id is not None:
+                if not await conn.fetch(timepoint_q, payload.activity_timepoint_id):
+                    api_error("NOT_FOUND", "Timepoint not found",
+                              {"activity_timepoint_id": payload.activity_timepoint_id}, 404)
             if payload.cloned_from_release_id is not None:
-                await conn.execute(
-                    clone_files_query,
-                    record[0]["recordset_draft_id"],
-                    payload.cloned_from_release_id,
-                )
+                if not await conn.fetch(validate_release_q, payload.cloned_from_release_id):
+                    api_error("VALIDATION_ERROR", "Invalid cloned_from_release_id",
+                              {"cloned_from_release_id": payload.cloned_from_release_id}, 422)
+
+            latest = await conn.fetch(latest_release_q, recordset_id)
+            next_number = (latest[0]["release_number"] + 1) if latest else None
+
+            draft_name = (payload.draft_name or "").strip() or (
+                f"Version {next_number} Draft" if next_number else "Initial Draft"
+            )
+
+            # Provenance: an explicit release for a clone; otherwise the latest
+            # release as the staleness baseline (mirrors the cycle endpoint).
+            cloned_from = payload.cloned_from_release_id
+            if cloned_from is None and payload.activity_timepoint_id is not None:
+                cloned_from = latest[0]["recordset_release_id"] if latest else None
+
+            record = await conn.fetch(
+                insert_draft_q,
+                recordset_id,
+                cloned_from,
+                draft_name,
+                payload.draft_notes,
+                payload.draft_status,
+                current_user.user_id,
+            )
+            draft_id = record[0]["recordset_draft_id"]
+
+            if payload.activity_timepoint_id is not None:
+                await conn.execute(populate_from_timepoint_q, draft_id, payload.activity_timepoint_id)
+            elif payload.cloned_from_release_id is not None:
+                await conn.execute(clone_from_release_q, draft_id, payload.cloned_from_release_id)
+
+            counted = await conn.fetch(count_q, draft_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -2501,7 +2400,9 @@ async def create_recordset_draft(
             context={"recordset_id": recordset_id},
         )
 
-    return item_response(record[0])
+    result = dict(record[0])
+    result["file_count"] = counted[0]["file_count"] if counted else 0
+    return item_response(result)
 
 
 @router.get("/recordsets/drafts/{draft_id}")
@@ -2642,21 +2543,39 @@ async def delete_recordset_draft(
 
 
 @router.get("/recordsets/drafts/{draft_id}/files")
-# List files in a draft
+# List files in a draft. `dicom` filters to DICOM (true) or non-DICOM (false,
+# treating unprocessed/null as non-DICOM); omit for all.
 async def get_recordset_draft_files(
     draft_id: int,
+    dicom: Optional[bool] = Query(default=None),
     page: Optional[int] = Query(default=None),
     limit: Optional[int] = Query(default=None),
     db: Database = Depends()):
 
+    if dicom is True:
+        dicom_clause = "and f.is_dicom_file = true"
+    elif dicom is False:
+        dicom_clause = "and coalesce(f.is_dicom_file, false) = false"
+    else:
+        dicom_clause = ""
+
     list_q = f"""\
-        select rf.recordset_draft_file_id, rf.file_id, rf.file_name
+        select rf.recordset_draft_file_id, rf.file_id, rf.file_name,
+               f.size, f.file_type, f.is_dicom_file
         from recordset_draft_file rf
+        join file f using (file_id)
         where rf.recordset_draft_id = $1
+        {dicom_clause}
         order by rf.file_name nulls first, rf.file_id
         {page_clause(page, limit)}
         """
-    count_q = "select count(*) as total from recordset_draft_file where recordset_draft_id = $1"
+    count_q = f"""\
+        select count(*) as total
+        from recordset_draft_file rf
+        join file f using (file_id)
+        where rf.recordset_draft_id = $1
+        {dicom_clause}
+        """
 
     try:
         records = await db.fetch(list_q, [draft_id])
@@ -2883,6 +2802,166 @@ async def remove_recordset_draft_files(
         }
     )
 
+
+async def _resolve_recordset_wp_download_file(draft_id: int, db: Database):
+    """Walk draft -> recordset -> linked WP download object -> download_file
+    media -> source_url. Returns (source_url, file_name). Raises api_error with
+    a specific 4xx at whichever link in the chain is missing."""
+    draft = await db.fetch_one(
+        "select recordset_id from recordset_draft where recordset_draft_id = $1",
+        [draft_id],
+    )
+    if not draft:
+        api_error("NOT_FOUND", "Recordset draft not found", {"draft_id": draft_id}, 404)
+
+    link = await db.fetch_one(
+        """
+        select wp_object_id from wp_object_map
+        where posda_object_type = 'recordset'
+          and wp_object_type = 'download'
+          and posda_object_id = $1
+        """,
+        [draft["recordset_id"]],
+    )
+    if not link:
+        api_error(
+            "NOT_LINKED",
+            "This recordset is not linked to a WordPress download object.",
+            {"recordset_id": draft["recordset_id"]},
+            422,
+        )
+    download_object_id = link["wp_object_id"]
+
+    try:
+        download = await wp_get(f"{wp_url('Download')}/{download_object_id}")
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    if download is None:
+        api_error(
+            "NOT_FOUND",
+            "The linked WordPress download object was not found.",
+            {"wp_download_object_id": download_object_id},
+            404,
+        )
+
+    media_id = (download.get("download_file") or {}).get("ID")
+    if not media_id:
+        api_error(
+            "NO_FILE",
+            "The linked download object has no download_file attached.",
+            {"wp_download_object_id": download_object_id},
+            422,
+        )
+
+    try:
+        media = await wp_get(f"{wp_url('Media')}/{media_id}")
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    if media is None:
+        api_error(
+            "NOT_FOUND",
+            "The download_file media object was not found.",
+            {"media_id": media_id},
+            404,
+        )
+
+    source_url = media.get("source_url")
+    if not source_url:
+        api_error(
+            "NO_FILE",
+            "The media object has no source_url to fetch.",
+            {"media_id": media_id},
+            422,
+        )
+
+    # The media's stored filename is the tail of its source_url.
+    return source_url, os.path.basename(source_url)
+
+
+@router.post("/recordsets/drafts/{draft_id}/files/from-wp")
+# Pull the file attached to the recordset's WP download object into the draft.
+async def add_recordset_draft_file_from_wp(
+    draft_id: int,
+    db: Database = Depends()):
+
+    source_url, file_name = await _resolve_recordset_wp_download_file(draft_id, db)
+
+    # Fetch the bytes to a temp file, hashing as we go -- mirrors importer's
+    # /import/file so a WP-sourced file imports and processes identically.
+    fp = tempfile.NamedTemporaryFile(dir=importer.TEMP_STORAGE_PATH, delete=False)
+    m = hashlib.md5(usedforsecurity=False)
+    size = 0
+    try:
+        async with wp_client() as client:
+            async with client.stream("GET", source_url) as resp:
+                resp.raise_for_status()
+                async for chunk in resp.aiter_bytes():
+                    m.update(chunk)
+                    fp.write(chunk)
+                    size += len(chunk)
+        fp.close()
+    except httpx.HTTPStatusError as e:
+        fp.close()
+        os.unlink(fp.name)
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+    except Exception:
+        fp.close()
+        os.unlink(fp.name)
+        raise
+
+    digest = m.hexdigest()
+
+    try:
+        pool = db.get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                created, file_id = await importer.create_or_get_file_id(digest, size, conn)
+                if created:
+                    root_id, _root, rel_path = await importer.copy_file_into_place(
+                        fp.name, digest
+                    )
+                    await importer.create_file_location(file_id, root_id, rel_path, conn)
+                    await importer.make_ready_to_process(file_id, conn)
+                else:
+                    os.unlink(fp.name)
+
+                import_event_id = await importer.create_import_event(
+                    conn, "recordset draft WP import", origin=source_url
+                )
+                await importer.create_file_import(file_id, import_event_id, file_name, conn)
+
+                record = await conn.fetch(
+                    """
+                    insert into recordset_draft_file (recordset_draft_id, file_id, file_name)
+                    values ($1, $2, $3)
+                    on conflict (recordset_draft_id, file_id, file_name) do nothing
+                    returning recordset_draft_file_id, file_id, file_name
+                    """,
+                    draft_id, file_id, file_name,
+                )
+                count_record = await conn.fetch(
+                    "select count(*) as current_count from recordset_draft_file where recordset_draft_id = $1",
+                    draft_id,
+                )
+    except HTTPException:
+        raise
+    except Exception as e:
+        db_error(
+            e,
+            operation="importing WordPress file into recordset draft",
+            context={"draft_id": draft_id, "source_url": source_url},
+        )
+
+    return item_response(
+        {
+            "draft_id": draft_id,
+            "file_id": file_id,
+            "file_name": file_name,
+            "created": created,
+            "added": bool(record),
+            "current_count": count_record[0]["current_count"] if count_record else 0,
+        }
+    )
 
 
 class DraftDiffResponse(BaseModel):
