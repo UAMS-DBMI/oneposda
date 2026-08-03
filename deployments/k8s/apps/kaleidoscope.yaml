@@ -1,6 +1,6 @@
 # Kaleidoscope. Generates static content into the shared kaleidoscope-files
-# directory, which web serves at /k. No Service: nothing connects to it over
-# the network (verify against default.conf.prod).
+# directory, which web serves at /k. Also serves from a lightweight http 
+# server.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -39,6 +39,14 @@ spec:
           env:
             - name: DEBUG
               value: "1"
+          ports:
+            - name: http
+              containerPort: 8089
+          readinessProbe:
+            tcpSocket:
+              port: 8089
+            initialDelaySeconds: 5
+            periodSeconds: 10
           volumeMounts:
             - name: nas-public
               mountPath: /nas/public
@@ -115,3 +123,17 @@ spec:
           hostPath:
             path: /nas/ross/posda-intermediate-archive
             type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kaleidoscope
+  labels:
+    app.kubernetes.io/name: kaleidoscope
+    app.kubernetes.io/part-of: posda
+spec:
+  selector:
+    app.kubernetes.io/name: kaleidoscope
+  ports:
+    - name: http
+      port: 8089
