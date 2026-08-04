@@ -2976,6 +2976,603 @@ class DraftDiffResponse(BaseModel):
     unchanged_count: int
 
 
+class SeriesApplyEntry(BaseModel):
+    activity_series_uid: str
+    action: str  # "replace" | "add"
+    target_series_uid: Optional[str] = None  # required when action == "replace"
+
+
+class SeriesApplyRequest(BaseModel):
+    compare_timepoint_id: int
+    compare_activity_id: Optional[int] = None
+    entries: list[SeriesApplyEntry] = []
+    # Also pull the activity's non-DICOM files not already in the draft.
+    include_non_dicom: bool = False
+
+
+# Insert one activity series' files into the draft (DICOM -> null name). Shared
+# by replace and add; on conflict skips an exact (file, name) repeat.
+_INSERT_SERIES_FILES_Q = """
+    insert into recordset_draft_file (recordset_draft_id, file_id, file_name)
+    select $1, atf.file_id,
+           case when f.is_dicom_file then null
+                else (select fi.file_name
+                      from file_import fi
+                      where fi.file_id = atf.file_id
+                      order by fi.file_import_time desc nulls last, fi.import_event_id desc
+                      limit 1)
+           end
+    from activity_timepoint_file atf
+    join file f          on f.file_id = atf.file_id
+    join file_series fse on fse.file_id = atf.file_id
+    where atf.activity_timepoint_id = $2 and fse.series_instance_uid = $3
+    on conflict (recordset_draft_id, file_id, file_name) do nothing
+    returning recordset_draft_file_id
+"""
+
+_DELETE_SERIES_FILES_Q = """
+    delete from recordset_draft_file
+    where recordset_draft_id = $1
+      and file_id in (select file_id from file_series where series_instance_uid = $2)
+    returning recordset_draft_file_id
+"""
+
+_INSERT_NON_DICOM_Q = """
+    insert into recordset_draft_file (recordset_draft_id, file_id, file_name)
+    select $1, atf.file_id,
+           (select fi.file_name
+            from file_import fi
+            where fi.file_id = atf.file_id
+            order by fi.file_import_time desc nulls last, fi.import_event_id desc
+            limit 1)
+    from activity_timepoint_file atf
+    join file f on f.file_id = atf.file_id
+    where atf.activity_timepoint_id = $2 and coalesce(f.is_dicom_file, false) = false
+    on conflict (recordset_draft_id, file_id, file_name) do nothing
+    returning recordset_draft_file_id
+"""
+
+
+@router.post("/recordsets/drafts/{draft_id}/series/apply")
+# Apply an activity's DICOM series to the draft: per entry, replace (remove the
+# target series' files, add the activity series') or add. All-or-nothing so a
+# partial correction can't land. Other series in the draft are untouched.
+async def apply_recordset_draft_series(
+    draft_id: int,
+    payload: SeriesApplyRequest,
+    db: Database = Depends()):
+
+    if not payload.entries and not payload.include_non_dicom:
+        api_error("VALIDATION_ERROR", "Nothing to apply", {"entries": []}, 422)
+
+    for entry in payload.entries:
+        if entry.action not in ("replace", "add"):
+            api_error(
+                "VALIDATION_ERROR",
+                f"Unknown action '{entry.action}'",
+                {"activity_series_uid": entry.activity_series_uid},
+                422,
+            )
+        if entry.action == "replace" and not entry.target_series_uid:
+            api_error(
+                "VALIDATION_ERROR",
+                "target_series_uid is required to replace a series",
+                {"activity_series_uid": entry.activity_series_uid},
+                422,
+            )
+
+    draft = await db.fetch_one(
+        "select recordset_draft_id from recordset_draft where recordset_draft_id = $1",
+        [draft_id],
+    )
+    if not draft:
+        api_error("NOT_FOUND", "Recordset draft not found", {"draft_id": draft_id}, 404)
+
+    if payload.compare_activity_id is not None:
+        tp = await db.fetch_one(
+            """
+            select activity_timepoint_id from activity_timepoint
+            where activity_timepoint_id = $1 and activity_id = $2
+            """,
+            [payload.compare_timepoint_id, payload.compare_activity_id],
+        )
+        if tp is None:
+            api_error(
+                "NOT_FOUND",
+                f"Timepoint {payload.compare_timepoint_id} not found for activity {payload.compare_activity_id}",
+                {"compare_timepoint_id": payload.compare_timepoint_id},
+                404,
+            )
+
+    series_replaced = 0
+    series_added = 0
+    files_removed = 0
+    files_added = 0
+    non_dicom_added = 0
+
+    try:
+        async with db.transaction() as conn:
+            for entry in payload.entries:
+                if entry.action == "replace":
+                    removed = await conn.fetch(
+                        _DELETE_SERIES_FILES_Q, draft_id, entry.target_series_uid
+                    )
+                    files_removed += len(removed)
+                    series_replaced += 1
+                else:
+                    series_added += 1
+
+                added = await conn.fetch(
+                    _INSERT_SERIES_FILES_Q,
+                    draft_id,
+                    payload.compare_timepoint_id,
+                    entry.activity_series_uid,
+                )
+                files_added += len(added)
+
+            if payload.include_non_dicom:
+                nd = await conn.fetch(
+                    _INSERT_NON_DICOM_Q, draft_id, payload.compare_timepoint_id
+                )
+                non_dicom_added = len(nd)
+
+            count_record = await conn.fetch(
+                "select count(*) as current_count from recordset_draft_file where recordset_draft_id = $1",
+                draft_id,
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        db_error(
+            e,
+            operation="applying series to recordset draft",
+            context={"draft_id": draft_id},
+        )
+
+    return item_response({
+        "draft_id": draft_id,
+        "series_replaced": series_replaced,
+        "series_added": series_added,
+        "files_removed": files_removed,
+        "files_added": files_added,
+        "non_dicom_added": non_dicom_added,
+        "current_count": count_record[0]["current_count"] if count_record else 0,
+    })
+
+
+# --- Series-level reconcile: counts + search + bulk operations ---------------
+# Lists don't scale (a dataset can have thousands of series), so the UI works
+# from counts (series-summary) and a filtered, paged search (series-search); the
+# write ops below are all server-computed set operations by SeriesInstanceUID.
+
+# DICOM series UIDs present in an activity timepoint / a draft.
+_SOURCE_UIDS = """
+    select distinct fse.series_instance_uid
+    from activity_timepoint_file atf
+    join file f          on f.file_id = atf.file_id and f.is_dicom_file = true
+    join file_series fse on fse.file_id = atf.file_id
+    where atf.activity_timepoint_id = $2
+"""
+_DRAFT_UIDS = """
+    select distinct fse.series_instance_uid
+    from recordset_draft_file rdf
+    join file f          on f.file_id = rdf.file_id and f.is_dicom_file = true
+    join file_series fse on fse.file_id = rdf.file_id
+    where rdf.recordset_draft_id = $1
+"""
+
+# Series present in BOTH the draft and the timepoint whose file sets actually
+# differ (files are content-addressed, so a differing file_id == changed content).
+# Matched-but-identical series are excluded -- re-adding them would be no-op churn.
+# $1 draft, $2 timepoint.
+_CHANGED_SERIES_UIDS = """
+    with draft_sf as (
+        select fse.series_instance_uid as uid, rdf.file_id
+        from recordset_draft_file rdf
+        join file f          on f.file_id = rdf.file_id and f.is_dicom_file = true
+        join file_series fse on fse.file_id = rdf.file_id
+        where rdf.recordset_draft_id = $1
+    ),
+    source_sf as (
+        select fse.series_instance_uid as uid, atf.file_id
+        from activity_timepoint_file atf
+        join file f          on f.file_id = atf.file_id and f.is_dicom_file = true
+        join file_series fse on fse.file_id = atf.file_id
+        where atf.activity_timepoint_id = $2
+    ),
+    matched as (
+        select uid from draft_sf intersect select uid from source_sf
+    )
+    select distinct uid from (
+        select uid, file_id from draft_sf  except select uid, file_id from source_sf
+        union all
+        select uid, file_id from source_sf except select uid, file_id from draft_sf
+    ) diff
+    where uid in (select uid from matched)
+"""
+
+# Insert an activity timepoint's DICOM files for the given series UIDs (DICOM ->
+# null name). $1 draft, $2 timepoint, $3 uid array.
+_INSERT_SOURCE_SERIES_BY_UIDS = """
+    insert into recordset_draft_file (recordset_draft_id, file_id, file_name)
+    select $1, atf.file_id,
+           case when f.is_dicom_file then null
+                else (select fi.file_name from file_import fi
+                      where fi.file_id = atf.file_id
+                      order by fi.file_import_time desc nulls last, fi.import_event_id desc
+                      limit 1)
+           end
+    from activity_timepoint_file atf
+    join file f          on f.file_id = atf.file_id
+    join file_series fse on fse.file_id = atf.file_id
+    where atf.activity_timepoint_id = $2 and fse.series_instance_uid = any($3::text[])
+    on conflict (recordset_draft_id, file_id, file_name) do nothing
+    returning recordset_draft_file_id
+"""
+
+# Delete a draft's files for the given series UIDs. $1 draft, $2 uid array.
+_DELETE_DRAFT_SERIES_BY_UIDS = """
+    delete from recordset_draft_file rdf
+    using file_series fse
+    where rdf.recordset_draft_id = $1
+      and fse.file_id = rdf.file_id
+      and fse.series_instance_uid = any($2::text[])
+    returning rdf.recordset_draft_file_id
+"""
+
+
+async def _require_timepoint(db, timepoint_id: int, activity_id: Optional[int]):
+    if activity_id is None:
+        tp = await db.fetch_one(
+            "select activity_timepoint_id from activity_timepoint where activity_timepoint_id = $1",
+            [timepoint_id],
+        )
+    else:
+        tp = await db.fetch_one(
+            "select activity_timepoint_id from activity_timepoint where activity_timepoint_id = $1 and activity_id = $2",
+            [timepoint_id, activity_id],
+        )
+    if tp is None:
+        api_error("NOT_FOUND", f"Timepoint {timepoint_id} not found", {"compare_timepoint_id": timepoint_id}, 404)
+
+
+async def _require_draft(db, draft_id: int):
+    draft = await db.fetch_one(
+        "select recordset_draft_id from recordset_draft where recordset_draft_id = $1",
+        [draft_id],
+    )
+    if not draft:
+        api_error("NOT_FOUND", "Recordset draft not found", {"draft_id": draft_id}, 404)
+
+
+@router.get("/recordsets/drafts/{draft_id}/series-summary")
+async def get_recordset_draft_series_summary(
+    draft_id: int,
+    compare_timepoint_id: int,
+    compare_activity_id: Optional[int] = None,
+    db: Database = Depends()):
+    """Counts for a source-vs-draft series reconcile -- no lists, so it scales.
+    Drives the Merge / Replace-all previews."""
+    await _require_draft(db, draft_id)
+    await _require_timepoint(db, compare_timepoint_id, compare_activity_id)
+
+    q = f"""
+        with s as ({_SOURCE_UIDS}), d as ({_DRAFT_UIDS})
+        select
+            (select count(*) from s) as source_series_count,
+            (select count(*) from d) as draft_series_count,
+            (select count(*) from (select * from s intersect select * from d) x) as matching_series_count,
+            (select count(*) from (select * from s except    select * from d) x) as new_series_count,
+            (select count(*) from (select * from d except    select * from s) x) as draft_only_series_count,
+            (select count(*) from activity_timepoint_file atf
+               join file f on f.file_id = atf.file_id and f.is_dicom_file = true
+               where atf.activity_timepoint_id = $2) as source_dicom_file_count,
+            (select count(*) from recordset_draft_file rdf
+               join file f on f.file_id = rdf.file_id and f.is_dicom_file = true
+               where rdf.recordset_draft_id = $1) as draft_dicom_file_count,
+            (select count(*) from activity_timepoint_file atf
+               join file f on f.file_id = atf.file_id
+               where atf.activity_timepoint_id = $2 and coalesce(f.is_dicom_file, false) = false)
+               as source_non_dicom_file_count,
+            (select count(*) from recordset_draft_file rdf
+               join file f on f.file_id = rdf.file_id
+               where rdf.recordset_draft_id = $1 and coalesce(f.is_dicom_file, false) = false)
+               as draft_non_dicom_file_count,
+            (select count(*) from (
+                select atf.file_id from activity_timepoint_file atf
+                join file f on f.file_id = atf.file_id
+                where atf.activity_timepoint_id = $2 and coalesce(f.is_dicom_file, false) = false
+                except
+                select rdf.file_id from recordset_draft_file rdf where rdf.recordset_draft_id = $1
+            ) x) as non_dicom_to_add
+    """
+    try:
+        row = await db.fetch_one(q, [draft_id, compare_timepoint_id])
+        changed = await db.fetch(_CHANGED_SERIES_UIDS, [draft_id, compare_timepoint_id])
+    except Exception as e:
+        db_error(e, operation="summarizing draft series", context={"draft_id": draft_id})
+
+    changed_count = len(changed)
+    return item_response({
+        "draft_id": draft_id,
+        **dict(row),
+        # Of the matching series, only these have differing files (worth updating).
+        "changed_series_count": changed_count,
+        "unchanged_series_count": row["matching_series_count"] - changed_count,
+    })
+
+
+@router.get("/recordsets/drafts/{draft_id}/series-search")
+async def search_recordset_draft_series(
+    draft_id: int,
+    scope: str = Query(..., pattern="^(source|draft)$"),
+    granularity: str = Query("series", pattern="^(series|files)$"),
+    compare_timepoint_id: Optional[int] = None,
+    compare_activity_id: Optional[int] = None,
+    patient_id: Optional[str] = None,
+    study_instance_uid: Optional[str] = None,
+    series_instance_uid: Optional[str] = None,
+    sop_instance_uid: Optional[str] = None,
+    file_id: Optional[int] = None,
+    page: Optional[int] = Query(default=1),
+    limit: Optional[int] = Query(default=50),
+    db: Database = Depends()):
+    """Find the DICOM series (or, with granularity=files, individual draft files)
+    whose files match any combination of identifiers -- patient / study / series /
+    SOP instance UID (ILIKE partials) or an exact Posda file_id. `granularity=files`
+    lists each instance (for per-file removal via the series drill-in) and matches
+    series_instance_uid exactly; it is draft-only. At least one identifier required."""
+    await _require_draft(db, draft_id)
+    if scope == "source":
+        if compare_timepoint_id is None:
+            api_error("VALIDATION_ERROR", "compare_timepoint_id is required for scope=source", {}, 422)
+        await _require_timepoint(db, compare_timepoint_id, compare_activity_id)
+    if granularity == "files" and scope != "draft":
+        api_error("VALIDATION_ERROR", "granularity=files is only valid for scope=draft", {}, 422)
+
+    if not any([patient_id, study_instance_uid, series_instance_uid, sop_instance_uid, file_id]):
+        api_error("VALIDATION_ERROR", "Provide at least one search identifier", {}, 422)
+
+    # Inline the validated ints; bind the raw filter values ($1-$5) and wrap for
+    # ILIKE in SQL, so every query references the same dense parameter set.
+    draft = int(draft_id)
+    if scope == "source":
+        src_from = "activity_timepoint_file sf"
+        scope_where = f"sf.activity_timepoint_id = {int(compare_timepoint_id)}"
+    else:
+        src_from = "recordset_draft_file sf"
+        scope_where = f"sf.recordset_draft_id = {draft}"
+
+    # Files granularity drills into one exact series; series granularity is a
+    # forgiving partial match.
+    series_match = (
+        "fse.series_instance_uid = $3" if granularity == "files"
+        else "fse.series_instance_uid ilike '%'||$3||'%'"
+    )
+    filt = f"""
+        and ($1::text is null or fp.patient_id ilike '%'||$1||'%')
+        and ($2::text is null or fs.study_instance_uid ilike '%'||$2||'%')
+        and ($3::text is null or {series_match})
+        and ($4::text is null or fsc.sop_instance_uid ilike '%'||$4||'%')
+        and ($5::int  is null or sf.file_id = $5)
+    """
+    args = [patient_id, study_instance_uid, series_instance_uid, sop_instance_uid, file_id]
+
+    if granularity == "files":
+        # Draft-only: one row per membership, so removal can target the instance.
+        common_from = f"""
+            from recordset_draft_file sf
+            join file f            on f.file_id = sf.file_id and f.is_dicom_file = true
+            join file_series fse   on fse.file_id = sf.file_id
+            left join file_patient fp  on fp.file_id = sf.file_id
+            left join file_study   fs  on fs.file_id = sf.file_id
+            left join file_sop_common fsc on fsc.file_id = sf.file_id
+            where sf.recordset_draft_id = {draft} {filt}
+        """
+        list_q = f"""
+            select sf.recordset_draft_file_id, sf.file_id,
+                   fsc.sop_instance_uid, fse.series_instance_uid,
+                   fse.modality, fse.series_number, fse.series_description, fp.patient_id
+            {common_from}
+            order by fse.series_instance_uid, fsc.sop_instance_uid nulls last, sf.file_id
+            {page_clause(page, limit)}
+        """
+        count_q = f"select count(*) as total {common_from}"
+    else:
+        # A file (in scope) matching all provided identifiers pins its series.
+        matching = f"""
+            select distinct fse.series_instance_uid
+            from {src_from}
+            join file f            on f.file_id = sf.file_id and f.is_dicom_file = true
+            join file_series fse   on fse.file_id = sf.file_id
+            left join file_patient fp  on fp.file_id = sf.file_id
+            left join file_study   fs  on fs.file_id = sf.file_id
+            left join file_sop_common fsc on fsc.file_id = sf.file_id
+            where {scope_where} {filt}
+        """
+        list_q = f"""
+            with matching as ({matching})
+            select fse.series_instance_uid,
+                   max(fse.modality) as modality, max(fse.series_number) as series_number,
+                   max(fse.series_description) as series_description,
+                   max(fp.patient_id) as patient_id, max(fs.study_instance_uid) as study_instance_uid,
+                   count(distinct sf.file_id) as file_count
+            from {src_from}
+            join file f          on f.file_id = sf.file_id and f.is_dicom_file = true
+            join file_series fse on fse.file_id = sf.file_id
+            left join file_patient fp on fp.file_id = sf.file_id
+            left join file_study   fs on fs.file_id = sf.file_id
+            where {scope_where}
+              and fse.series_instance_uid in (select series_instance_uid from matching)
+            group by fse.series_instance_uid
+            order by max(fp.patient_id) nulls last, max(fse.series_number) nulls last, fse.series_instance_uid
+            {page_clause(page, limit)}
+        """
+        count_q = f"select count(*) as total from ({matching}) m"
+
+    try:
+        rows = await db.fetch(list_q, args)
+        total = (await db.fetch(count_q, args))[0]["total"]
+    except Exception as e:
+        db_error(e, operation="searching draft series", context={"draft_id": draft_id})
+
+    return paged_response(rows, total, page, limit)
+
+
+class SeriesMergeRequest(BaseModel):
+    compare_timepoint_id: int
+    compare_activity_id: Optional[int] = None
+    add_new: bool = True
+    update_matching: bool = True
+    include_non_dicom: bool = False
+
+
+@router.post("/recordsets/drafts/{draft_id}/series/merge")
+# Merge an activity into the draft: optionally add series not yet in the draft
+# and/or replace the files of series already in it (matched by UID). One
+# transaction; series only in the draft are left alone.
+async def merge_recordset_draft_series(
+    draft_id: int,
+    payload: SeriesMergeRequest,
+    db: Database = Depends()):
+
+    if not payload.add_new and not payload.update_matching and not payload.include_non_dicom:
+        api_error("VALIDATION_ERROR", "Nothing selected to merge", {}, 422)
+
+    await _require_draft(db, draft_id)
+    await _require_timepoint(db, payload.compare_timepoint_id, payload.compare_activity_id)
+
+    tp = payload.compare_timepoint_id
+    series_updated = series_added = files_removed = files_added = non_dicom_added = 0
+
+    try:
+        async with db.transaction() as conn:
+            # Capture the changed/new UID sets before any delete changes
+            # membership. "Update matching" only touches series whose files
+            # actually differ -- identical series are skipped, not re-added.
+            changed = [r["uid"] for r in await conn.fetch(
+                _CHANGED_SERIES_UIDS, draft_id, tp)]
+            new = [r["series_instance_uid"] for r in await conn.fetch(
+                f"{_SOURCE_UIDS} except {_DRAFT_UIDS}", draft_id, tp)]
+
+            if payload.update_matching and changed:
+                removed = await conn.fetch(_DELETE_DRAFT_SERIES_BY_UIDS, draft_id, changed)
+                files_removed += len(removed)
+                added = await conn.fetch(_INSERT_SOURCE_SERIES_BY_UIDS, draft_id, tp, changed)
+                files_added += len(added)
+                series_updated = len(changed)
+
+            if payload.add_new and new:
+                added = await conn.fetch(_INSERT_SOURCE_SERIES_BY_UIDS, draft_id, tp, new)
+                files_added += len(added)
+                series_added = len(new)
+
+            if payload.include_non_dicom:
+                nd = await conn.fetch(_INSERT_NON_DICOM_Q, draft_id, tp)
+                non_dicom_added = len(nd)
+
+            current = (await conn.fetch(
+                "select count(*) as c from recordset_draft_file where recordset_draft_id = $1", draft_id))[0]["c"]
+    except HTTPException:
+        raise
+    except Exception as e:
+        db_error(e, operation="merging series into recordset draft", context={"draft_id": draft_id})
+
+    return item_response({
+        "draft_id": draft_id,
+        "series_updated": series_updated,
+        "series_added": series_added,
+        "files_removed": files_removed,
+        "files_added": files_added,
+        "non_dicom_added": non_dicom_added,
+        "current_count": current,
+    })
+
+
+class SeriesReplaceAllRequest(BaseModel):
+    compare_timepoint_id: int
+    compare_activity_id: Optional[int] = None
+
+
+@router.post("/recordsets/drafts/{draft_id}/content/replace-all")
+# Destructive: replace the entire draft's contents with an activity timepoint's.
+async def replace_all_recordset_draft(
+    draft_id: int,
+    payload: SeriesReplaceAllRequest,
+    db: Database = Depends()):
+
+    await _require_draft(db, draft_id)
+    await _require_timepoint(db, payload.compare_timepoint_id, payload.compare_activity_id)
+
+    try:
+        async with db.transaction() as conn:
+            removed = await conn.fetch(
+                "delete from recordset_draft_file where recordset_draft_id = $1 returning recordset_draft_file_id",
+                draft_id,
+            )
+            added = await conn.fetch(
+                """
+                insert into recordset_draft_file (recordset_draft_id, file_id, file_name)
+                select $1, atf.file_id,
+                       case when f.is_dicom_file then null
+                            else (select fi.file_name from file_import fi
+                                  where fi.file_id = atf.file_id
+                                  order by fi.file_import_time desc nulls last, fi.import_event_id desc
+                                  limit 1)
+                       end
+                from activity_timepoint_file atf
+                join file f on f.file_id = atf.file_id
+                where atf.activity_timepoint_id = $2
+                on conflict (recordset_draft_id, file_id, file_name) do nothing
+                returning recordset_draft_file_id
+                """,
+                draft_id, payload.compare_timepoint_id,
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        db_error(e, operation="replacing recordset draft contents", context={"draft_id": draft_id})
+
+    return item_response({
+        "draft_id": draft_id,
+        "files_removed": len(removed),
+        "files_added": len(added),
+        "current_count": len(added),
+    })
+
+
+class SeriesRemoveRequest(BaseModel):
+    series_uids: list[str]
+
+
+@router.post("/recordsets/drafts/{draft_id}/series/remove")
+# Remove entire DICOM series (by UID) from the draft -- source-independent.
+async def remove_recordset_draft_series(
+    draft_id: int,
+    payload: SeriesRemoveRequest,
+    db: Database = Depends()):
+
+    if not payload.series_uids:
+        api_error("VALIDATION_ERROR", "No series to remove", {"series_uids": []}, 422)
+
+    await _require_draft(db, draft_id)
+
+    try:
+        async with db.transaction() as conn:
+            removed = await conn.fetch(_DELETE_DRAFT_SERIES_BY_UIDS, draft_id, payload.series_uids)
+            current = (await conn.fetch(
+                "select count(*) as c from recordset_draft_file where recordset_draft_id = $1", draft_id))[0]["c"]
+    except Exception as e:
+        db_error(e, operation="removing series from recordset draft", context={"draft_id": draft_id})
+
+    return item_response({
+        "draft_id": draft_id,
+        "series_removed": len(payload.series_uids),
+        "files_removed": len(removed),
+        "current_count": current,
+    })
+
+
 @router.get("/recordsets/drafts/{draft_id}/diff")
 async def get_recordset_draft_diff(
     draft_id: int,
