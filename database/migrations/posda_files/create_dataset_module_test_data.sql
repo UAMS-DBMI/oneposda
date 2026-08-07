@@ -459,10 +459,11 @@ INSERT INTO public.qc_review_assignment (
 SELECT setval(pg_get_serial_sequence('public.qc_review_assignment', 'assignment_id'), COALESCE(MAX(assignment_id), 0), true) FROM public.qc_review_assignment;
 
 -- Real series, one per draft, with the content hash the sampler would compute.
-INSERT INTO public.qc_series (qc_review_id, assignment_id, series_instance_uid, modality, series_file_hash, qc_status, notes)
+INSERT INTO public.qc_unit (qc_review_id, assignment_id, unit_type, series_instance_uid, modality, unit_hash, qc_status, notes)
 SELECT
     r.qc_review_id,
     a.assignment_id,
+    'series',
     fs.series_instance_uid,
     max(fs.modality),
     md5(string_agg(f.digest, '' ORDER BY f.digest)),
@@ -483,42 +484,41 @@ GROUP BY r.qc_review_id, a.assignment_id, fs.series_instance_uid, r.seed_status;
 
 -- Synthetic series for volume. Review 1 spans three modalities and every
 -- qc_status so the modality progress table and status chips are exercised.
-INSERT INTO public.qc_series (qc_review_id, assignment_id, series_instance_uid, modality, series_file_hash, qc_status, notes) VALUES
-    (1, 1, '1.3.6.1.4.1.14519.5.2.1.TEST.0102', 'CT', md5('synthetic-0102'), 'approved', null),
-    (1, 1, '1.3.6.1.4.1.14519.5.2.1.TEST.0103', 'CT', md5('synthetic-0103'), 'approved', null),
-    (1, 1, '1.3.6.1.4.1.14519.5.2.1.TEST.0104', 'CT', md5('synthetic-0104'), 'pending',  null),
-    (1, 1, '1.3.6.1.4.1.14519.5.2.1.TEST.0105', 'CT', md5('synthetic-0105'), 'pending',  null),
-    (1, 1, '1.3.6.1.4.1.14519.5.2.1.TEST.0106', 'MR', md5('synthetic-0106'), 'approved', null),
-    (1, 1, '1.3.6.1.4.1.14519.5.2.1.TEST.0107', 'MR', md5('synthetic-0107'), 'rejected', 'Motion artifact through the volume'),
-    (1, 1, '1.3.6.1.4.1.14519.5.2.1.TEST.0108', 'MR', md5('synthetic-0108'), 'pending',  null),
-    (1, 1, '1.3.6.1.4.1.14519.5.2.1.TEST.0109', 'PT', md5('synthetic-0109'), 'flagged',  'Possible PHI burned into overlay'),
-    (1, 1, '1.3.6.1.4.1.14519.5.2.1.TEST.0110', 'PT', md5('synthetic-0110'), 'approved', null),
+INSERT INTO public.qc_unit (qc_review_id, assignment_id, unit_type, series_instance_uid, modality, unit_hash, qc_status, notes) VALUES
+    (1, 1, 'series', '1.3.6.1.4.1.14519.5.2.1.TEST.0102', 'CT', md5('synthetic-0102'), 'approved', null),
+    (1, 1, 'series', '1.3.6.1.4.1.14519.5.2.1.TEST.0103', 'CT', md5('synthetic-0103'), 'approved', null),
+    (1, 1, 'series', '1.3.6.1.4.1.14519.5.2.1.TEST.0104', 'CT', md5('synthetic-0104'), 'pending',  null),
+    (1, 1, 'series', '1.3.6.1.4.1.14519.5.2.1.TEST.0105', 'CT', md5('synthetic-0105'), 'pending',  null),
+    (1, 1, 'series', '1.3.6.1.4.1.14519.5.2.1.TEST.0106', 'MR', md5('synthetic-0106'), 'approved', null),
+    (1, 1, 'series', '1.3.6.1.4.1.14519.5.2.1.TEST.0107', 'MR', md5('synthetic-0107'), 'rejected', 'Motion artifact through the volume'),
+    (1, 1, 'series', '1.3.6.1.4.1.14519.5.2.1.TEST.0108', 'MR', md5('synthetic-0108'), 'pending',  null),
+    (1, 1, 'series', '1.3.6.1.4.1.14519.5.2.1.TEST.0109', 'PT', md5('synthetic-0109'), 'flagged',  'Possible PHI burned into overlay'),
+    (1, 1, 'series', '1.3.6.1.4.1.14519.5.2.1.TEST.0110', 'PT', md5('synthetic-0110'), 'approved', null),
     -- Review 2 (stale): hashes deliberately will not match a recompute.
-    (2, 2, '1.3.6.1.4.1.14519.5.2.1.TEST.0201', 'CT', md5('stale-0201'), 'approved', null),
-    (2, 2, '1.3.6.1.4.1.14519.5.2.1.TEST.0202', 'CT', md5('stale-0202'), 'pending',  null),
-    (2, 2, '1.3.6.1.4.1.14519.5.2.1.TEST.0203', 'MR', md5('stale-0203'), 'approved', null),
+    (2, 2, 'series', '1.3.6.1.4.1.14519.5.2.1.TEST.0201', 'CT', md5('stale-0201'), 'approved', null),
+    (2, 2, 'series', '1.3.6.1.4.1.14519.5.2.1.TEST.0202', 'CT', md5('stale-0202'), 'pending',  null),
+    (2, 2, 'series', '1.3.6.1.4.1.14519.5.2.1.TEST.0203', 'MR', md5('stale-0203'), 'approved', null),
     -- Review 3 (complete): every series approved, which is what unblocks publish.
-    (3, 3, '1.3.6.1.4.1.14519.5.2.1.TEST.0301', 'CT', md5('complete-0301'), 'approved', null),
-    (3, 3, '1.3.6.1.4.1.14519.5.2.1.TEST.0302', 'CT', md5('complete-0302'), 'approved', null),
+    (3, 3, 'series', '1.3.6.1.4.1.14519.5.2.1.TEST.0301', 'CT', md5('complete-0301'), 'approved', null),
+    (3, 3, 'series', '1.3.6.1.4.1.14519.5.2.1.TEST.0302', 'CT', md5('complete-0302'), 'approved', null),
     -- Review 4 (partial, unclaimed): all pending, nobody has started.
-    (4, 4, '1.3.6.1.4.1.14519.5.2.1.TEST.0401', 'CT', md5('partial-0401'), 'pending', null),
-    (4, 4, '1.3.6.1.4.1.14519.5.2.1.TEST.0402', 'MR', md5('partial-0402'), 'pending', null);
+    (4, 4, 'series', '1.3.6.1.4.1.14519.5.2.1.TEST.0401', 'CT', md5('partial-0401'), 'pending', null),
+    (4, 4, 'series', '1.3.6.1.4.1.14519.5.2.1.TEST.0402', 'MR', md5('partial-0402'), 'pending', null);
+SELECT setval(pg_get_serial_sequence('public.qc_unit', 'qc_unit_id'), COALESCE(MAX(qc_unit_id), 0), true) FROM public.qc_unit;
 
--- Audit trail for a few of review 1's decisions.
-INSERT INTO public.qc_series_history (
-    qc_review_id,
-    series_instance_uid,
-    previous_status,
-    new_status,
-    when_updated,
-    who_updated,
-    notes
-) VALUES
-    (1, '1.3.6.1.4.1.14519.5.2.1.TEST.0102', 'pending',  'approved', NOW(), 0, null),
-    (1, '1.3.6.1.4.1.14519.5.2.1.TEST.0103', 'pending',  'approved', NOW(), 0, null),
-    (1, '1.3.6.1.4.1.14519.5.2.1.TEST.0107', 'pending',  'rejected', NOW(), 0, 'Motion artifact through the volume'),
-    (1, '1.3.6.1.4.1.14519.5.2.1.TEST.0109', 'pending',  'flagged',  NOW(), 0, 'Possible PHI burned into overlay'),
-    (1, '1.3.6.1.4.1.14519.5.2.1.TEST.0109', 'flagged',  'flagged',  NOW(), 0, 'Second look scheduled');
-SELECT setval(pg_get_serial_sequence('public.qc_series_history', 'history_id'), COALESCE(MAX(history_id), 0), true) FROM public.qc_series_history;
+-- Audit trail for a few of review 1's decisions (resolve the surrogate qc_unit_id
+-- from the natural (review, series) key).
+INSERT INTO public.qc_unit_history (qc_unit_id, previous_status, new_status, when_updated, who_updated, notes)
+SELECT u.qc_unit_id, v.previous_status, v.new_status, NOW(), 0, v.notes
+FROM (VALUES
+    (1, '1.3.6.1.4.1.14519.5.2.1.TEST.0102', 'pending',  'approved', null),
+    (1, '1.3.6.1.4.1.14519.5.2.1.TEST.0103', 'pending',  'approved', null),
+    (1, '1.3.6.1.4.1.14519.5.2.1.TEST.0107', 'pending',  'rejected', 'Motion artifact through the volume'),
+    (1, '1.3.6.1.4.1.14519.5.2.1.TEST.0109', 'pending',  'flagged',  'Possible PHI burned into overlay'),
+    (1, '1.3.6.1.4.1.14519.5.2.1.TEST.0109', 'flagged',  'flagged',  'Second look scheduled')
+) AS v(qc_review_id, series_instance_uid, previous_status, new_status, notes)
+JOIN public.qc_unit u
+  ON u.qc_review_id = v.qc_review_id AND u.series_instance_uid = v.series_instance_uid;
+SELECT setval(pg_get_serial_sequence('public.qc_unit_history', 'history_id'), COALESCE(MAX(history_id), 0), true) FROM public.qc_unit_history;
 
 COMMIT;
