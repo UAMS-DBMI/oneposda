@@ -191,10 +191,10 @@ services:
             - common.env
             - posda.env
 
-    ## Main API server
+    ## Main API server (Go implementation, see posda/goapi)
     posda-api:
-        image: tcia/posda:1.0.4
-        command: api
+        build: ./posda/goapi
+        image: tcia/posda-api-go:dev
         restart: always
         depends_on:
             - db
@@ -206,7 +206,6 @@ services:
             - posda.env
         volumes:
             - posda_cache_alpine:/home/posda/cache
-            - ./posda/fastapi/app:/fastapi
             - ./posda/posdatools:/home/posda/posdatools
             - /mnt:/mnt
             - /nas:/nas
