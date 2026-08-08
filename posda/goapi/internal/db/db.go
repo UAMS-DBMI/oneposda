@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -22,6 +23,19 @@ func Connect(ctx context.Context, database string) (*DB, error) {
 	cfg, err := pgxpool.ParseConfig(fmt.Sprintf("database=%s", database))
 	if err != nil {
 		return nil, fmt.Errorf("parsing database config: %w", err)
+	}
+	// json/jsonb columns are returned as raw text, matching asyncpg
+	// (which hands JSON columns to the application as strings).
+	// numeric columns also come back as text: pgx's binary codec drops
+	// the display scale, which decides whether a value serializes as an
+	// int or a float (Decimal('0.000000') is a float, Decimal('0') an
+	// int — see numericStringValue).
+	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		tm := conn.TypeMap()
+		tm.RegisterType(&pgtype.Type{Name: "json", OID: pgtype.JSONOID, Codec: pgtype.TextCodec{}})
+		tm.RegisterType(&pgtype.Type{Name: "jsonb", OID: pgtype.JSONBOID, Codec: pgtype.TextCodec{}})
+		tm.RegisterType(&pgtype.Type{Name: "numeric", OID: pgtype.NumericOID, Codec: pgtype.TextCodec{}})
+		return nil
 	}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {

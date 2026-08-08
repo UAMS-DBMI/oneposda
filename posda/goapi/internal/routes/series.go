@@ -124,7 +124,7 @@ func (a *App) getOhifConfig(w http.ResponseWriter, r *http.Request) error {
 	}
 	if len(rows) == 0 {
 		// Python indexes results[0] unconditionally and 500s on empty.
-		return httpx.NewError(http.StatusInternalServerError, "Internal Server Error")
+		return httpx.ErrInternal
 	}
 
 	dcmList := func(v any) any {
@@ -354,6 +354,12 @@ func (a *App) getSeriesActivities(w http.ResponseWriter, r *http.Request) error 
     `, uid)
 	if err != nil {
 		return err
+	}
+	// The response model serializes when_created via pydantic ("Z"
+	// suffix rather than "+00:00").
+	for i := range timepoints {
+		timepoints[i].Set("when_created",
+			pydanticDatetime(timepoints[i].Get("when_created")))
 	}
 
 	return httpx.JSON(w, map[string]any{

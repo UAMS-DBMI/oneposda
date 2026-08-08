@@ -117,7 +117,7 @@ func (a *App) wadorsMetadata(w http.ResponseWriter, r *http.Request) error {
 	case "activity":
 		// Python raises HTTPException("not implemented yet") which
 		// crashes response rendering -> 500.
-		return httpx.NewError(http.StatusInternalServerError, "Internal Server Error")
+		return httpx.ErrInternal
 
 	case "timepoint":
 		rows, err = a.DB.Fetch(r.Context(), `

@@ -32,6 +32,19 @@ func NewError(status int, detail any) *Error {
 // anything else becomes a 500.
 type HandlerFunc func(w http.ResponseWriter, r *http.Request) error
 
+// ErrInternal reproduces an unhandled Python exception: Starlette's
+// ServerErrorMiddleware answers those with a plain-text 500.
+var ErrInternal = &Error{
+	Status: http.StatusInternalServerError,
+	Detail: "Internal Server Error",
+}
+
+func writePlainInternalError(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusInternalServerError)
+	_, _ = w.Write([]byte("Internal Server Error"))
+}
+
 func (h HandlerFunc) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	err := h(w, r)
 	if err == nil {
@@ -39,6 +52,10 @@ func (h HandlerFunc) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	var httpErr *Error
 	if errors.As(err, &httpErr) {
+		if httpErr == ErrInternal {
+			writePlainInternalError(w)
+			return
+		}
 		for k, v := range httpErr.Headers {
 			w.Header().Set(k, v)
 		}
@@ -46,8 +63,7 @@ func (h HandlerFunc) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("internal error on %s %s: %v", r.Method, r.URL.Path, err)
-	WriteJSON(w, http.StatusInternalServerError,
-		map[string]any{"detail": "Internal Server Error"})
+	writePlainInternalError(w)
 }
 
 // MarshalJSON encodes v without escaping HTML characters, matching

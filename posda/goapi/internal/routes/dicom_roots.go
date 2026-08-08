@@ -90,7 +90,7 @@ func (a *App) findCollectionName(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	if !found {
-		return httpx.NewError(http.StatusInternalServerError, "Internal Server Error")
+		return httpx.ErrInternal
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, err = w.Write([]byte(row.GetString("collection_name")))
@@ -114,7 +114,7 @@ func (a *App) findSiteName(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	if !found {
-		return httpx.NewError(http.StatusInternalServerError, "Internal Server Error")
+		return httpx.ErrInternal
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, err = w.Write([]byte(row.GetString("site_name")))

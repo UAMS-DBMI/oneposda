@@ -5,6 +5,8 @@ import (
 	"math"
 	"math/big"
 	"reflect"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -36,7 +38,8 @@ func jsonValue(oid uint32, v any) any {
 		}
 	case pgtype.TimestamptzOID:
 		if t, ok := v.(time.Time); ok {
-			return pyDateTime(t, true)
+			// asyncpg returns timestamptz as UTC-aware datetimes.
+			return pyDateTime(t.UTC(), true)
 		}
 	case pgtype.TimeOID:
 		if t, ok := v.(pgtype.Time); ok {
@@ -47,6 +50,9 @@ func jsonValue(oid uint32, v any) any {
 			return intervalSeconds(iv)
 		}
 	case pgtype.NumericOID:
+		if s, ok := v.(string); ok {
+			return numericStringValue(s)
+		}
 		if n, ok := v.(pgtype.Numeric); ok {
 			return numericValue(n)
 		}
@@ -66,8 +72,12 @@ func jsonValue(oid uint32, v any) any {
 // of composite types) plus the pass-through primitives.
 func anyValue(v any) any {
 	switch t := v.(type) {
-	case nil, bool, string, int16, int32, int64, float32, float64:
+	case nil, bool, string, int16, int32, int64:
 		return v
+	case float64:
+		return PyFloat(t)
+	case float32:
+		return PyFloat(t)
 	case time.Time:
 		// No OID context: render date-only values as dates.
 		if t.Hour() == 0 && t.Minute() == 0 && t.Second() == 0 && t.Nanosecond() == 0 {
@@ -137,7 +147,43 @@ func intervalSeconds(iv pgtype.Interval) any {
 		return nil
 	}
 	days := float64(iv.Months)*30 + float64(iv.Days)
-	return days*86400 + float64(iv.Microseconds)/1e6
+	return PyFloat(days*86400 + float64(iv.Microseconds)/1e6)
+}
+
+// PyFloat is a float64 that serializes the way Python's json module
+// prints floats: integral values keep a trailing ".0".
+type PyFloat float64
+
+func (f PyFloat) MarshalJSON() ([]byte, error) {
+	v := float64(f)
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return []byte("null"), nil
+	}
+	s := strconv.FormatFloat(v, 'g', -1, 64)
+	if !strings.ContainsAny(s, ".eE") {
+		s += ".0"
+	}
+	return []byte(s), nil
+}
+
+// numericStringValue converts the text form of a numeric the way
+// pydantic's decimal_encoder treats the equivalent Decimal: values
+// with a fractional part (a negative exponent — including trailing
+// zeros, "0.000000") become floats, whole numbers become ints.
+func numericStringValue(s string) any {
+	if s == "NaN" || s == "Infinity" || s == "-Infinity" {
+		return nil
+	}
+	if !strings.ContainsAny(s, ".eE") {
+		if i, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return i
+		}
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return s
+	}
+	return PyFloat(f)
 }
 
 // numericValue mirrors pydantic's decimal_encoder: integral decimals
@@ -155,7 +201,7 @@ func numericValue(n pgtype.Numeric) any {
 			return i.Int64()
 		}
 		f, _ := new(big.Float).SetInt(i).Float64()
-		return f
+		return PyFloat(f)
 	}
 	f, err := n.Float64Value()
 	if err != nil || !f.Valid {
@@ -164,7 +210,7 @@ func numericValue(n pgtype.Numeric) any {
 	if math.IsNaN(f.Float64) || math.IsInf(f.Float64, 0) {
 		return nil
 	}
-	return f.Float64
+	return PyFloat(f.Float64)
 }
 
 func formatUUID(u [16]byte) string {

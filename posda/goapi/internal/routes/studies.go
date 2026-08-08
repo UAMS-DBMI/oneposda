@@ -37,7 +37,7 @@ func (a *App) getSingleStudy(w http.ResponseWriter, r *http.Request) error {
 	if !found {
 		// Python would raise constructing StudyDetail from an empty
 		// record, which surfaces as a 500.
-		return httpx.NewError(http.StatusInternalServerError, "Internal Server Error")
+		return httpx.ErrInternal
 	}
 	return httpx.JSON(w, row)
 }

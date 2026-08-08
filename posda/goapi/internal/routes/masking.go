@@ -21,14 +21,7 @@ func (a *App) registerMasking(mux *http.ServeMux) {
 
 	a.protected(mux, "GET /v1/masking/getwork", a.getWorkForMasker)
 	a.protected(mux, "POST /v1/masking/abortwork", a.abortMaskingWork)
-	a.protected(mux, "POST /v1/masking/{iec}/mask", a.requestMasking)
 	a.protected(mux, "GET /v1/masking/{iec}", a.getMaskingDetails)
-	a.protected(mux, "POST /v1/masking/{iec}/parameters", a.updateMaskingParameters)
-	a.protected(mux, "POST /v1/masking/{iec}/complete", a.markMaskingComplete)
-	a.protected(mux, "POST /v1/masking/{iec}/accept", a.setMaskingStatus("accepted"))
-	a.protected(mux, "POST /v1/masking/{iec}/reject", a.setMaskingStatus("rejected"))
-	a.protected(mux, "POST /v1/masking/{iec}/skip", a.setMaskingStatus("skipped"))
-	a.protected(mux, "POST /v1/masking/{iec}/nonmaskable", a.setMaskingStatus("nonmaskable"))
 	a.protected(mux, "GET /v1/masking/visualreview/{visual_review_instance_id}/next-for-review",
 		a.nextMaskingIEC("process-complete"))
 	a.protected(mux, "GET /v1/masking/visualreview/{visual_review_instance_id}/next",
@@ -36,8 +29,42 @@ func (a *App) registerMasking(mux *http.ServeMux) {
 	a.protected(mux, "GET /v1/masking/visualreview/{visual_review_instance_id}", a.getMaskingForVR)
 	a.protected(mux, "GET /v1/masking/visualreview/{visual_review_instance_id}/values", a.getMaskingValues)
 	a.protected(mux, "POST /v1/masking/visualreview/{visual_review_instance_id}/filter", a.getMaskingFiltered)
-	a.protected(mux, "GET /v1/masking/{iec}/reviewfiles", a.getMaskingReviewFiles)
-	a.protected(mux, "GET /v1/masking/{iec}/reviewfiles/download", a.downloadMaskingReviewFiles)
+
+	// Wildcard dispatch: ServeMux would consider e.g. "{iec}/mask" and
+	// "visualreview/{id}" ambiguous, so the per-IEC subroutes share one
+	// pattern per method.
+	a.protected(mux, "GET /v1/masking/{iec}/{action...}", a.maskingIECGet)
+	a.protected(mux, "POST /v1/masking/{iec}/{action...}", a.maskingIECPost)
+}
+
+func (a *App) maskingIECGet(w http.ResponseWriter, r *http.Request) error {
+	switch pathStr(r, "action") {
+	case "reviewfiles":
+		return a.getMaskingReviewFiles(w, r)
+	case "reviewfiles/download":
+		return a.downloadMaskingReviewFiles(w, r)
+	}
+	return httpx.NewError(http.StatusNotFound, "Not Found")
+}
+
+func (a *App) maskingIECPost(w http.ResponseWriter, r *http.Request) error {
+	switch pathStr(r, "action") {
+	case "mask":
+		return a.requestMasking(w, r)
+	case "parameters":
+		return a.updateMaskingParameters(w, r)
+	case "complete":
+		return a.markMaskingComplete(w, r)
+	case "accept":
+		return a.setMaskingStatus("accepted")(w, r)
+	case "reject":
+		return a.setMaskingStatus("rejected")(w, r)
+	case "skip":
+		return a.setMaskingStatus("skipped")(w, r)
+	case "nonmaskable":
+		return a.setMaskingStatus("nonmaskable")(w, r)
+	}
+	return httpx.NewError(http.StatusNotFound, "Not Found")
 }
 
 func (a *App) getWorkForMasker(w http.ResponseWriter, r *http.Request) error {

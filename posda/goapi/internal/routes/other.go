@@ -36,7 +36,7 @@ func (a *App) registerOther(mux *http.ServeMux) {
 		func(w http.ResponseWriter, r *http.Request) error {
 			// The Python endpoint calls asynctar.stream(), which does
 			// not exist, so it has always responded 500.
-			return httpx.NewError(http.StatusInternalServerError, "Internal Server Error")
+			return httpx.ErrInternal
 		})
 
 	a.protected(mux, "GET /v1/other/testme",

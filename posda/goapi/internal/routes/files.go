@@ -23,11 +23,24 @@ func (a *App) registerFiles(mux *http.ServeMux) {
 	a.protected(mux, "GET /v1/files/{file_id}", a.getSingleFile)
 	a.protected(mux, "GET /v1/files/series/{spec}", a.getSeriesZip)
 	a.protected(mux, "GET /v1/files/iec/{iec}", a.getIECZip)
-	a.protected(mux, "GET /v1/files/{file_id}/pixels", a.getPixelData)
-	a.protected(mux, "GET /v1/files/{file_id}/data", a.getFileData)
-	a.protected(mux, "GET /v1/files/{file_id}/data.gz", a.getFileData)
-	a.protected(mux, "GET /v1/files/{file_id}/path", a.getFilePath)
-	a.protected(mux, "GET /v1/files/{file_id}/details", a.getFileDetails)
+	// The per-file subresources share one wildcard pattern because
+	// ServeMux would otherwise consider them ambiguous against the
+	// series/iec literal prefixes above.
+	a.protected(mux, "GET /v1/files/{file_id}/{action...}", a.fileSubresource)
+}
+
+func (a *App) fileSubresource(w http.ResponseWriter, r *http.Request) error {
+	switch pathStr(r, "action") {
+	case "pixels":
+		return a.getPixelData(w, r)
+	case "data", "data.gz":
+		return a.getFileData(w, r)
+	case "path":
+		return a.getFilePath(w, r)
+	case "details":
+		return a.getFileDetails(w, r)
+	}
+	return httpx.NewError(http.StatusNotFound, "Not Found")
 }
 
 func (a *App) getListFiles(w http.ResponseWriter, r *http.Request) error {
