@@ -1,5 +1,7 @@
 TAG=dev
 IMAGE_NAME=tcia/posda-api-go
+# The deployment targets are x86; build for amd64 even on arm64 hosts.
+PLATFORM=linux/amd64
 GOFILES=$(shell find . -name '*.go')
 .PHONY: build test push clean
 
@@ -14,7 +16,7 @@ test:
 	go test ./...
 
 image: Dockerfile $(GOFILES)
-	docker build . -t ${IMAGE_NAME}:${TAG} -t ${IMAGE_NAME}:latest
+	docker build --platform ${PLATFORM} . -t ${IMAGE_NAME}:${TAG} -t ${IMAGE_NAME}:latest
 
 push: image
 	docker image push ${IMAGE_NAME}:${TAG}
