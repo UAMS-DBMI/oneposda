@@ -29,8 +29,10 @@ import { registerWadoRS } from "./wadors";
 import { registerSegs } from "./segs";
 import { registerActivities } from "./activities";
 import { registerVisualReviews } from "./visualreviews";
+import { registerDocs } from "./docs";
 
 export function registerAll(app: App): void {
+  registerDocs(app);
   registerAuth(app);
   registerOther(app);
   registerCollections(app);

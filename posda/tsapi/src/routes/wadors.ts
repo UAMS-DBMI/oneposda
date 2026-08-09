@@ -2,6 +2,7 @@
 // Cornerstone viewer.
 
 import type { App, Ctx } from "../server";
+import { doc } from "../openapi";
 import { pathStr } from "../server";
 import { HttpError, InternalError, errNoRecords, jsonResponse } from "../httpx";
 import type { Row } from "../db";
@@ -12,14 +13,43 @@ interface WadorsValue {
   vr: string;
 }
 
+/** The study selector accepted in place of a StudyInstanceUID. */
+const WADORS_STUDY =
+  "A study selector of the form `iec:<iec>`, `timepoint:<timepoint_id>` " +
+  "or `activity:<activity_id>` — Posda addresses studies by these rather " +
+  "than by StudyInstanceUID.";
+
 export function registerWadoRS(app: App): void {
   app.prot(
     "GET",
     "/v1/wadors/studies/:study/series/:series/instances/:sop/frames/:frame",
     (ctx) => wadorsFrames(app, ctx),
+    doc({
+      summary: "Retrieve Frames",
+      description:
+        "WADO-RS frame retrieval: the raw pixel data of a single frame, " +
+        "as a multipart/related part.",
+      params: {
+        study: { description: WADORS_STUDY },
+        series: { description: "A SeriesInstanceUID." },
+        sop: { description: "An SOPInstanceUID." },
+        frame: { type: "integer", description: "1-based frame number." },
+      },
+      produces: "multipart/related",
+    }),
   );
   app.prot("GET", "/v1/wadors/studies/:study/series/:series/metadata", (ctx) =>
     wadorsMetadata(app, ctx),
+    doc({
+      summary: "Retrieve Series Metadata",
+      description:
+        "WADO-RS metadata: one DICOM JSON object per instance in the " +
+        "series, carrying the attributes the Cornerstone viewer needs.",
+      params: {
+        study: { description: WADORS_STUDY },
+        series: { description: "A SeriesInstanceUID." },
+      },
+    }),
   );
 }
 

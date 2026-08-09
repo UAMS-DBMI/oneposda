@@ -1,6 +1,7 @@
 // Ports papi/routes/segs.py.
 
 import type { App } from "../server";
+import { doc } from "../openapi";
 import { pathInt, pathStr } from "../server";
 import { HttpError } from "../httpx";
 import { fetchJson } from "./common";
@@ -30,8 +31,16 @@ export function registerSegs(app: App): void {
   const notAllowed = () => {
     throw new HttpError(401, "test error, not allowed");
   };
-  app.prot("GET", "/v1/segs", notAllowed);
-  app.prot("GET", "/v1/segs/", notAllowed);
+  app.prot("GET", "/v1/segs", notAllowed,
+    doc({
+      summary: "Test",
+    }),
+  );
+  app.prot("GET", "/v1/segs/", notAllowed,
+    doc({
+      summary: "Test",
+    }),
+  );
 
   app.prot("GET", "/v1/segs/find_segs_in_activity/:activity_id", (ctx) =>
     fetchJson(
@@ -56,6 +65,12 @@ export function registerSegs(app: App): void {
       `,
       [pathInt(ctx, "activity_id")],
     ),
+    doc<SegFile[]>({
+      summary: "Find Segs In Activity",
+      params: {
+        activity_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot("GET", "/v1/segs/getLatestFileForSop/:sop_instance_uid", (ctx) =>
@@ -68,6 +83,9 @@ export function registerSegs(app: App): void {
       `,
       [pathStr(ctx, "sop_instance_uid")],
     ),
+    doc<LatestSopFile[]>({
+      summary: "Getlatestfileforsop",
+    }),
   );
 
   app.prot("GET", "/v1/segs/getFORfromfile/:file_id", (ctx) =>
@@ -78,6 +96,12 @@ export function registerSegs(app: App): void {
       `,
       [pathInt(ctx, "file_id")],
     ),
+    doc<FileFor[]>({
+      summary: "Getforfromfile",
+      params: {
+        file_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot("GET", "/v1/segs/getSeries/:file_id", (ctx) =>
@@ -91,6 +115,12 @@ export function registerSegs(app: App): void {
       `,
       [pathInt(ctx, "file_id")],
     ),
+    doc<SegSeries[]>({
+      summary: "Getseries",
+      params: {
+        file_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot(
@@ -114,5 +144,12 @@ export function registerSegs(app: App): void {
           pathStr(ctx, "linked_sop_class_uid"),
         ],
       ),
+    doc({
+      summary: "Populate Seg Linkages",
+      params: {
+        file_id: { type: "integer" },
+        seg_id: { type: "integer" },
+      },
+    }),
   );
 }

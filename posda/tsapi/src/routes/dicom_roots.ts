@@ -1,6 +1,7 @@
 // Ports papi/routes/dicom_roots.py.
 
 import type { App, Ctx } from "../server";
+import { doc } from "../openapi";
 import { pathInt } from "../server";
 import { HttpError, InternalError, jsonResponse } from "../httpx";
 import { isInvalidTextRepresentation, isUniqueViolation } from "../db";
@@ -37,10 +38,34 @@ export function registerDicomRoots(app: App): void {
   const notAllowed = () => {
     throw new HttpError(401, "test error");
   };
-  app.prot("GET", "/v1/dicom_roots", notAllowed);
-  app.prot("GET", "/v1/dicom_roots/", notAllowed);
+  app.prot("GET", "/v1/dicom_roots", notAllowed,
+    doc({
+      summary: "Get All Roots",
+    }),
+  );
+  app.prot("GET", "/v1/dicom_roots/", notAllowed,
+    doc({
+      summary: "Get All Roots",
+    }),
+  );
 
-  app.prot("GET", "/v1/dicom_roots/searchRoots", (ctx) => searchRoots(app, ctx));
+  app.prot("GET", "/v1/dicom_roots/searchRoots", (ctx) => searchRoots(app, ctx),
+    doc<SubmissionRoot[]>({
+      summary: "Search Roots",
+      description: "Search the roots (submissions) table using a variety of fields",
+      params: {
+        site_code: { in: "query" },
+        collection_code: { in: "query" },
+        site_name: { in: "query" },
+        collection_name: { in: "query" },
+        patient_id_prefix: { in: "query" },
+        body_part: { in: "query" },
+        access_type: { in: "query" },
+        baseline_date: { in: "query" },
+        date_shift: { in: "query" },
+      },
+    }),
+  );
   app.prot(
     "GET",
     "/v1/dicom_roots/findCollectionNameFromCode/:collection_code",
@@ -53,6 +78,12 @@ export function registerDicomRoots(app: App): void {
         where
          collection_code = $1
         `),
+    doc({
+      summary: "Find Collection Name From Code",
+      params: {
+        collection_code: { type: "integer" },
+      },
+    }),
   );
   app.prot("GET", "/v1/dicom_roots/findSiteNameFromCode/:site_code", (ctx) =>
     findName(app, ctx, "site_code", `
@@ -63,9 +94,33 @@ export function registerDicomRoots(app: App): void {
        where
         site_code = $1
        `),
+    doc({
+      summary: "Find Site Name From Code",
+      params: {
+        site_code: { type: "integer" },
+      },
+    }),
   );
   app.prot("POST", "/v1/dicom_roots/addNewSubmission", (ctx) =>
     addNewSubmission(app, ctx),
+    doc({
+      summary: "Add New Submission",
+      requestBody: {
+        contentType: "application/json",
+        fields: {
+          input_site_code: { type: "integer", required: true },
+          input_site_name: { required: true },
+          input_collection_code: { type: "integer", required: true },
+          input_collection_name: { required: true },
+          input_patient_id_prefix: { required: true },
+          input_body_part: { required: true },
+          input_access_type: { required: true },
+          input_baseline_date: {  },
+          input_date_shift: {  },
+          input_uid_root: {  },
+        },
+      },
+    }),
   );
 }
 

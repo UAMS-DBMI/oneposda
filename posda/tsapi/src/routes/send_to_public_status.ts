@@ -1,6 +1,7 @@
 // Ports papi/routes/send_to_public_status.py.
 
 import type { App, Ctx } from "../server";
+import { doc } from "../openapi";
 import { pathInt, pathStr, queryBool } from "../server";
 import { HttpError, jsonResponse } from "../httpx";
 import type { Row } from "../db";
@@ -31,13 +32,28 @@ export function registerSendToPublicStatus(app: App): void {
   const notAllowed = () => {
     throw new HttpError(401, "test error, not allowed");
   };
-  app.prot("GET", "/v1/send_to_public_status", notAllowed);
-  app.prot("GET", "/v1/send_to_public_status/", notAllowed);
+  app.prot("GET", "/v1/send_to_public_status", notAllowed,
+    doc({
+      summary: "Get All Studies",
+    }),
+  );
+  app.prot("GET", "/v1/send_to_public_status/", notAllowed,
+    doc({
+      summary: "Get All Studies",
+    }),
+  );
 
   app.prot(
     "GET",
     "/v1/send_to_public_status/report/:subprocess_invocation_id",
     (ctx) => publicCopyReport(app, ctx),
+    doc({
+      summary: "Report",
+      params: {
+        subprocess_invocation_id: { type: "integer" },
+        pretty: { in: "query", type: "boolean" },
+      },
+    }),
   );
 
   app.prot(
@@ -56,6 +72,9 @@ export function registerSendToPublicStatus(app: App): void {
                 manual_update = true
         `,
       ),
+    doc({
+      summary: "Find Send Ready To Begin Status Updates",
+    }),
   );
 
   app.prot(
@@ -89,6 +108,12 @@ export function registerSendToPublicStatus(app: App): void {
         `,
         [pathInt(ctx, "subprocess_invocation_id")],
       ),
+    doc({
+      summary: "Get Success Percentage For Send",
+      params: {
+        subprocess_invocation_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot(
@@ -111,6 +136,12 @@ export function registerSendToPublicStatus(app: App): void {
           pathStr(ctx, "new_status"),
         ],
       ),
+    doc({
+      summary: "Update Activity Status",
+      params: {
+        subprocess_invocation_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot(
@@ -130,6 +161,12 @@ export function registerSendToPublicStatus(app: App): void {
         `,
         [pathInt(ctx, "subprocess_invocation_id")],
       ),
+    doc({
+      summary: "Finish Activity Status",
+      params: {
+        subprocess_invocation_id: { type: "integer" },
+      },
+    }),
   );
 }
 

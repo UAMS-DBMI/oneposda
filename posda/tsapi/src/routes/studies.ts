@@ -1,6 +1,7 @@
 // Ports papi/routes/studies.py.
 
 import type { App, Ctx } from "../server";
+import { doc } from "../openapi";
 import { pathStr } from "../server";
 import { HttpError, InternalError, jsonResponse } from "../httpx";
 import { fetchJson } from "./common";
@@ -21,11 +22,22 @@ export function registerStudies(app: App): void {
   const notAllowed = () => {
     throw new HttpError(401, "listing all studies is not allowed");
   };
-  app.prot("GET", "/v1/studies", notAllowed);
-  app.prot("GET", "/v1/studies/", notAllowed);
+  app.prot("GET", "/v1/studies", notAllowed,
+    doc({
+      summary: "Get All Studies",
+    }),
+  );
+  app.prot("GET", "/v1/studies/", notAllowed,
+    doc({
+      summary: "Get All Studies",
+    }),
+  );
 
   app.prot("GET", "/v1/studies/:study_instance_uid", (ctx) =>
     getSingleStudy(app, ctx),
+    doc<StudyDetail>({
+      summary: "Get Single Study",
+    }),
   );
   app.prot("GET", "/v1/studies/:study_instance_uid/series", (ctx) =>
     fetchJson(
@@ -39,6 +51,9 @@ export function registerStudies(app: App): void {
       `,
       [pathStr(ctx, "study_instance_uid")],
     ),
+    doc<StudySeries[]>({
+      summary: "Get All Series",
+    }),
   );
 }
 

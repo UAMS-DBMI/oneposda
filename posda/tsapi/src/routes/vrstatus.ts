@@ -1,6 +1,7 @@
 // Ports papi/routes/vrstatus.py.
 
 import type { App, Ctx } from "../server";
+import { doc } from "../openapi";
 import { pathInt, pathStr } from "../server";
 import { HttpError, jsonResponse } from "../httpx";
 import { isForeignKeyViolation } from "../db";
@@ -20,8 +21,16 @@ export function registerVRStatus(app: App): void {
   const notAllowed = () => {
     throw new HttpError(401, "test error, not allowed");
   };
-  app.prot("GET", "/v1/vrstatus", notAllowed);
-  app.prot("GET", "/v1/vrstatus/", notAllowed);
+  app.prot("GET", "/v1/vrstatus", notAllowed,
+    doc({
+      summary: "Test",
+    }),
+  );
+  app.prot("GET", "/v1/vrstatus/", notAllowed,
+    doc({
+      summary: "Test",
+    }),
+  );
 
   app.prot("GET", "/v1/vrstatus/find_vr_ready_to_begin_status_updates", () =>
     fetchJson(
@@ -38,6 +47,9 @@ export function registerVRStatus(app: App): void {
           and a.manual_update = true;
       `,
     ),
+    doc<VrReadyInstance[]>({
+      summary: "Find Vr Ready To Begin Status Updates",
+    }),
   );
 
   app.prot(
@@ -58,6 +70,12 @@ export function registerVRStatus(app: App): void {
         `,
         [pathInt(ctx, "visual_review_instance_id")],
       ),
+    doc({
+      summary: "Get Reviewed Percentage For Vr",
+      params: {
+        visual_review_instance_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot(
@@ -84,6 +102,12 @@ export function registerVRStatus(app: App): void {
           pathStr(ctx, "new_status"),
         ],
       ),
+    doc({
+      summary: "Update Activity Status",
+      params: {
+        visual_review_instance_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot(
@@ -106,6 +130,12 @@ export function registerVRStatus(app: App): void {
         `,
         [pathInt(ctx, "visual_review_instance_id")],
       ),
+    doc({
+      summary: "Get Visible Bads For Vr",
+      params: {
+        visual_review_instance_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot(
@@ -129,10 +159,22 @@ export function registerVRStatus(app: App): void {
         `,
         [pathInt(ctx, "visual_review_instance_id")],
       ),
+    doc({
+      summary: "Finish Activity Status",
+      params: {
+        visual_review_instance_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot("POST", "/v1/vrstatus/:iec/set_status/:review_status", (ctx) =>
     setIECReviewStatus(app, ctx),
+    doc({
+      summary: "Set Status",
+      params: {
+        iec: { type: "integer" },
+      },
+    }),
   );
 }
 

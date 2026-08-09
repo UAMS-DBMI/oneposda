@@ -1,6 +1,7 @@
 // Ports papi/routes/dashboard.py: read-only monitoring queries.
 
 import type { App } from "../server";
+import { doc } from "../openapi";
 import { pathInt } from "../server";
 import { HttpError } from "../httpx";
 import { fetchJson } from "./common";
@@ -66,8 +67,16 @@ export function registerDashboard(app: App): void {
   const notAllowed = () => {
     throw new HttpError(401, "test error, not allowed");
   };
-  app.prot("GET", "/v1/dashboard", notAllowed);
-  app.prot("GET", "/v1/dashboard/", notAllowed);
+  app.prot("GET", "/v1/dashboard", notAllowed,
+    doc({
+      summary: "Test",
+    }),
+  );
+  app.prot("GET", "/v1/dashboard/", notAllowed,
+    doc({
+      summary: "Test",
+    }),
+  );
 
   app.prot("GET", "/v1/dashboard/slow_dbif_queries/:days", (ctx) =>
     fetchJson(
@@ -95,6 +104,12 @@ export function registerDashboard(app: App): void {
       [pathInt(ctx, "days")],
       { query_start_time: "tstz", query_end_time: "tstz" },
     ),
+    doc<SlowDbifQuery[]>({
+      summary: "Slow Dbif Queries",
+      params: {
+        days: { type: "integer" },
+      },
+    }),
   );
 
   app.prot("GET", "/v1/dashboard/prbs", () =>
@@ -117,6 +132,9 @@ export function registerDashboard(app: App): void {
       [],
       { when_script_started: "tstz", when_background_entered: "tstz" },
     ),
+    doc<ProcessRunningInBackground[]>({
+      summary: "Possiblyrunningbackgroundsubprocesses",
+    }),
   );
 
   app.prot("GET", "/v1/dashboard/bsbu", () =>
@@ -139,6 +157,9 @@ export function registerDashboard(app: App): void {
       [],
       { count_background: "int8" },
     ),
+    doc<BackgroundSubprocessByUser[]>({
+      summary: "Background Subprocess Stats By User This Week",
+    }),
   );
 
   app.prot("GET", "/v1/dashboard/fwt", () =>
@@ -152,6 +173,9 @@ export function registerDashboard(app: App): void {
       limit 20;
       `,
     ),
+    doc<FileWithoutType[]>({
+      summary: "Files Without Type",
+    }),
   );
 
   app.prot("GET", "/v1/dashboard/fwl", () =>
@@ -165,6 +189,9 @@ export function registerDashboard(app: App): void {
       limit 20;
       `,
     ),
+    doc({
+      summary: "Files Without Location",
+    }),
   );
 
   // The file_imports_over_time view does not exist in current
@@ -184,6 +211,9 @@ export function registerDashboard(app: App): void {
           ,importmonth;
       `,
     ),
+    doc({
+      summary: "Get File Time Chart",
+    }),
   );
 
   app.prot("GET", "/v1/dashboard/tla", () =>
@@ -198,6 +228,9 @@ export function registerDashboard(app: App): void {
       where cardinality(pg_blocking_pids(pid)) > 0;
       `,
     ),
+    doc<TableLockActivity[]>({
+      summary: "Table Lock Alert",
+    }),
   );
 
   app.prot("GET", "/v1/dashboard/qrvi", () =>
@@ -220,5 +253,8 @@ export function registerDashboard(app: App): void {
       [],
       { num_invocations: "int8", avg_query_time: "num" },
     ),
+    doc<QueryInvocationSummary[]>({
+      summary: "Get Query Runtime Versus Invocations",
+    }),
   );
 }

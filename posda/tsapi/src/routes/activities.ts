@@ -1,6 +1,7 @@
 // Ports papi/routes/activities.py.
 
 import type { App, Ctx, Handler } from "../server";
+import { doc } from "../openapi";
 import { pathInt } from "../server";
 import { InternalError, errNoRecords, jsonResponse } from "../httpx";
 import type { Row } from "../db";
@@ -95,29 +96,78 @@ export function pydanticDuration(v: unknown): unknown {
 }
 
 export function registerActivities(app: App): void {
-  app.prot("GET", "/v1/activities", () => getAllActivities(app));
-  app.prot("GET", "/v1/activities/", () => getAllActivities(app));
+  app.prot("GET", "/v1/activities", () => getAllActivities(app),
+    doc<ActivitySummary[]>({
+      summary: "Get All Activities",
+      description: "Return a list of all active Activities in the system.",
+    }),
+  );
+  app.prot("GET", "/v1/activities/", () => getAllActivities(app),
+    doc<ActivitySummary[]>({
+      summary: "Get All Activities",
+      description: "Return a list of all active Activities in the system.",
+    }),
+  );
 
   app.prot("GET", "/v1/activities/:activity_id", (ctx) =>
     getActivity(app, ctx),
+    doc<TimelineEntry[]>({
+      summary: "Get Activity",
+      description: "Return a list of Timeline Entries for the given activity.\n\nNOTE: timeline_id == subprocess_invocation_id",
+      params: {
+        activity_id: { type: "integer" },
+      },
+    }),
   );
   app.prot("GET", "/v1/activities/:activity_id/:timeline_id", (ctx) =>
     getTimelineEntry(app, ctx),
+    doc<TimelineEntryDetail>({
+      summary: "Get Timeline Entry",
+      description: "Return details about a single Timeline Entry.",
+      params: {
+        activity_id: { type: "integer" },
+        timeline_id: { type: "integer" },
+      },
+    }),
   );
   app.prot(
     "GET",
     "/v1/activities/:activity_id/:timeline_id/input",
     timelineEntryFile(app, "input_file_id"),
+    doc({
+      summary: "Get Timeline Entry Input",
+      description: "Return the raw input that was given to this subprocess. Usually this\nis a spreadsheet, or at least looks like one.",
+      params: {
+        activity_id: { type: "integer" },
+        timeline_id: { type: "integer" },
+      },
+    }),
   );
   app.prot(
     "GET",
     "/v1/activities/:activity_id/:timeline_id/output",
     timelineEntryFile(app, "stdout_file_id"),
+    doc({
+      summary: "Get Timeline Entry Output",
+      description: "Return the raw output (stdout) that this subprocess produced.",
+      params: {
+        activity_id: { type: "integer" },
+        timeline_id: { type: "integer" },
+      },
+    }),
   );
   app.prot(
     "GET",
     "/v1/activities/:activity_id/:timeline_id/errors",
     timelineEntryFile(app, "stderr_file_id"),
+    doc({
+      summary: "Get Timeline Entry Errors",
+      description: "Return the raw errors (stderr) that this subprocess produced.",
+      params: {
+        activity_id: { type: "integer" },
+        timeline_id: { type: "integer" },
+      },
+    }),
   );
 }
 

@@ -3,6 +3,7 @@
 
 import { mkdirSync, renameSync, statSync, unlinkSync } from "node:fs";
 import type { App, Ctx } from "../server";
+import { doc } from "../openapi";
 import { pathInt, queryBool, queryIntPtr } from "../server";
 import { HttpError, jsonResponse } from "../httpx";
 import { fetchOneOn, type Tx } from "../db";
@@ -12,15 +13,69 @@ import { fetchOneOn, type Tx } from "../db";
 let rootMapCache: Map<string, number> | null = null;
 
 export function registerImporter(app: App): void {
-  app.pub("PUT", "/v1/import/event", (ctx) => importEvent(app, ctx));
+  app.pub("PUT", "/v1/import/event", (ctx) => importEvent(app, ctx),
+    doc({
+      summary: "Import Event",
+      description: "Create a new import event.\n\nImport events are a way to group individual file imports together.\n\nArgs:\n    source (str): A human-readable comment.\n    origin (str, optional): The source or origin of the files.\n    expected_count (int, optional): How many files you have to import,\n                                    if known.",
+      params: {
+        source: { in: "query", required: true },
+        origin: { in: "query" },
+        expected_count: { in: "query", type: "integer" },
+      },
+    }),
+  );
   app.pub("POST", "/v1/import/event/:import_event_id/close", (ctx) =>
     closeImportEvent(app, ctx),
+    doc({
+      summary: "Close Import Event",
+      description: "Close an import event, by setting it's import_close_time to now.",
+      params: {
+        import_event_id: { type: "integer" },
+      },
+    }),
   );
-  app.pub("POST", "/v1/import/test", () => importTest(app));
-  app.pub("PUT", "/v1/import/file", (ctx) => importFile(app, ctx));
-  app.pub("POST", "/v1/import/file", (ctx) => importFile(app, ctx));
+  app.pub("POST", "/v1/import/test", () => importTest(app),
+    doc({
+      summary: "Import Test",
+    }),
+  );
+  app.pub("PUT", "/v1/import/file", (ctx) => importFile(app, ctx),
+    doc({
+      summary: "Import File",
+      description: "Import a single file.\n\nBoth POST and PUT are accepted for legacy reasons.\n\nThe request body must be the bytes of the file to submit.\n\nIf subprocess_invocation_id AND from_file_digest are given,\na link will be made (via dicom_edit_compare) to indicate the\norigin of this file.",
+      params: {
+        digest: { in: "query", required: true },
+        import_event_id: { in: "query", type: "integer" },
+        localpath: { in: "query" },
+        subprocess_invocation_id: { in: "query", type: "integer" },
+        from_file_digest: { in: "query" },
+      },
+    }),
+  );
+  app.pub("POST", "/v1/import/file", (ctx) => importFile(app, ctx),
+    doc({
+      summary: "Import File",
+      description: "Import a single file.\n\nBoth POST and PUT are accepted for legacy reasons.\n\nThe request body must be the bytes of the file to submit.\n\nIf subprocess_invocation_id AND from_file_digest are given,\na link will be made (via dicom_edit_compare) to indicate the\norigin of this file.",
+      params: {
+        digest: { in: "query", required: true },
+        import_event_id: { in: "query", type: "integer" },
+        localpath: { in: "query" },
+        subprocess_invocation_id: { in: "query", type: "integer" },
+        from_file_digest: { in: "query" },
+      },
+    }),
+  );
   app.pub("POST", "/v1/import/file_in_place", (ctx) =>
     importFileInPlace(app, ctx),
+    doc({
+      summary: "Import File In Place",
+      params: {
+        localpath: { in: "query", required: true },
+        import_event_id: { in: "query", type: "integer" },
+        skip_processing: { in: "query", type: "boolean" },
+        digest: { in: "query" },
+      },
+    }),
   );
 }
 

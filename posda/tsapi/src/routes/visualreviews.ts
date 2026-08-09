@@ -1,6 +1,7 @@
 // Ports papi/routes/visualreviews.py.
 
 import type { App, Ctx } from "../server";
+import { doc } from "../openapi";
 import { pathInt } from "../server";
 import { HttpError, jsonResponse } from "../httpx";
 import { decodeJsonBody, fetchJson, fetchFirstColumn, firstColumn } from "./common";
@@ -55,8 +56,24 @@ export function registerVisualReviews(app: App): void {
   const notAllowed = () => {
     throw new HttpError(401, "listing all VRs is not allowed");
   };
-  app.prot("GET", "/v1/visualreviews", notAllowed);
-  app.prot("GET", "/v1/visualreviews/", notAllowed);
+  app.prot("GET", "/v1/visualreviews", notAllowed,
+    doc({
+      summary: "Get All Iecs",
+      params: {
+        request: { in: "query", required: true },
+        kwargs: { in: "query", required: true },
+      },
+    }),
+  );
+  app.prot("GET", "/v1/visualreviews/", notAllowed,
+    doc({
+      summary: "Get All Iecs",
+      params: {
+        request: { in: "query", required: true },
+        kwargs: { in: "query", required: true },
+      },
+    }),
+  );
 
   app.prot("GET", "/v1/visualreviews/:vr", (ctx) =>
     fetchJson(
@@ -81,6 +98,13 @@ export function registerVisualReviews(app: App): void {
         when_visual_review_sched_complete: "ts",
       },
     ),
+    doc<VisualReviewInstance[]>({
+      summary: "Get Vr Details",
+      description: "Get details about a specific Visual Review (VR)",
+      params: {
+        vr: { type: "integer" },
+      },
+    }),
   );
 
   app.prot("GET", "/v1/visualreviews/:vr/iecs", (ctx) =>
@@ -97,13 +121,42 @@ export function registerVisualReviews(app: App): void {
       `,
       [pathInt(ctx, "vr")],
     ),
+    doc({
+      summary: "Get Vr Iecs",
+      description: "Get the list of IECs contained in this VR\n\nResults are always in ascending order.",
+      params: {
+        vr: { type: "integer" },
+      },
+    }),
   );
 
   app.prot("GET", "/v1/visualreviews/:vr/values", (ctx) =>
     getVRValues(app, ctx),
+    doc<VisualReviewValues>({
+      summary: "Get Vr Extra Details",
+      description: "Get list of valid values for use in filtering, for the given VR.\n\nReturns the valid values for: review_status, processing_status, and \ndicom_file_type",
+      params: {
+        vr: { type: "integer" },
+      },
+    }),
   );
   app.prot("POST", "/v1/visualreviews/:vr/filter", (ctx) =>
     getVRFiltered(app, ctx),
+    doc({
+      summary: "Get Vr Filtered",
+      description: "Return a filtered list of IECs in this VR. Use * for wildcard.\n\nResults are always in ascending order.",
+      params: {
+        vr: { type: "integer" },
+      },
+      requestBody: {
+        contentType: "application/json",
+        fields: {
+          dicom_file_type: {  },
+          processing_status: {  },
+          review_status: {  },
+        },
+      },
+    }),
   );
 }
 

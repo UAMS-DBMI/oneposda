@@ -2,6 +2,7 @@
 
 import { open } from "node:fs/promises";
 import type { App, Ctx } from "../server";
+import { doc } from "../openapi";
 import { pathInt, pathStr } from "../server";
 import { HttpError, errNoRecords, jsonResponse } from "../httpx";
 import {
@@ -48,20 +49,46 @@ export function registerROIs(app: App): void {
   const notAllowed = () => {
     throw new HttpError(401, "test error, not allowed");
   };
-  app.prot("GET", "/v1/rois", notAllowed);
-  app.prot("GET", "/v1/rois/", notAllowed);
+  app.prot("GET", "/v1/rois", notAllowed,
+    doc({
+      summary: "Test",
+    }),
+  );
+  app.prot("GET", "/v1/rois/", notAllowed,
+    doc({
+      summary: "Test",
+    }),
+  );
 
   app.prot("GET", "/v1/rois/series/:series_instance_uid", (ctx) =>
     roisForSeries(app, pathStr(ctx, "series_instance_uid")),
+    doc<SeriesRoi[]>({
+      summary: "Get Rois For Series",
+    }),
   );
   app.prot("GET", "/v1/rois/file/:file_id/series", (ctx) =>
     getSeriesROIsFromFile(app, ctx),
+    doc({
+      summary: "Get Series Rois From File",
+      params: {
+        file_id: { type: "integer" },
+      },
+    }),
   );
   app.prot("GET", "/v1/rois/sop/:sop_instance_uid", (ctx) =>
     contoursForSOP(app, pathStr(ctx, "sop_instance_uid")),
+    doc<SopContour[]>({
+      summary: "Get Contours For Sop",
+    }),
   );
   app.prot("GET", "/v1/rois/file/:file_id", (ctx) =>
     getContoursForFile(app, ctx),
+    doc({
+      summary: "Get Contours For File",
+      params: {
+        file_id: { type: "integer" },
+      },
+    }),
   );
 }
 

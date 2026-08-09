@@ -1,6 +1,7 @@
 // Ports papi/routes/worker.py.
 
 import type { App, Ctx } from "../server";
+import { doc, type OrEmpty } from "../openapi";
 import { pathInt } from "../server";
 import { pyJson } from "../pyjson";
 import { decodeJsonBody, fetchOneJson } from "./common";
@@ -48,10 +49,28 @@ export function registerWorker(app: App): void {
       `,
       [pathInt(ctx, "work_id")],
     ),
+    doc<OrEmpty<WorkStatus>>({
+      summary: "Get Work Status",
+      params: {
+        work_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot("POST", "/v1/worker/status/:work_id/running", (ctx) =>
     setWorkRunning(app, ctx),
+    doc({
+      summary: "Set Work Status Running",
+      params: {
+        work_id: { type: "integer" },
+      },
+      requestBody: {
+        contentType: "application/json",
+        fields: {
+          node_hostname: {  },
+        },
+      },
+    }),
   );
 
   app.prot("POST", "/v1/worker/status/:work_id/finished", (ctx) =>
@@ -72,6 +91,19 @@ export function registerWorker(app: App): void {
           work_id = $1
       `,
     ),
+    doc({
+      summary: "Set Work Status Finished",
+      params: {
+        work_id: { type: "integer" },
+      },
+      requestBody: {
+        contentType: "application/json",
+        fields: {
+          stderr_file_id: { type: "integer" },
+          stdout_file_id: { type: "integer" },
+        },
+      },
+    }),
   );
 
   app.prot("POST", "/v1/worker/status/:work_id/errored", (ctx) =>
@@ -92,6 +124,19 @@ export function registerWorker(app: App): void {
           work_id = $1
       `,
     ),
+    doc({
+      summary: "Set Work Status Errored",
+      params: {
+        work_id: { type: "integer" },
+      },
+      requestBody: {
+        contentType: "application/json",
+        fields: {
+          stderr_file_id: { type: "integer" },
+          stdout_file_id: { type: "integer" },
+        },
+      },
+    }),
   );
 
   app.prot("GET", "/v1/worker/subprocess/:subprocess_invocation_id", (ctx) =>
@@ -108,6 +153,12 @@ export function registerWorker(app: App): void {
       `,
       [pathInt(ctx, "subprocess_invocation_id")],
     ),
+    doc<OrEmpty<SubprocessInfo>>({
+      summary: "Get Subprocess Info",
+      params: {
+        subprocess_invocation_id: { type: "integer" },
+      },
+    }),
   );
 }
 

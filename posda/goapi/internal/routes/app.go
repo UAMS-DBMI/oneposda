@@ -12,6 +12,7 @@ import (
 	"tcia/posda-api/internal/auth"
 	"tcia/posda-api/internal/config"
 	"tcia/posda-api/internal/db"
+	"tcia/posda-api/internal/docs"
 	"tcia/posda-api/internal/httpx"
 )
 
@@ -28,6 +29,11 @@ func (a *App) Register(mux *http.ServeMux) {
 	mux.Handle("/", httpx.HandlerFunc(func(w http.ResponseWriter, r *http.Request) error {
 		return httpx.NewError(http.StatusNotFound, "Not Found")
 	}))
+
+	// The OpenAPI document and Swagger UI, public as in FastAPI.
+	for pattern, h := range docs.Handlers() {
+		mux.Handle(pattern, h)
+	}
 
 	a.registerAuth(mux)
 	a.registerOther(mux)

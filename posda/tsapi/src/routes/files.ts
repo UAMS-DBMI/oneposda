@@ -2,6 +2,7 @@
 
 import { readdirSync, statSync } from "node:fs";
 import type { App, Ctx } from "../server";
+import { doc, type OrEmpty } from "../openapi";
 import { pathInt, pathStr, queryStr } from "../server";
 import { HttpError, errNoRecords, jsonResponse } from "../httpx";
 import { fetchOneJson, firstColumn, readFileFrom, serveFile } from "./common";
@@ -23,10 +24,25 @@ export function registerFiles(app: App): void {
   const notAllowed = () => {
     throw new HttpError(401, "listing all files is not allowed");
   };
-  app.prot("GET", "/v1/files", notAllowed);
-  app.prot("GET", "/v1/files/", notAllowed);
+  app.prot("GET", "/v1/files", notAllowed,
+    doc({
+      summary: "Get All Files",
+    }),
+  );
+  app.prot("GET", "/v1/files/", notAllowed,
+    doc({
+      summary: "Get All Files",
+    }),
+  );
 
-  app.prot("GET", "/v1/files/listfiles", (ctx) => getListFiles(ctx));
+  app.prot("GET", "/v1/files/listfiles", (ctx) => getListFiles(ctx),
+    doc({
+      summary: "Get Listfiles",
+      params: {
+        path: { in: "query", required: true },
+      },
+    }),
+  );
   app.prot("GET", "/v1/files/:file_id", (ctx) =>
     fetchOneJson(
       app,
@@ -44,13 +60,63 @@ export function registerFiles(app: App): void {
       `,
       [pathInt(ctx, "file_id")],
     ),
+    doc<OrEmpty<FileRow>>({
+      summary: "Get Single File",
+      params: {
+        file_id: { type: "integer" },
+      },
+    }),
   );
-  app.prot("GET", "/v1/files/series/:spec", (ctx) => getSeriesZip(app, ctx));
-  app.prot("GET", "/v1/files/iec/:iec", (ctx) => getIECZip(app, ctx));
+  app.prot("GET", "/v1/files/series/:spec", (ctx) => getSeriesZip(app, ctx),
+    doc({
+      summary: "Get Series Files",
+      description:
+        "Every file in the series, as a STORED (uncompressed) zip archive " +
+        "streamed as it is built.",
+      params: {
+        spec: {
+          description:
+            "A SeriesInstanceUID, optionally suffixed with `@<activity_id>` " +
+            "or `:<activity_timepoint_id>` to select the files as they were " +
+            "in that activity or timepoint rather than the current ones.",
+        },
+      },
+      produces: "application/zip",
+    }),
+  );
+  app.prot("GET", "/v1/files/iec/:iec", (ctx) => getIECZip(app, ctx),
+    doc({
+      summary: "Get Iec Files",
+      params: {
+        iec: { type: "integer" },
+      },
+    }),
+  );
 
-  app.prot("GET", "/v1/files/:file_id/pixels", (ctx) => getPixelData(app, ctx));
-  app.prot("GET", "/v1/files/:file_id/data", (ctx) => getFileData(app, ctx));
-  app.prot("GET", "/v1/files/:file_id/data.gz", (ctx) => getFileData(app, ctx));
+  app.prot("GET", "/v1/files/:file_id/pixels", (ctx) => getPixelData(app, ctx),
+    doc({
+      summary: "Get Pixel Data",
+      params: {
+        file_id: { type: "integer" },
+      },
+    }),
+  );
+  app.prot("GET", "/v1/files/:file_id/data", (ctx) => getFileData(app, ctx),
+    doc({
+      summary: "Get Data",
+      params: {
+        file_id: { type: "integer" },
+      },
+    }),
+  );
+  app.prot("GET", "/v1/files/:file_id/data.gz", (ctx) => getFileData(app, ctx),
+    doc({
+      summary: "Get Data",
+      params: {
+        file_id: { type: "integer" },
+      },
+    }),
+  );
   app.prot("GET", "/v1/files/:file_id/path", (ctx) =>
     fetchOneJson(
       app,
@@ -64,9 +130,21 @@ export function registerFiles(app: App): void {
       `,
       [pathInt(ctx, "file_id")],
     ),
+    doc({
+      summary: "Get Path",
+      params: {
+        file_id: { type: "integer" },
+      },
+    }),
   );
   app.prot("GET", "/v1/files/:file_id/details", (ctx) =>
     getFileDetails(app, ctx),
+    doc({
+      summary: "Get Details",
+      params: {
+        file_id: { type: "integer" },
+      },
+    }),
   );
 }
 

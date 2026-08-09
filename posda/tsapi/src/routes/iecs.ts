@@ -1,6 +1,7 @@
 // Ports papi/routes/iecs.py.
 
 import type { App, Ctx } from "../server";
+import { doc } from "../openapi";
 import { pathInt, queryBool } from "../server";
 import { HttpError, errNoRecords, jsonResponse } from "../httpx";
 import type { Row } from "../db";
@@ -54,8 +55,24 @@ export function registerIECs(app: App): void {
   const notAllowed = () => {
     throw new HttpError(401, "listing all iecs is not allowed");
   };
-  app.prot("GET", "/v1/iecs", notAllowed);
-  app.prot("GET", "/v1/iecs/", notAllowed);
+  app.prot("GET", "/v1/iecs", notAllowed,
+    doc({
+      summary: "Get All Iecs",
+      params: {
+        request: { in: "query", required: true },
+        kwargs: { in: "query", required: true },
+      },
+    }),
+  );
+  app.prot("GET", "/v1/iecs/", notAllowed,
+    doc({
+      summary: "Get All Iecs",
+      params: {
+        request: { in: "query", required: true },
+        kwargs: { in: "query", required: true },
+      },
+    }),
+  );
 
   app.prot("GET", "/v1/iecs/:iec", (ctx) =>
     // Python returns db.fetch here, so the response is a list.
@@ -78,11 +95,41 @@ export function registerIECs(app: App): void {
       [pathInt(ctx, "iec")],
       { update_date: "ts" },
     ),
+    doc<IEC[]>({
+      summary: "Get Iec Details",
+      params: {
+        iec: { type: "integer" },
+      },
+    }),
   );
 
-  app.prot("GET", "/v1/iecs/:iec/files", (ctx) => getIECFiles(app, ctx));
-  app.prot("GET", "/v1/iecs/:iec/frames", (ctx) => getIECFrames(app, ctx));
-  app.prot("GET", "/v1/iecs/:iec/info", (ctx) => getIECInfo(app, ctx));
+  app.prot("GET", "/v1/iecs/:iec/files", (ctx) => getIECFiles(app, ctx),
+    doc({
+      summary: "Get Iec Files",
+      params: {
+        iec: { type: "integer" },
+      },
+    }),
+  );
+  app.prot("GET", "/v1/iecs/:iec/frames", (ctx) => getIECFrames(app, ctx),
+    doc({
+      summary: "Get Iec Frames",
+      description: "Get a list of frames (files and frame counts) from this IEC.\n\nAlso returns a guess for if the data is intended to be volumetric.",
+      params: {
+        iec: { type: "integer" },
+        include_frames: { in: "query", type: "boolean" },
+      },
+    }),
+  );
+  app.prot("GET", "/v1/iecs/:iec/info", (ctx) => getIECInfo(app, ctx),
+    doc<IECInfo>({
+      summary: "Get Iec Info",
+      description: "Get details for an IEC.",
+      params: {
+        iec: { type: "integer" },
+      },
+    }),
+  );
   app.prot("GET", "/v1/iecs/:iec/other_iecs_in_for", (ctx) =>
     fetchJson(
       app,
@@ -116,6 +163,13 @@ export function registerIECs(app: App): void {
       [pathInt(ctx, "iec")],
       { file_count: "int8" },
     ),
+    doc<IECSharingFOR[]>({
+      summary: "Iecs For For",
+      description: "Get all other IECs that share this IEC's Frame of Reference\n\nFor the given IEC, this returns a list of all IECs (other than\nthe original one) inside the same visual review that share a\nFrame of Reference.",
+      params: {
+        iec: { type: "integer" },
+      },
+    }),
   );
 }
 

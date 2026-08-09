@@ -1,6 +1,7 @@
 // Ports papi/routes/work.py.
 
 import type { App, Ctx } from "../server";
+import { doc, type OrEmpty } from "../openapi";
 import { pathInt, pathStr, queryInt } from "../server";
 import { HttpError } from "../httpx";
 import { fetchFirstColumn, fetchOneJson } from "./common";
@@ -29,9 +30,31 @@ export interface WorkItem {
 }
 
 export function registerWork(app: App): void {
-  app.prot("GET", "/v1/work/items", (ctx) => getWorkItems(app, ctx));
-  app.prot("GET", "/v1/work/items/:work_id", (ctx) => getWorkItem(app, ctx));
-  app.prot("GET", "/v1/work/queues/:queue_name", (ctx) => getWorkQueue(app, ctx));
+  app.prot("GET", "/v1/work/items", (ctx) => getWorkItems(app, ctx),
+    doc({
+      summary: "Get Work Status",
+      params: {
+        status: { in: "query", required: true },
+        count: { in: "query", type: "integer" },
+      },
+    }),
+  );
+  app.prot("GET", "/v1/work/items/:work_id", (ctx) => getWorkItem(app, ctx),
+    doc<OrEmpty<WorkItem>>({
+      summary: "Get Work Status",
+      params: {
+        work_id: { type: "integer" },
+      },
+    }),
+  );
+  app.prot("GET", "/v1/work/queues/:queue_name", (ctx) => getWorkQueue(app, ctx),
+    doc({
+      summary: "Get Work Status",
+      params: {
+        count: { in: "query", type: "integer" },
+      },
+    }),
+  );
 }
 
 async function getWorkItems(app: App, ctx: Ctx): Promise<Response> {

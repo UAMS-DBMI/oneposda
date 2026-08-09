@@ -1,6 +1,7 @@
 // Ports papi/routes/deface.py.
 
 import type { App, Ctx, Handler } from "../server";
+import { doc } from "../openapi";
 import { pathInt } from "../server";
 import { HttpError, jsonResponse } from "../httpx";
 import { decodeJsonBody } from "./common";
@@ -29,9 +30,50 @@ interface DefaceResult {
 }
 
 export function registerDeface(app: App): void {
-  app.prot("GET", "/v1/deface/:defacing_id", (ctx) => getDefacing(app, ctx));
-  app.prot("POST", "/v1/deface/:defacing_id/complete", defacingComplete(app, true));
-  app.prot("POST", "/v1/deface/:defacing_id/error", defacingComplete(app, false));
+  app.prot("GET", "/v1/deface/:defacing_id", (ctx) => getDefacing(app, ctx),
+    doc<Defacing>({
+      summary: "Get Work Status",
+      params: {
+        defacing_id: { type: "integer" },
+      },
+    }),
+  );
+  app.prot("POST", "/v1/deface/:defacing_id/complete", defacingComplete(app, true),
+    doc({
+      summary: "Set Work Status Finished",
+      params: {
+        defacing_id: { type: "integer" },
+      },
+      requestBody: {
+        contentType: "application/json",
+        fields: {
+          nifti_file_id: { type: "integer" },
+          three_d_rendered_face: { type: "integer" },
+          three_d_rendered_face_box: { type: "integer" },
+          three_d_rendered_defaced: { type: "integer" },
+          error_code: {  },
+        },
+      },
+    }),
+  );
+  app.prot("POST", "/v1/deface/:defacing_id/error", defacingComplete(app, false),
+    doc({
+      summary: "Set Work Status Errored",
+      params: {
+        defacing_id: { type: "integer" },
+      },
+      requestBody: {
+        contentType: "application/json",
+        fields: {
+          nifti_file_id: { type: "integer" },
+          three_d_rendered_face: { type: "integer" },
+          three_d_rendered_face_box: { type: "integer" },
+          three_d_rendered_defaced: { type: "integer" },
+          error_code: {  },
+        },
+      },
+    }),
+  );
 }
 
 async function getDefacing(app: App, ctx: Ctx): Promise<Response> {

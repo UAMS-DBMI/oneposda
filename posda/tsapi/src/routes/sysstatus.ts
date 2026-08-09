@@ -1,6 +1,7 @@
 // Ports papi/routes/sysstatus.py. This route has no login requirement.
 
 import type { App } from "../server";
+import { doc } from "../openapi";
 import { pathStr } from "../server";
 
 export function registerSysStatus(app: App): void {
@@ -14,5 +15,9 @@ export function registerSysStatus(app: App): void {
         },
       },
     );
-  });
+  },
+    doc({
+      summary: "Get Reviewed Percentage For Vr",
+    }),
+  );
 }

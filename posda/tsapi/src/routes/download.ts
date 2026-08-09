@@ -4,6 +4,7 @@
 // security_hash in the URL.
 
 import type { App, Ctx } from "../server";
+import { doc } from "../openapi";
 import { pathInt, pathStr, queryBool } from "../server";
 import { errNoRecords } from "../httpx";
 import { serveFile } from "./common";
@@ -42,14 +43,47 @@ function guessExtension(mimeType: string): string {
 }
 
 export function registerDownload(app: App): void {
-  for (const prefix of ["", "/v1/download"]) {
-    app.pub("GET", `${prefix}/file/:downloadable_file_id/:hash`, (ctx) =>
-      downloadFile(app, ctx),
-    );
-    app.pub("GET", `${prefix}/dir/:downloadable_dir_id/:hash`, (ctx) =>
-      downloadDir(app, ctx),
-    );
-  }
+  // Both the bare and the /v1/download-prefixed forms exist, as in the
+  // Python implementation. Written out rather than looped so that
+  // scripts/genopenapi.ts can read every path as a literal.
+  app.pub("GET", "/file/:downloadable_file_id/:hash", (ctx) =>
+    downloadFile(app, ctx),
+    doc({
+      summary: "Download File",
+      params: {
+        downloadable_file_id: { type: "integer" },
+        process: { in: "query", type: "boolean" },
+      },
+    }),
+  );
+  app.pub("GET", "/dir/:downloadable_dir_id/:hash", (ctx) =>
+    downloadDir(app, ctx),
+    doc({
+      summary: "Download Dir",
+      params: {
+        downloadable_dir_id: { type: "integer" },
+      },
+    }),
+  );
+  app.pub("GET", "/v1/download/file/:downloadable_file_id/:hash", (ctx) =>
+    downloadFile(app, ctx),
+    doc({
+      summary: "Download File",
+      params: {
+        downloadable_file_id: { type: "integer" },
+        process: { in: "query", type: "boolean" },
+      },
+    }),
+  );
+  app.pub("GET", "/v1/download/dir/:downloadable_dir_id/:hash", (ctx) =>
+    downloadDir(app, ctx),
+    doc({
+      summary: "Download Dir",
+      params: {
+        downloadable_dir_id: { type: "integer" },
+      },
+    }),
+  );
 }
 
 async function downloadFile(app: App, ctx: Ctx): Promise<Response> {

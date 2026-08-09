@@ -92,8 +92,31 @@ that as an error). The following differences are deliberate:
   UTF-8, instead of chardet's guess.
 - `/v1/other/asynctar` always 500s (it always did: it calls a function
   that does not exist) — implemented as an explicit 500.
-- No OpenAPI schema / interactive docs endpoints.
+- The OpenAPI document is generated at build time rather than derived
+  from the running app (see below), so it describes response bodies
+  that FastAPI left undocumented, and `/redoc` does not exist.
 - The eval() of stored error messages in
   `/v1/send_to_public_status/report/{id}` is replaced by a real parser
   (`internal/evilparse`); it produces the same output for well-formed
   messages without executing anything.
+
+## API documentation
+
+The API serves its own OpenAPI document and a Swagger UI:
+
+    /openapi.json    the OpenAPI 3.1 document
+    /docs            Swagger UI (assets vendored, no CDN needed)
+
+Both are public, as they were in FastAPI, and both work under the
+`/papi` prefix as well.
+
+The document is *not* generated from this code. It is produced from the
+route annotations in the TypeScript port — which carries an explicit
+response interface per query — by `posda/tsapi/scripts/genopenapi.ts`,
+which writes an identical copy into `internal/docs/openapi.json` for
+`go:embed` to pick up. Regenerate both with:
+
+    cd ../tsapi && make openapi
+
+`internal/docs/docs_test.go` checks the embedded copy parses and is not
+truncated; `cd ../tsapi && make openapi-check` fails if it is stale.

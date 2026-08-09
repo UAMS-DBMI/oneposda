@@ -7,6 +7,7 @@ import { Readable } from "node:stream";
 import type { Config } from "./config";
 import type { Db } from "./db";
 import type { AuthService, User } from "./auth";
+import type { RouteDoc } from "./openapi";
 import {
   HttpError,
   InternalError,
@@ -36,8 +37,20 @@ export type Handler = (ctx: Ctx) => Response | Promise<Response>;
 
 type BunRouteHandler = (req: Request & { params?: unknown }) => Promise<Response>;
 
+/** A registered route, kept so tests can assert documentation coverage.
+ * The OpenAPI document itself is generated from the source, not from
+ * this table — see src/openapi.ts. */
+export interface RouteInfo {
+  method: string;
+  path: string;
+  needAuth: boolean;
+  doc: RouteDoc | undefined;
+}
+
 export class App {
   private routes = new Map<string, Record<string, BunRouteHandler>>();
+  /** Every registration, in declaration order. */
+  readonly registered: RouteInfo[] = [];
 
   constructor(
     public readonly cfg: Config,
@@ -46,16 +59,23 @@ export class App {
   ) {}
 
   /** Register a route that does not require login. */
-  pub(method: string, path: string, h: Handler): void {
-    this.add(method, path, h, false);
+  pub(method: string, path: string, h: Handler, d?: RouteDoc): void {
+    this.add(method, path, h, false, d);
   }
 
   /** Register a route behind the login middleware. */
-  prot(method: string, path: string, h: Handler): void {
-    this.add(method, path, h, true);
+  prot(method: string, path: string, h: Handler, d?: RouteDoc): void {
+    this.add(method, path, h, true, d);
   }
 
-  private add(method: string, path: string, h: Handler, needAuth: boolean): void {
+  private add(
+    method: string,
+    path: string,
+    h: Handler,
+    needAuth: boolean,
+    d?: RouteDoc,
+  ): void {
+    this.registered.push({ method, path, needAuth, doc: d });
     const wrapped: BunRouteHandler = async (req) => {
       const ctx: Ctx = {
         req,

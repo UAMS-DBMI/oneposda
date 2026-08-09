@@ -1,6 +1,7 @@
 // Ports papi/routes/series.py.
 
 import type { App, Ctx } from "../server";
+import { doc, type OrEmpty } from "../openapi";
 import { pathStr } from "../server";
 import { HttpError, InternalError, jsonResponse } from "../httpx";
 import type { Row } from "../db";
@@ -59,12 +60,32 @@ export interface SeriesFrame {
   frames: number;
 }
 
+/** GET /v1/series/{spec}/files */
+export interface SeriesFileIDs {
+  file_ids: number[];
+}
+
+/** Shared description of the series selector these routes accept.
+ * scripts/genopenapi.ts resolves module-level string constants. */
+const SERIES_SPEC =
+  "A SeriesInstanceUID, optionally suffixed with `@<activity_id>` or " +
+  "`:<activity_timepoint_id>` to select the files as they were in that " +
+  "activity or timepoint rather than the current ones.";
+
 export function registerSeries(app: App): void {
   const notAllowed = () => {
     throw new HttpError(401, "listing all series is not allowed");
   };
-  app.prot("GET", "/v1/series", notAllowed);
-  app.prot("GET", "/v1/series/", notAllowed);
+  app.prot("GET", "/v1/series", notAllowed,
+    doc({
+      summary: "Get All Studies",
+    }),
+  );
+  app.prot("GET", "/v1/series/", notAllowed,
+    doc({
+      summary: "Get All Studies",
+    }),
+  );
 
   app.prot("GET", "/v1/series/:spec", (ctx) =>
     // The detail route never parses @/: suffixes (neither does FastAPI).
@@ -92,12 +113,45 @@ export function registerSeries(app: App): void {
       [pathStr(ctx, "spec")],
       { series_date: "date", file_count: "int8" },
     ),
+    doc<OrEmpty<SeriesDetail>>({
+      summary: "Get Series",
+      description:
+        "Details of a single series. Unlike the sub-resources below, this " +
+        "route treats the whole path segment as a SeriesInstanceUID and " +
+        "does not parse an @activity or :timepoint suffix.",
+      params: { spec: { description: "A SeriesInstanceUID." } },
+    }),
   );
-  app.prot("GET", "/v1/series/:spec/ohif", (ctx) => getOhifConfig(app, ctx));
-  app.prot("GET", "/v1/series/:spec/frames", (ctx) => getSeriesFrames(app, ctx));
-  app.prot("GET", "/v1/series/:spec/files", (ctx) => getSeriesFileIDs(app, ctx));
+  app.prot("GET", "/v1/series/:spec/ohif", (ctx) => getOhifConfig(app, ctx),
+    doc({
+      summary: "Get Ohif Config",
+      description:
+        "The OHIF/Cornerstone viewer configuration for the series, as a " +
+        "JSON study descriptor with one displaySet per series.",
+      params: { spec: { description: SERIES_SPEC } },
+    }),
+  );
+  app.prot("GET", "/v1/series/:spec/frames", (ctx) => getSeriesFrames(app, ctx),
+    doc<SeriesFrame[]>({
+      summary: "Get Series Frames",
+      description: "One entry per frame, ordered by slice position.",
+      params: { spec: { description: SERIES_SPEC } },
+    }),
+  );
+  app.prot("GET", "/v1/series/:spec/files", (ctx) => getSeriesFileIDs(app, ctx),
+    doc<SeriesFileIDs>({
+      summary: "Get Series Files",
+      description: "The file_ids making up the series.",
+      params: { spec: { description: SERIES_SPEC } },
+    }),
+  );
   app.prot("GET", "/v1/series/:spec/activities", (ctx) =>
     getSeriesActivities(app, ctx),
+    doc({
+      summary: "Get Series Activities",
+      description: "The activities this series appears in.",
+      params: { spec: { description: SERIES_SPEC } },
+    }),
   );
 }
 

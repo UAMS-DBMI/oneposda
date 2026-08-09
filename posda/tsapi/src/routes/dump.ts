@@ -2,6 +2,7 @@
 // an external script.
 
 import type { App, Ctx } from "../server";
+import { doc } from "../openapi";
 import { pathInt } from "../server";
 import { HttpError } from "../httpx";
 
@@ -10,7 +11,16 @@ interface FilePathRow {
 }
 
 export function registerDump(app: App): void {
-  app.prot("GET", "/v1/dump/:file_id", (ctx) => dumpDicom(app, ctx));
+  app.prot("GET", "/v1/dump/:file_id", (ctx) => dumpDicom(app, ctx),
+    doc({
+      summary: "Dump Dicom",
+      description: "Returns an HTML-formatted DICOM Dump of the given file_id,\nif it is a DICOM file.\n\nThe resulting dump is decoded as utf8 if possible, and if not\nthe correct encoding is guessed by chardet.",
+      params: {
+        file_id: { type: "integer" },
+      },
+      produces: "text/html",
+    }),
+  );
 }
 
 async function dumpDicom(app: App, ctx: Ctx): Promise<Response> {

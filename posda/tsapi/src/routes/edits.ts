@@ -1,6 +1,7 @@
 // Ports papi/routes/edits.py.
 
 import type { App, Ctx } from "../server";
+import { doc } from "../openapi";
 import { HttpError, jsonResponse } from "../httpx";
 import { decodeJsonBody } from "./common";
 
@@ -18,7 +19,22 @@ interface EditStateBody {
 }
 
 export function registerEdits(app: App): void {
-  app.prot("POST", "/v1/edits/state", (ctx) => setEditState(app, ctx));
+  app.prot("POST", "/v1/edits/state", (ctx) => setEditState(app, ctx),
+    doc({
+      summary: "Set State",
+      description: "Modify the state of an edit",
+      requestBody: {
+        contentType: "application/json",
+        fields: {
+          edit_id: { type: "integer", required: true },
+          expected_state: { required: true },
+          new_state: { required: true },
+          table_name: {  },
+          column_name: {  },
+        },
+      },
+    }),
+  );
 }
 
 async function setEditState(app: App, ctx: Ctx): Promise<Response> {

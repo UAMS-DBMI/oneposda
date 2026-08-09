@@ -1,6 +1,7 @@
 // Ports papi/routes/nifti.py.
 
 import type { App, Ctx } from "../server";
+import { doc, type OrEmptyObject } from "../openapi";
 import { pathInt, pathStr } from "../server";
 import { HttpError, jsonResponse } from "../httpx";
 import { isForeignKeyViolation } from "../db";
@@ -20,9 +21,24 @@ export interface NiftiDetails {
 }
 
 export function registerNifti(app: App): void {
-  app.prot("GET", "/v1/nifti/:nifti_id", (ctx) => getNiftiDetails(app, ctx));
+  app.prot("GET", "/v1/nifti/:nifti_id", (ctx) => getNiftiDetails(app, ctx),
+    doc<OrEmptyObject<NiftiDetails>>({
+      summary: "Get Nifti Details",
+      description: "Return details about the given Nifti File",
+      params: {
+        nifti_id: { type: "integer" },
+      },
+    }),
+  );
   app.prot("POST", "/v1/nifti/:nifti_id/set_status/:review_status", (ctx) =>
     setNiftiStatus(app, ctx),
+    doc({
+      summary: "Set Status",
+      description: "Update/Set Nifti review status",
+      params: {
+        nifti_id: { type: "integer" },
+      },
+    }),
   );
   app.prot(
     "GET",
@@ -43,6 +59,13 @@ export function registerNifti(app: App): void {
         `,
         [pathInt(ctx, "nifti_visual_review_instance_id")],
       ),
+    doc({
+      summary: "Get For Visualreview",
+      description: "Return list of all Files in this Nifti VR",
+      params: {
+        nifti_visual_review_instance_id: { type: "integer" },
+      },
+    }),
   );
 }
 

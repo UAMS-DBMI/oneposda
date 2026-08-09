@@ -8,6 +8,7 @@
 // here because existing clients depend on it.
 
 import type { App, Ctx, Handler } from "../server";
+import { doc } from "../openapi";
 import { pathInt, pathStr } from "../server";
 import { HttpError, jsonResponse } from "../httpx";
 import type { Convs } from "../pgconvert";
@@ -33,6 +34,12 @@ export function registerPathology(app: App): void {
       order by path_file_id;
       `,
     ),
+    doc({
+      summary: "Get Files For Review",
+      params: {
+        vr_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot(
@@ -50,6 +57,12 @@ export function registerPathology(app: App): void {
           a.file_id = $1
            `,
     ),
+    doc({
+      summary: "Get Filename",
+      params: {
+        pathid: { type: "integer" },
+      },
+    }),
   );
 
   app.prot("GET", "/v1/pathology/preview/:pathid/:gammaIndex", (ctx) =>
@@ -66,6 +79,13 @@ export function registerPathology(app: App): void {
       `,
       [pathInt(ctx, "pathid"), pathInt(ctx, "gammaIndex")],
     ),
+    doc({
+      summary: "Get Previews",
+      params: {
+        pathid: { type: "integer" },
+        gammaIndex: { type: "integer" },
+      },
+    }),
   );
 
   const queuedRemovals: Handler = () =>
@@ -78,8 +98,16 @@ export function registerPathology(app: App): void {
       where p.status = 'waiting' and p.edit_type = '4';
       `,
     );
-  app.prot("GET", "/v1/pathology/get_queued_removals", queuedRemovals);
-  app.prot("GET", "/v1/pathology/get_queued_removals/", queuedRemovals);
+  app.prot("GET", "/v1/pathology/get_queued_removals", queuedRemovals,
+    doc({
+      summary: "Get Queued Removals",
+    }),
+  );
+  app.prot("GET", "/v1/pathology/get_queued_removals/", queuedRemovals,
+    doc({
+      summary: "Get Queued Removals",
+    }),
+  );
 
   app.prot(
     "GET",
@@ -102,6 +130,12 @@ export function registerPathology(app: App): void {
       `,
       { count: "int8" },
     ),
+    doc({
+      summary: "Get Path Edits On Act",
+      params: {
+        act_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot(
@@ -129,6 +163,12 @@ export function registerPathology(app: App): void {
       `,
       { count: "int8" },
     ),
+    doc({
+      summary: "Get Path Edits Pvr Instance",
+      params: {
+        pvr_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot("PUT", "/v1/pathology/set_edit/:pathid/:good_status/:user", (ctx) =>
@@ -144,6 +184,12 @@ export function registerPathology(app: App): void {
         pathStr(ctx, "user"),
       ],
     ),
+    doc({
+      summary: "Set Edit",
+      params: {
+        pathid: { type: "integer" },
+      },
+    }),
   );
 
   const pathEditById = (sql: string): Handler => {
@@ -158,6 +204,12 @@ export function registerPathology(app: App): void {
       (file_id,edit_type, edit_details, status)
       VALUES($1 , 1, NULL, 'waiting');
       `),
+    doc({
+      summary: "Remm",
+      params: {
+        pathid: { type: "integer" },
+      },
+    }),
   );
 
   app.prot("PUT", "/v1/pathology/redact/:dims/:pathid", (ctx) =>
@@ -170,6 +222,12 @@ export function registerPathology(app: App): void {
       `,
       [pathInt(ctx, "pathid"), pathStr(ctx, "dims")],
     ),
+    doc({
+      summary: "Redact",
+      params: {
+        pathid: { type: "integer" },
+      },
+    }),
   );
 
   app.prot(
@@ -180,6 +238,12 @@ export function registerPathology(app: App): void {
       (file_id,edit_type, edit_details, status)
       VALUES($1 , 2, NULL, 'waiting');
       `),
+    doc({
+      summary: "Reml",
+      params: {
+        pathid: { type: "integer" },
+      },
+    }),
   );
 
   app.prot(
@@ -190,6 +254,12 @@ export function registerPathology(app: App): void {
       (file_id,edit_type, edit_details, status)
       VALUES($1 , 4, NULL, 'waiting');
       `),
+    doc({
+      summary: "Remf",
+      params: {
+        pathid: { type: "integer" },
+      },
+    }),
   );
 
   app.prot(
@@ -200,6 +270,12 @@ export function registerPathology(app: App): void {
       (file_id,edit_type, edit_details, status)
       VALUES($1 , 3, 'imgdesc', 'waiting');
       `),
+    doc({
+      summary: "Editm",
+      params: {
+        pathid: { type: "integer" },
+      },
+    }),
   );
 
   app.prot(
@@ -212,6 +288,12 @@ export function registerPathology(app: App): void {
       status = 'waiting'
       and file_id = $1
       `),
+    doc({
+      summary: "Canceledit",
+      params: {
+        pathid: { type: "integer" },
+      },
+    }),
   );
 
   app.prot(
@@ -231,6 +313,12 @@ export function registerPathology(app: App): void {
         pathology_visual_review_instance_id = $1
       `,
     ),
+    doc({
+      summary: "Review",
+      params: {
+        vr_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot("PUT", "/v1/pathology/copymapping/:oldfile_id/:newfile_id", (ctx) =>
@@ -248,6 +336,13 @@ export function registerPathology(app: App): void {
            `,
       [pathInt(ctx, "oldfile_id"), pathInt(ctx, "newfile_id")],
     ),
+    doc({
+      summary: "Copymapping",
+      params: {
+        oldfile_id: { type: "integer" },
+        newfile_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot(
@@ -264,6 +359,12 @@ export function registerPathology(app: App): void {
           a.file_id = $1
            `,
     ),
+    doc({
+      summary: "Get Mapping",
+      params: {
+        file_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot(
@@ -296,6 +397,12 @@ export function registerPathology(app: App): void {
           pathStr(ctx, "clinical_trial_subject_id"),
         ],
       ),
+    doc({
+      summary: "Setmapping",
+      params: {
+        file_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot(
@@ -312,11 +419,20 @@ export function registerPathology(app: App): void {
           a.file_id = $1
            `,
     ),
+    doc({
+      summary: "Get Image Desc",
+      params: {
+        file_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot("GET", "/v1/pathology/getcount", () =>
     // Python counts a module-level dict that is never written to.
     jsonResponse(0),
+    doc({
+      summary: "Get Current Count",
+    }),
   );
 
   app.prot(
@@ -336,6 +452,12 @@ export function registerPathology(app: App): void {
             );
       `,
     ),
+    doc({
+      summary: "Find Files",
+      params: {
+        activity_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot(
@@ -351,6 +473,12 @@ export function registerPathology(app: App): void {
                and status = 'waiting'
       `,
     ),
+    doc({
+      summary: "Find Edits",
+      params: {
+        file_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot(
@@ -365,6 +493,12 @@ export function registerPathology(app: App): void {
     where f.file_id = $1
      `,
     ),
+    doc({
+      summary: "Find Relpath",
+      params: {
+        file_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot("PATCH", "/v1/pathology/completeEdit/:edit_id", async (ctx) => {
@@ -378,7 +512,14 @@ export function registerPathology(app: App): void {
       throw new HttpError(422, "Complete Edit: Error updating edit status");
     }
     return jsonResponse({ status: "success" });
-  });
+  },
+    doc({
+      summary: "Completeedit",
+      params: {
+        edit_id: { type: "integer" },
+      },
+    }),
+  );
 
   app.prot("GET", "/v1/pathology/getXfiles/:import_id/:file_type", (ctx) =>
     fetchJson(
@@ -394,6 +535,12 @@ export function registerPathology(app: App): void {
       `,
       [pathInt(ctx, "import_id"), pathStr(ctx, "file_type")],
     ),
+    doc({
+      summary: "Getxfiles",
+      params: {
+        import_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot(
@@ -410,6 +557,12 @@ export function registerPathology(app: App): void {
           import_event_id = $1;
       `,
     ),
+    doc({
+      summary: "Get Files From Import",
+      params: {
+        import_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot(
@@ -429,6 +582,9 @@ export function registerPathology(app: App): void {
         `,
         [pathStr(ctx, "activity_name"), pathStr(ctx, "user")],
       ),
+    doc({
+      summary: "Create Path Activit",
+    }),
   );
 
   app.prot(
@@ -450,6 +606,12 @@ export function registerPathology(app: App): void {
         `,
         [pathInt(ctx, "activity_id"), pathStr(ctx, "user")],
       ),
+    doc({
+      summary: "Create Path Activity Timepoint",
+      params: {
+        activity_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot(
@@ -468,6 +630,13 @@ export function registerPathology(app: App): void {
         `,
         [pathInt(ctx, "atf_id"), pathInt(ctx, "file_id")],
       ),
+    doc({
+      summary: "Add File To Path Activity Timepoint",
+      params: {
+        atf_id: { type: "integer" },
+        file_id: { type: "integer" },
+      },
+    }),
   );
 
   const pathBulkEdit = (editType: string): Handler => {
@@ -496,16 +665,34 @@ export function registerPathology(app: App): void {
     "PUT",
     "/v1/pathology/bulkMacro/:pathology_visual_review_instance_id",
     pathBulkEdit("1"),
+    doc({
+      summary: "Editbulkmacro",
+      params: {
+        pathology_visual_review_instance_id: { type: "integer" },
+      },
+    }),
   );
   app.prot(
     "PUT",
     "/v1/pathology/bulkLabel/:pathology_visual_review_instance_id",
     pathBulkEdit("2"),
+    doc({
+      summary: "Editbulklabel",
+      params: {
+        pathology_visual_review_instance_id: { type: "integer" },
+      },
+    }),
   );
   app.prot(
     "PUT",
     "/v1/pathology/bulkMeta/:pathology_visual_review_instance_id",
     pathBulkEdit("3"),
+    doc({
+      summary: "Editbulkmeta",
+      params: {
+        pathology_visual_review_instance_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot("PUT", "/v1/pathology/recordPathDBresponse/:file_id/:node_id", (ctx) =>
@@ -518,12 +705,24 @@ export function registerPathology(app: App): void {
       `,
       [pathInt(ctx, "file_id"), pathStr(ctx, "node_id")],
     ),
+    doc({
+      summary: "Recordpathdbresponse",
+      params: {
+        file_id: { type: "integer" },
+      },
+    }),
   );
 
   app.prot(
     "PUT",
     "/v1/pathology/insert_image_meta/:file_id/:format/:modality/:protocol/:manufacturer/:model/:xResolution/:yResolution/:resolutionUnit/:magnification/:mppx/:mppy/:image_volume_width/:image_volume_height/:reference_pixel_physical_value_x/:reference_pixel_physical_value_y",
     (ctx) => insertImageMeta(app, ctx),
+    doc({
+      summary: "Insert Image Meta",
+      params: {
+        file_id: { type: "integer" },
+      },
+    }),
   );
 }
 

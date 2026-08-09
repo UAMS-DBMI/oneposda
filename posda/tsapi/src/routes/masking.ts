@@ -1,6 +1,7 @@
 // Ports papi/routes/masking.py.
 
 import type { App, Ctx, Handler } from "../server";
+import { doc } from "../openapi";
 import { pathInt, queryBool, queryInt } from "../server";
 import { HttpError, errNoRecords, jsonResponse } from "../httpx";
 import { isForeignKeyViolation, isUniqueViolation } from "../db";
@@ -19,12 +20,16 @@ export interface Masking {
   masking_exit_code: number | null;
 }
 
-/** GET /v1/masking/{iec} */
-export interface MaskingDetails extends Masking {
-  site_id: string | null;
-  uid_root: string | null;
+/**
+ * GET /v1/masking/{iec}. An IEC with no masking row still gets a
+ * response — just `{"history": [...]}`, matching dict() of an empty
+ * fetch_one result — so everything but the history is optional.
+ */
+export type MaskingDetails = Partial<Masking> & {
+  site_id?: string | null;
+  uid_root?: string | null;
   history: MaskingHistoryEntry[];
-}
+};
 
 export interface MaskingHistoryEntry {
   new_status: string | null;
@@ -56,58 +61,222 @@ export function registerMasking(app: App): void {
   const notAllowed = () => {
     throw new HttpError(401, "not allowed");
   };
-  app.prot("GET", "/v1/masking", notAllowed);
-  app.prot("GET", "/v1/masking/", notAllowed);
+  app.prot("GET", "/v1/masking", notAllowed,
+    doc({
+      summary: "Get All Iecs",
+      params: {
+        args: { in: "query", required: true },
+        kwargs: { in: "query", required: true },
+      },
+    }),
+  );
+  app.prot("GET", "/v1/masking/", notAllowed,
+    doc({
+      summary: "Get All Iecs",
+      params: {
+        args: { in: "query", required: true },
+        kwargs: { in: "query", required: true },
+      },
+    }),
+  );
 
-  app.prot("GET", "/v1/masking/getwork", () => getWorkForMasker(app));
-  app.prot("POST", "/v1/masking/abortwork", (ctx) => abortMaskingWork(app, ctx));
-  app.prot("GET", "/v1/masking/:iec", (ctx) => getMaskingDetails(app, ctx));
+  app.prot("GET", "/v1/masking/getwork", () => getWorkForMasker(app),
+    doc({
+      summary: "Get Work For Masker",
+      description: "Get work for the worker program",
+    }),
+  );
+  app.prot("POST", "/v1/masking/abortwork", (ctx) => abortMaskingWork(app, ctx),
+    doc({
+      summary: "Get Work For Masker",
+      description: "Reset an IEC back to ready-to-process\n\nUsed only when Nopperabo is shutdown while working.\nIf the IEC is not in in-process status, nothing is done.",
+      params: {
+        iec: { in: "query", type: "integer", required: true },
+      },
+    }),
+  );
+  app.prot("GET", "/v1/masking/:iec", (ctx) => getMaskingDetails(app, ctx),
+    doc<MaskingDetails>({
+      summary: "Get Masking Details",
+      description: "Return details about the given masking item, including history",
+      params: {
+        iec: { type: "integer" },
+      },
+    }),
+  );
   app.prot(
     "GET",
     "/v1/masking/visualreview/:visual_review_instance_id/next-for-review",
     nextMaskingIEC(app, "process-complete"),
+    doc({
+      summary: "Get Next To Review For Review",
+      description: "Return the \"next\" IEC in this VR that is waiting to be Reviewed\n\nThe IEC is chosen from the set of all IECs in this VR that are \nwaiting to be reviewed (masking_status of 'process-complete').\nIt then chooses one from this set randomly.\n\nThis can be used to select an IEC for a curator to work on. The \nexact one is chosen randomly as a cheap way to ensure multiple\npeople working on th same VR don't end up working on the same IEC.",
+      params: {
+        visual_review_instance_id: { type: "integer" },
+      },
+    }),
   );
   app.prot(
     "GET",
     "/v1/masking/visualreview/:visual_review_instance_id/next",
     nextMaskingIEC(app, "created"),
+    doc({
+      summary: "Get Next To Review",
+      description: "Return the \"next\" IEC in this VR that is waiting to be Masked\n\nThe IEC is chosen from the set of all IECs in this VR that are \nflagged for Masking, minus those that are in a status that indicates\nthey have already had masking coordiantes assigned. It then chooses\none from this set randomly.\n\nThis can be used to select an IEC for a curator to work on. The \nexact one is chosen randomly as a cheap way to ensure multiple\npeople working on th same VR don't end up working on the same IEC.",
+      params: {
+        visual_review_instance_id: { type: "integer" },
+      },
+    }),
   );
   app.prot(
     "GET",
     "/v1/masking/visualreview/:visual_review_instance_id",
     (ctx) => getMaskingForVR(app, ctx),
+    doc({
+      summary: "Get For Visualreview",
+      description: "Return list of all IECs in this VR that are flagged for Masking, and\nare waiting to be masked (or those that are awaiting review).\n\nIf awaiting_review is true, it only returns those which are currently\nawaiting review (that is, masking_status is 'process-complete').\n\nIf awaiting_review is false, it only returns those IECs which are\nwaiting to be masked, or are rejected (that is, masking_status is\n'created' or 'rejected').",
+      params: {
+        visual_review_instance_id: { type: "integer" },
+        awaiting_review: { in: "query", type: "boolean" },
+      },
+    }),
   );
   app.prot(
     "GET",
     "/v1/masking/visualreview/:visual_review_instance_id/values",
     (ctx) => getMaskingValues(app, ctx),
+    doc({
+      summary: "Get Masking Values For Vr",
+      description: "Get list of valid values for use in filtering, for the given VR.\n\nReturns the valid values for: masking_status and dicom_file_type,\nscoped to IECs in this VR that are flagged for masking.",
+      params: {
+        visual_review_instance_id: { type: "integer" },
+      },
+    }),
   );
   app.prot(
     "POST",
     "/v1/masking/visualreview/:visual_review_instance_id/filter",
     (ctx) => getMaskingFiltered(app, ctx),
+    doc({
+      summary: "Get Masking Filtered For Vr",
+      description: "Return a filtered list of IECs flagged for masking in this VR. Use * for wildcard.\n\nResults are always in ascending order.",
+      params: {
+        visual_review_instance_id: { type: "integer" },
+      },
+      requestBody: {
+        contentType: "application/json",
+        fields: {
+          dicom_file_type: {  },
+          masking_status: {  },
+        },
+      },
+    }),
   );
 
   app.prot("GET", "/v1/masking/:iec/reviewfiles", (ctx) =>
     getMaskingReviewFiles(app, ctx),
+    doc({
+      summary: "Get Iec Review Files",
+      description: "Get list of completed files for review",
+      params: {
+        iec: { type: "integer" },
+      },
+    }),
   );
   app.prot("GET", "/v1/masking/:iec/reviewfiles/download", (ctx) =>
     downloadMaskingReviewFiles(app, ctx),
+    doc({
+      summary: "Get Iec Files",
+      params: {
+        iec: { type: "integer" },
+      },
+    }),
   );
-  app.prot("POST", "/v1/masking/:iec/mask", (ctx) => requestMasking(app, ctx));
+  app.prot("POST", "/v1/masking/:iec/mask", (ctx) => requestMasking(app, ctx),
+    doc({
+      summary: "Request For Masking",
+      description: "Flag for masking\n\nCreates a new entry in `masking` for this IEC.",
+      params: {
+        iec: { type: "integer" },
+      },
+    }),
+  );
   app.prot("POST", "/v1/masking/:iec/parameters", (ctx) =>
     updateMaskingParameters(app, ctx),
+    doc({
+      summary: "Update Masking Parameters",
+      description: "Update/Set masking parameters",
+      params: {
+        iec: { type: "integer" },
+      },
+      requestBody: {
+        contentType: "application/json",
+        fields: {
+          LR: { type: "integer", required: true },
+          PA: { type: "integer", required: true },
+          IS: { type: "integer", required: true },
+          width: { type: "integer", required: true },
+          height: { type: "integer", required: true },
+          depth: { type: "integer", required: true },
+          fill: { type: "integer" },
+          noise: { type: "integer" },
+          form: {  },
+          function: {  },
+        },
+      },
+    }),
   );
   app.prot("POST", "/v1/masking/:iec/complete", (ctx) =>
     markMaskingComplete(app, ctx),
+    doc({
+      summary: "Mark Processing Complete",
+      description: "Mark as process-complete\n\nThis should not be called by users.\nThe new ID needs to be submitted in the body as json, as\n{ import_event_id: x, exit_code: 0 }",
+      params: {
+        iec: { type: "integer" },
+      },
+      requestBody: {
+        contentType: "application/json",
+        fields: {
+          import_event_id: { type: "integer", required: true },
+          exit_code: { type: "integer", required: true },
+        },
+      },
+    }),
   );
-  app.prot("POST", "/v1/masking/:iec/accept", setMaskingStatus(app, "accepted"));
-  app.prot("POST", "/v1/masking/:iec/reject", setMaskingStatus(app, "rejected"));
-  app.prot("POST", "/v1/masking/:iec/skip", setMaskingStatus(app, "skipped"));
+  app.prot("POST", "/v1/masking/:iec/accept", setMaskingStatus(app, "accepted"),
+    doc({
+      summary: "Mark Accept",
+      params: {
+        iec: { type: "integer" },
+      },
+    }),
+  );
+  app.prot("POST", "/v1/masking/:iec/reject", setMaskingStatus(app, "rejected"),
+    doc({
+      summary: "Mark Reject",
+      params: {
+        iec: { type: "integer" },
+      },
+    }),
+  );
+  app.prot("POST", "/v1/masking/:iec/skip", setMaskingStatus(app, "skipped"),
+    doc({
+      summary: "Mark Accept",
+      params: {
+        iec: { type: "integer" },
+      },
+    }),
+  );
   app.prot(
     "POST",
     "/v1/masking/:iec/nonmaskable",
     setMaskingStatus(app, "nonmaskable"),
+    doc({
+      summary: "Mark Accept",
+      params: {
+        iec: { type: "integer" },
+      },
+    }),
   );
 }
 

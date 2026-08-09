@@ -1,0 +1,1 @@
+swagger-ui-dist 5.32.12 (vendored; refresh with: bun add -d swagger-ui-dist && cp node_modules/swagger-ui-dist/{swagger-ui.css,swagger-ui-bundle.js,swagger-ui-bundle.js.LICENSE.txt} <here>)

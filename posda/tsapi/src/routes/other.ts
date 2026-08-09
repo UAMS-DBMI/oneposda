@@ -1,6 +1,7 @@
 // Ports papi/routes/other.py (test/debug endpoints).
 
 import type { App } from "../server";
+import { doc } from "../openapi";
 import { pathStr } from "../server";
 import { InternalError, jsonResponse } from "../httpx";
 
@@ -11,7 +12,11 @@ export function registerOther(app: App): void {
     return new Response(body, {
       headers: { "Content-Type": "application/octet-stream" },
     });
-  });
+  },
+    doc({
+      summary: "Stream Test",
+    }),
+  );
 
   app.prot("GET", "/v1/other/tar", () => {
     const body = new Uint8Array(250);
@@ -19,15 +24,27 @@ export function registerOther(app: App): void {
     return new Response(body, {
       headers: { "Content-Type": "application/octet-stream" },
     });
-  });
+  },
+    doc({
+      summary: "Tar Test",
+    }),
+  );
 
   app.prot("GET", "/v1/other/asynctar", () => {
     // The Python endpoint calls asynctar.stream(), which does not
     // exist, so it has always responded 500.
     throw new InternalError();
-  });
+  },
+    doc({
+      summary: "Asynctar Test",
+    }),
+  );
 
-  app.prot("GET", "/v1/other/testme", (ctx) => jsonResponse(ctx.user));
+  app.prot("GET", "/v1/other/testme", (ctx) => jsonResponse(ctx.user),
+    doc({
+      summary: "Test Me",
+    }),
+  );
 
   app.prot("GET", "/v1/other/query/:query_name/execute", (ctx) => {
     const params: Record<string, string> = {};
@@ -40,5 +57,9 @@ export function registerOther(app: App): void {
       params,
       user: ctx.user,
     });
-  });
+  },
+    doc({
+      summary: "Request Test",
+    }),
+  );
 }

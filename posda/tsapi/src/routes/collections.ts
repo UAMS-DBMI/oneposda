@@ -1,6 +1,7 @@
 // Ports papi/routes/collections.py.
 
 import type { App, Ctx } from "../server";
+import { doc, type OrEmpty } from "../openapi";
 import { pathStr, queryStr } from "../server";
 import { fetchJson, fetchOneJson } from "./common";
 
@@ -41,8 +42,26 @@ export interface PatientStudy {
 }
 
 export function registerCollections(app: App): void {
-  app.prot("GET", "/v1/collections", (ctx) => getAllCollections(app, ctx));
-  app.prot("GET", "/v1/collections/", (ctx) => getAllCollections(app, ctx));
+  app.prot("GET", "/v1/collections", (ctx) => getAllCollections(app, ctx),
+    doc<CollectionSummary[]>({
+      summary: "Get All Collections",
+      description: "Get a list of collections in this Posda instance.\n\nIf collection is set, it will return only collections with that exact name.\nIf site is set, it will return only collections with that exact site name.\n\nIf both are set, site is ignored.",
+      params: {
+        collection: { in: "query" },
+        site: { in: "query" },
+      },
+    }),
+  );
+  app.prot("GET", "/v1/collections/", (ctx) => getAllCollections(app, ctx),
+    doc<CollectionSummary[]>({
+      summary: "Get All Collections",
+      description: "Get a list of collections in this Posda instance.\n\nIf collection is set, it will return only collections with that exact name.\nIf site is set, it will return only collections with that exact site name.\n\nIf both are set, site is ignored.",
+      params: {
+        collection: { in: "query" },
+        site: { in: "query" },
+      },
+    }),
+  );
 
   app.prot("GET", "/v1/collections/:collection_name/:site_name", (ctx) =>
     fetchOneJson(
@@ -63,6 +82,9 @@ export function registerCollections(app: App): void {
       [pathStr(ctx, "collection_name"), pathStr(ctx, "site_name")],
       { file_count: "int8", patient_count: "int8" },
     ),
+    doc<OrEmpty<CollectionInfo>>({
+      summary: "Get Collection Info",
+    }),
   );
 
   app.prot(
@@ -81,6 +103,9 @@ export function registerCollections(app: App): void {
         `,
         [pathStr(ctx, "collection_name"), pathStr(ctx, "site_name")],
       ),
+    doc<PatientName[]>({
+      summary: "Get All Patients",
+    }),
   );
 
   app.prot(
@@ -113,6 +138,9 @@ export function registerCollections(app: App): void {
         ],
         { file_count: "int8", study_count: "int8" },
       ),
+    doc<OrEmpty<PatientDetail>>({
+      summary: "Get Single Patient",
+    }),
   );
 
   app.prot(
@@ -140,6 +168,9 @@ export function registerCollections(app: App): void {
           pathStr(ctx, "patient_id"),
         ],
       ),
+    doc<PatientStudy[]>({
+      summary: "Get All Studies",
+    }),
   );
 }
 

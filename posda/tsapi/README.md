@@ -32,9 +32,12 @@ differences from Python documented in the Go README.
     src/httpx.ts       FastAPI-style error responses ({"detail": ...})
     src/server.ts      route table, auth middleware, gzip policy
     src/routes/        one file per Python route module
+    src/openapi.ts     doc() route annotations feeding the OpenAPI generator
     src/archive.ts     streaming zip and tar.gz downloads
     src/dicom.ts       slice-ordering + ROI contour transform math
     src/evilparse.ts   safe replacement for evil.py's eval() of error messages
+    scripts/           OpenAPI generator and live-response validator
+    vendor/swagger-ui/ vendored Swagger UI assets served at /docs
     tests/             bun test suite
 
 ## Running
@@ -46,11 +49,17 @@ conventions; the server always connects to the `posda_files` database),
 `POSDA_API_URL`, `FILE_STORAGE_PATH`, `TEMP_STORAGE_PATH`,
 `FILE_STORAGE_ROOT`, and `DUMP_SCRIPT`.
 
-    bun install     # dev types only; nothing needed at runtime
+    bun install     # dev tooling only; nothing needed at runtime
     make run        # bun src/main.ts
     make test       # bun test
     make typecheck  # bunx tsc --noEmit
+    make openapi    # regenerate openapi.json (both ports)
     make image      # build the docker image
+
+`typescript` is a devDependency, used only by the OpenAPI generator and
+`tsc --noEmit`; nothing is needed to run the server. It is pinned to 5.x
+because the 7.x native compiler ships only the `tsc` binary, without the
+JS compiler API the generator walks the sources with.
 
 ## Serialization parity
 
@@ -81,6 +90,51 @@ except for values derived from `now()` and three endpoints where the
 Go port serializes hand-built maps with sorted keys — this port keeps
 Python's dict insertion order there, matching the original more
 closely.
+
+## API documentation
+
+    /openapi.json    the OpenAPI 3.1 document
+    /docs            Swagger UI (assets vendored, no CDN needed)
+
+Public, like FastAPI's were, and available under `/papi` too.
+
+FastAPI derived its schema from the running app; here the document is
+generated at build time from the sources by `scripts/genopenapi.ts`,
+which walks every `app.pub(...)` / `app.prot(...)` call with the
+TypeScript compiler API and resolves the response type argument of the
+`doc<T>()` annotation attached to it into JSON Schema:
+
+```ts
+app.prot("GET", "/v1/collections/:collection_name/:site_name", handler,
+  doc<OrEmpty<CollectionInfo>>({
+    summary: "Get Collection Info",
+    params: { collection: { in: "query" } },
+  }));
+```
+
+Because the annotation sits next to the SQL and the row interface it
+describes, the document cannot drift from the code the way a
+hand-maintained spec would. `make openapi` writes both this copy and
+the one `goapi` embeds with `go:embed` (it cannot reach outside its own
+module, so the copy is generated rather than symlinked); `make
+openapi-check` fails if either is stale.
+
+Two conventions of the Python implementation are modelled explicitly,
+because the endpoints really do behave this way: `OrEmpty<T>` is a
+single-row response that becomes `[]` when the query matches nothing,
+and `OrEmptyObject<T>` one that becomes `{}`.
+
+Summaries, descriptions and query parameters were seeded from the
+original FastAPI app's own `/openapi.json`, which is why the wording
+matches the Python docstrings. Response schemas are new: only 6 of the
+177 Python endpoints declared a `response_model`, so FastAPI documented
+a response body for 23 operations; this document has one for 41 and
+says `{}` — any JSON — for the rest rather than guessing.
+
+`scripts/validatelive.ts` checks the document against a running server:
+it reads concrete request paths on stdin, matches each to a path
+template, and validates the body against that operation's schema. Both
+ports pass it on the 50 sampled endpoints that have a response schema.
 
 ## Differences from the Go port
 

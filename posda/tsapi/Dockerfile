@@ -11,5 +11,8 @@ WORKDIR /tsapi
 COPY package.json bun.lock tsconfig.json ./
 RUN bun install --frozen-lockfile --production
 COPY src ./src
+# The OpenAPI document and the vendored Swagger UI served at /docs.
+COPY openapi.json ./openapi.json
+COPY vendor ./vendor
 ENTRYPOINT ["bun", "src/main.ts"]
 CMD []
