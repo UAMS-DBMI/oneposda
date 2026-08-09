@@ -14,6 +14,58 @@ import { HttpError, jsonResponse } from "../httpx";
 import type { Convs } from "../pgconvert";
 import { fetchJson, fetchOneJson } from "./common";
 
+/** A bare file_id, the element type of several pathology lookups. */
+export interface PathologyFileID {
+  file_id: number;
+}
+
+/** GET /v1/pathology/find_edits/{file_id} */
+export interface PathologyEdit {
+  pathology_edit_queue_id: number;
+  edit_type: string | null;
+  edit_details: string | null;
+}
+
+/** GET /v1/pathology/find_relpath/{file_id} */
+export interface PathologyRelPath {
+  root_path: string | null;
+  rel_path: string | null;
+}
+
+/** GET /v1/pathology/getActEdits/{act_id} */
+export interface PathologyEditCount {
+  file_id: number;
+  count: number;
+}
+
+/** GET /v1/pathology/getActEditsByPVRID/{pvr_id} — the file_id column is
+ * aliased to "file" by the query. */
+export interface PathologyEditCountByPVR {
+  file: number;
+  count: number;
+}
+
+/** GET /v1/pathology/mapping/{file_id} */
+export interface PathologyPatientMapping {
+  patient_id: string | null;
+}
+
+/** GET /v1/pathology/preview_file_name/{pathid} */
+export interface PathologyPreviewFile {
+  file_name: string | null;
+  good_status: boolean | null;
+}
+
+/** GET /v1/pathology/preview/{pathid}/{gammaIndex} */
+export interface PathologyPreviewFileID {
+  preview_file_id: number;
+}
+
+/** GET /v1/pathology/start/{vr_id} */
+export interface PathologyReviewFileID {
+  path_file_id: number;
+}
+
 export function registerPathology(app: App): void {
   const pathQueryInt = (param: string, sql: string, convs?: Convs): Handler => {
     return (ctx) => fetchJson(app, sql, [pathInt(ctx, param)], convs);
@@ -34,7 +86,7 @@ export function registerPathology(app: App): void {
       order by path_file_id;
       `,
     ),
-    doc({
+    doc<PathologyReviewFileID[]>({
       summary: "Get Files For Review",
       params: {
         vr_id: { type: "integer" },
@@ -57,7 +109,7 @@ export function registerPathology(app: App): void {
           a.file_id = $1
            `,
     ),
-    doc({
+    doc<PathologyPreviewFile[]>({
       summary: "Get Filename",
       params: {
         pathid: { type: "integer" },
@@ -79,7 +131,7 @@ export function registerPathology(app: App): void {
       `,
       [pathInt(ctx, "pathid"), pathInt(ctx, "gammaIndex")],
     ),
-    doc({
+    doc<PathologyPreviewFileID[]>({
       summary: "Get Previews",
       params: {
         pathid: { type: "integer" },
@@ -99,12 +151,12 @@ export function registerPathology(app: App): void {
       `,
     );
   app.prot("GET", "/v1/pathology/get_queued_removals", queuedRemovals,
-    doc({
+    doc<PathologyFileID[]>({
       summary: "Get Queued Removals",
     }),
   );
   app.prot("GET", "/v1/pathology/get_queued_removals/", queuedRemovals,
-    doc({
+    doc<PathologyFileID[]>({
       summary: "Get Queued Removals",
     }),
   );
@@ -130,7 +182,7 @@ export function registerPathology(app: App): void {
       `,
       { count: "int8" },
     ),
-    doc({
+    doc<PathologyEditCount[]>({
       summary: "Get Path Edits On Act",
       params: {
         act_id: { type: "integer" },
@@ -163,7 +215,7 @@ export function registerPathology(app: App): void {
       `,
       { count: "int8" },
     ),
-    doc({
+    doc<PathologyEditCountByPVR[]>({
       summary: "Get Path Edits Pvr Instance",
       params: {
         pvr_id: { type: "integer" },
@@ -359,7 +411,7 @@ export function registerPathology(app: App): void {
           a.file_id = $1
            `,
     ),
-    doc({
+    doc<PathologyPatientMapping[]>({
       summary: "Get Mapping",
       params: {
         file_id: { type: "integer" },
@@ -430,7 +482,7 @@ export function registerPathology(app: App): void {
   app.prot("GET", "/v1/pathology/getcount", () =>
     // Python counts a module-level dict that is never written to.
     jsonResponse(0),
-    doc({
+    doc<number>({
       summary: "Get Current Count",
     }),
   );
@@ -452,7 +504,7 @@ export function registerPathology(app: App): void {
             );
       `,
     ),
-    doc({
+    doc<PathologyFileID[]>({
       summary: "Find Files",
       params: {
         activity_id: { type: "integer" },
@@ -473,7 +525,7 @@ export function registerPathology(app: App): void {
                and status = 'waiting'
       `,
     ),
-    doc({
+    doc<PathologyEdit[]>({
       summary: "Find Edits",
       params: {
         file_id: { type: "integer" },
@@ -493,7 +545,7 @@ export function registerPathology(app: App): void {
     where f.file_id = $1
      `,
     ),
-    doc({
+    doc<PathologyRelPath[]>({
       summary: "Find Relpath",
       params: {
         file_id: { type: "integer" },
@@ -535,7 +587,7 @@ export function registerPathology(app: App): void {
       `,
       [pathInt(ctx, "import_id"), pathStr(ctx, "file_type")],
     ),
-    doc({
+    doc<PathologyFileID[]>({
       summary: "Getxfiles",
       params: {
         import_id: { type: "integer" },
@@ -557,7 +609,7 @@ export function registerPathology(app: App): void {
           import_event_id = $1;
       `,
     ),
-    doc({
+    doc<PathologyFileID[]>({
       summary: "Get Files From Import",
       params: {
         import_id: { type: "integer" },

@@ -65,6 +65,90 @@ export interface SeriesFileIDs {
   file_ids: number[];
 }
 
+/** An element of the timepoints list of GET /v1/series/{spec}/activities. */
+export interface SeriesTimepoint {
+  activity_id: number;
+  activity_timepoint_id: number;
+  when_created: string | null;
+  creating_user: string | null;
+}
+
+/** GET /v1/series/{spec}/activities */
+export interface SeriesActivities {
+  activities: number[];
+  timepoints: SeriesTimepoint[];
+}
+
+/** A row of the OHIF query, one per instance in the series. */
+interface OhifRow {
+  study_instance_uid: string | null;
+  series_instance_uid: string | null;
+  series_description: string | null;
+  sop_instance_uid: string | null;
+  file_id: number;
+  pixel_columns: number | null;
+  pixel_rows: number | null;
+  bits_allocated: number | null;
+  instance_number: string | null;
+  image_type: string | null;
+  samples_per_pixel: number | null;
+  photometric_interpretation: string | null;
+  bits_stored: number | null;
+  high_bit: number | null;
+  pixel_representation: number | null;
+  pixel_spacing: string | null;
+  iop: string | null;
+  ipp: string | null;
+  modality: string | null;
+}
+
+/**
+ * DICOM attributes the Cornerstone viewer reads. Multi-valued
+ * attributes are backslash-delimited in the database and are split into
+ * arrays of strings here, not parsed into numbers.
+ */
+export interface OhifInstanceMetadata {
+  Columns: number | null;
+  Rows: number | null;
+  InstanceNumber: string | null;
+  PhotometricInterpretation: string | null;
+  BitsAllocated: number | null;
+  BitsStored: number | null;
+  PixelRepresentation: number | null;
+  SamplesPerPixel: number | null;
+  PixelSpacing: string[];
+  HighBit: number | null;
+  ImageOrientationPatient: string[];
+  ImagePositionPatient: string[];
+  ImageType: string[];
+  Modality: string | null;
+  SOPInstanceUID: string | null;
+  SeriesInstanceUID: string;
+  StudyInstanceUID: string | null;
+}
+
+export interface OhifInstance {
+  metadata: OhifInstanceMetadata;
+  /** A "dicomweb:" URL pointing back at /v1/files/{file_id}/data. */
+  url: string;
+}
+
+export interface OhifSeries {
+  SeriesInstanceUID: string;
+  SeriesDescription: string | null;
+  instances: OhifInstance[];
+}
+
+export interface OhifStudy {
+  StudyInstanceUID: string | null;
+  series: OhifSeries[];
+}
+
+/** GET /v1/series/{spec}/ohif */
+export interface OhifConfig {
+  studies: OhifStudy[];
+}
+
 /** Shared description of the series selector these routes accept.
  * scripts/genopenapi.ts resolves module-level string constants. */
 const SERIES_SPEC =
@@ -123,7 +207,7 @@ export function registerSeries(app: App): void {
     }),
   );
   app.prot("GET", "/v1/series/:spec/ohif", (ctx) => getOhifConfig(app, ctx),
-    doc({
+    doc<OhifConfig>({
       summary: "Get Ohif Config",
       description:
         "The OHIF/Cornerstone viewer configuration for the series, as a " +
@@ -147,7 +231,7 @@ export function registerSeries(app: App): void {
   );
   app.prot("GET", "/v1/series/:spec/activities", (ctx) =>
     getSeriesActivities(app, ctx),
-    doc({
+    doc<SeriesActivities>({
       summary: "Get Series Activities",
       description: "The activities this series appears in.",
       params: { spec: { description: SERIES_SPEC } },
@@ -157,7 +241,7 @@ export function registerSeries(app: App): void {
 
 async function getOhifConfig(app: App, ctx: Ctx): Promise<Response> {
   const uid = pathStr(ctx, "spec");
-  const rows = await app.db.fetch(
+  const rows = await app.db.fetch<OhifRow>(
     `
     select
         study_instance_uid,
@@ -203,10 +287,10 @@ async function getOhifConfig(app: App, ctx: Ctx): Promise<Response> {
     throw new InternalError();
   }
 
-  const dcmList = (v: unknown): unknown =>
+  const dcmList = (v: string | null): string[] =>
     typeof v === "string" ? v.split("\\") : [];
 
-  const instances = rows.map((row) => ({
+  const instances: OhifInstance[] = rows.map((row) => ({
     metadata: {
       Columns: row.pixel_columns,
       Rows: row.pixel_rows,
@@ -229,7 +313,7 @@ async function getOhifConfig(app: App, ctx: Ctx): Promise<Response> {
     url: `dicomweb:${app.cfg.apiUrl}/v1/files/${row.file_id}/data`,
   }));
 
-  return jsonResponse({
+  const config: OhifConfig = {
     studies: [
       {
         StudyInstanceUID: rows[0]!.study_instance_uid,
@@ -242,7 +326,8 @@ async function getOhifConfig(app: App, ctx: Ctx): Promise<Response> {
         ],
       },
     ],
-  });
+  };
+  return jsonResponse(config);
 }
 
 const framesByTimepointQuery = `

@@ -4,6 +4,7 @@ import type { App } from "../server";
 import { doc } from "../openapi";
 import { pathStr } from "../server";
 import { InternalError, jsonResponse } from "../httpx";
+import type { User } from "../auth";
 
 export function registerOther(app: App): void {
   app.prot("GET", "/v1/other/streamtest", () => {
@@ -41,7 +42,7 @@ export function registerOther(app: App): void {
   );
 
   app.prot("GET", "/v1/other/testme", (ctx) => jsonResponse(ctx.user),
-    doc({
+    doc<User>({
       summary: "Test Me",
     }),
   );

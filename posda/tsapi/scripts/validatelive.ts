@@ -177,9 +177,10 @@ const paths = (await Bun.stdin.text())
   .filter((l) => l.startsWith("/"));
 
 let checked = 0;
-let unverified = 0;
 let unmatched = 0;
 let failed = 0;
+/** Spec paths that answered with JSON but declare no response schema. */
+const unverified = new Set<string>();
 
 for (const path of paths) {
   const res = await fetch(BASE + path, {
@@ -203,7 +204,7 @@ for (const path of paths) {
   const op = SPEC.paths[template.path]?.get;
   const schema = op?.responses?.["200"]?.content?.["application/json"]?.schema;
   if (!schema || isEmptySchema(deref(schema))) {
-    unverified++;
+    unverified.add(template.path);
     continue;
   }
 
@@ -218,8 +219,13 @@ for (const path of paths) {
   }
 }
 
+if (unverified.size) {
+  console.log("\nreturned JSON but declare no response schema:");
+  for (const path of [...unverified].sort()) console.log(`  ${path}`);
+}
+
 console.log(
   `\n${checked} endpoints validated, ${failed} failing, ` +
-    `${unverified} with no response schema, ${unmatched} unmatched`,
+    `${unverified.size} with no response schema, ${unmatched} unmatched`,
 );
 process.exit(failed > 0 ? 1 : 0);

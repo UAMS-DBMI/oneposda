@@ -40,7 +40,7 @@ export function registerWadoRS(app: App): void {
   );
   app.prot("GET", "/v1/wadors/studies/:study/series/:series/metadata", (ctx) =>
     wadorsMetadata(app, ctx),
-    doc({
+    doc<Record<string, WadorsValue>[]>({
       summary: "Retrieve Series Metadata",
       description:
         "WADO-RS metadata: one DICOM JSON object per instance in the " +

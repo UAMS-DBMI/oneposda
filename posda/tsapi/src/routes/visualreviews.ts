@@ -121,7 +121,7 @@ export function registerVisualReviews(app: App): void {
       `,
       [pathInt(ctx, "vr")],
     ),
-    doc({
+    doc<number[]>({
       summary: "Get Vr Iecs",
       description: "Get the list of IECs contained in this VR\n\nResults are always in ascending order.",
       params: {

@@ -68,7 +68,7 @@ export function registerROIs(app: App): void {
   );
   app.prot("GET", "/v1/rois/file/:file_id/series", (ctx) =>
     getSeriesROIsFromFile(app, ctx),
-    doc({
+    doc<SeriesRoi[]>({
       summary: "Get Series Rois From File",
       params: {
         file_id: { type: "integer" },

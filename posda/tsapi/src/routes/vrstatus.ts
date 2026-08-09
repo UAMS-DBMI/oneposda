@@ -70,7 +70,7 @@ export function registerVRStatus(app: App): void {
         `,
         [pathInt(ctx, "visual_review_instance_id")],
       ),
-    doc({
+    doc<VrSummary[]>({
       summary: "Get Reviewed Percentage For Vr",
       params: {
         visual_review_instance_id: { type: "integer" },
@@ -130,7 +130,7 @@ export function registerVRStatus(app: App): void {
         `,
         [pathInt(ctx, "visual_review_instance_id")],
       ),
-    doc({
+    doc<VrSummary[]>({
       summary: "Get Visible Bads For Vr",
       params: {
         visual_review_instance_id: { type: "integer" },

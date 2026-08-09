@@ -59,7 +59,7 @@ export function registerNifti(app: App): void {
         `,
         [pathInt(ctx, "nifti_visual_review_instance_id")],
       ),
-    doc({
+    doc<number[]>({
       summary: "Get For Visualreview",
       description: "Return list of all Files in this Nifti VR",
       params: {

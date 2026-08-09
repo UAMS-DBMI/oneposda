@@ -114,7 +114,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/TestMessage"
+                }
               }
             }
           }
@@ -198,7 +200,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
               }
             }
           },
@@ -1110,7 +1114,12 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/FileWithoutType"
+                  }
+                }
               }
             }
           },
@@ -2373,7 +2382,17 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "items": {}
+                    },
+                    {
+                      "$ref": "#/components/schemas/FileDetails"
+                    }
+                  ]
+                }
               }
             }
           },
@@ -2427,7 +2446,17 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "items": {}
+                    },
+                    {
+                      "$ref": "#/components/schemas/FilePath"
+                    }
+                  ]
+                }
               }
             }
           },
@@ -2793,7 +2822,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/IECFileIDs"
+                }
               }
             }
           },
@@ -2847,7 +2878,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/IECFrames"
+                }
               }
             }
           },
@@ -4167,7 +4200,12 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                }
               }
             }
           },
@@ -4413,7 +4451,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/MaskingValueCounts"
+                }
               }
             }
           },
@@ -4595,7 +4635,12 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                }
               }
             }
           },
@@ -4796,7 +4841,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/User"
+                }
               }
             }
           },
@@ -5392,7 +5439,12 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PathologyEdit"
+                  }
+                }
               }
             }
           },
@@ -5446,7 +5498,12 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PathologyFileID"
+                  }
+                }
               }
             }
           },
@@ -5500,7 +5557,12 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PathologyRelPath"
+                  }
+                }
               }
             }
           },
@@ -5554,7 +5616,12 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PathologyFileID"
+                  }
+                }
               }
             }
           },
@@ -5608,7 +5675,12 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PathologyFileID"
+                  }
+                }
               }
             }
           },
@@ -5642,7 +5714,12 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PathologyEditCount"
+                  }
+                }
               }
             }
           },
@@ -5696,7 +5773,12 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PathologyEditCountByPVR"
+                  }
+                }
               }
             }
           },
@@ -5750,7 +5832,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "number"
+                }
               }
             }
           },
@@ -5784,7 +5868,12 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PathologyFileID"
+                  }
+                }
               }
             }
           },
@@ -6074,7 +6163,12 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PathologyPatientMapping"
+                  }
+                }
               }
             }
           },
@@ -6128,7 +6222,12 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PathologyPreviewFile"
+                  }
+                }
               }
             }
           },
@@ -6182,7 +6281,12 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PathologyPreviewFileID"
+                  }
+                }
               }
             }
           },
@@ -6756,7 +6860,12 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PathologyReviewFileID"
+                  }
+                }
               }
             }
           },
@@ -6898,7 +7007,12 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SeriesRoi"
+                  }
+                }
               }
             }
           },
@@ -7422,7 +7536,12 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SendReadyUpdate"
+                  }
+                }
               }
             }
           },
@@ -7510,7 +7629,12 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SendSummary"
+                  }
+                }
               }
             }
           },
@@ -7564,7 +7688,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PublicCopyReport"
+                }
               }
             }
           },
@@ -7589,6 +7715,7 @@
             }
           }
         },
+        "description": "A summary of a public-copy subprocess. With pretty=true the same data is rendered as an HTML page instead of the JSON documented here.",
         "parameters": [
           {
             "name": "subprocess_invocation_id",
@@ -7604,7 +7731,8 @@
             "required": false,
             "schema": {
               "type": "boolean"
-            }
+            },
+            "description": "Render an HTML report instead of JSON."
           }
         ],
         "security": [
@@ -7778,7 +7906,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/SeriesActivities"
+                }
               }
             }
           },
@@ -7923,7 +8053,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/OhifConfig"
+                }
               }
             }
           },
@@ -8316,7 +8448,12 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                }
               }
             }
           },
@@ -8617,7 +8754,12 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VrSummary"
+                  }
+                }
               }
             }
           },
@@ -8671,7 +8813,12 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VrSummary"
+                  }
+                }
               }
             }
           },
@@ -8873,7 +9020,12 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Record"
+                  }
+                }
               }
             }
           },
@@ -8928,7 +9080,12 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                }
               }
             }
           },
@@ -9054,7 +9211,12 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                }
               }
             }
           },
@@ -9639,6 +9801,174 @@
           "error_code"
         ]
       },
+      "FileDetails": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "file_offset": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "size": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "bits_stored": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "bits_allocated": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "pixel_representation": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "pixel_columns": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "pixel_rows": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "photometric_interpretation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "slope": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "intercept": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "window_width": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "window_center": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pixel_pad": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "project_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "site_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sop_instance_uid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "series_instance_uid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "modality": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "body_part_examined": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "series_description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "patient_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "study_instance_uid": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "file",
+          "file_offset",
+          "size",
+          "bits_stored",
+          "bits_allocated",
+          "pixel_representation",
+          "pixel_columns",
+          "pixel_rows",
+          "photometric_interpretation",
+          "slope",
+          "intercept",
+          "window_width",
+          "window_center",
+          "pixel_pad",
+          "project_name",
+          "site_name",
+          "sop_instance_uid",
+          "series_instance_uid",
+          "modality",
+          "body_part_examined",
+          "series_description",
+          "patient_id",
+          "study_instance_uid"
+        ]
+      },
       "FileFor": {
         "type": "object",
         "properties": {
@@ -9651,6 +9981,20 @@
         },
         "required": [
           "for_uid"
+        ]
+      },
+      "FilePath": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "file_path"
         ]
       },
       "FileRow": {
@@ -9817,6 +10161,61 @@
           "update_date",
           "hidden",
           "visual_review_instance_id"
+        ]
+      },
+      "IECFileIDs": {
+        "type": "object",
+        "properties": {
+          "file_ids": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          }
+        },
+        "required": [
+          "file_ids"
+        ]
+      },
+      "IECFrame": {
+        "description": "An element of GET /v1/iecs/{iec}/frames.",
+        "type": "object",
+        "properties": {
+          "file_id": {
+            "type": "number"
+          },
+          "path": {
+            "type": "string"
+          },
+          "num_of_frames": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "file_id",
+          "path",
+          "num_of_frames"
+        ]
+      },
+      "IECFrames": {
+        "description": "`frames` is omitted when the request sets\ninclude_frames=false.",
+        "type": "object",
+        "properties": {
+          "volumetric": {
+            "type": "boolean"
+          },
+          "frames": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/IECFrame"
+            }
+          }
+        },
+        "required": [
+          "volumetric"
         ]
       },
       "IECInfo": {
@@ -10002,6 +10401,57 @@
           "who_changed"
         ]
       },
+      "MaskingValueCounts": {
+        "type": "object",
+        "properties": {
+          "dicom_file_types": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "dicom_file_type": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "count": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "dicom_file_type",
+                "count"
+              ]
+            }
+          },
+          "masking_statuses": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "masking_status": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "count": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "masking_status",
+                "count"
+              ]
+            }
+          }
+        },
+        "required": [
+          "dicom_file_types",
+          "masking_statuses"
+        ]
+      },
       "NiftiDetails": {
         "type": "object",
         "properties": {
@@ -10055,6 +10505,352 @@
           "import_name",
           "download_path",
           "posda_path"
+        ]
+      },
+      "OhifConfig": {
+        "type": "object",
+        "properties": {
+          "studies": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OhifStudy"
+            }
+          }
+        },
+        "required": [
+          "studies"
+        ]
+      },
+      "OhifInstance": {
+        "type": "object",
+        "properties": {
+          "metadata": {
+            "$ref": "#/components/schemas/OhifInstanceMetadata"
+          },
+          "url": {
+            "description": "A \"dicomweb:\" URL pointing back at /v1/files/{file_id}/data.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "metadata",
+          "url"
+        ]
+      },
+      "OhifInstanceMetadata": {
+        "description": "DICOM attributes the Cornerstone viewer reads. Multi-valued\nattributes are backslash-delimited in the database and are split into\narrays of strings here, not parsed into numbers.",
+        "type": "object",
+        "properties": {
+          "Columns": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "Rows": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "InstanceNumber": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "PhotometricInterpretation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "BitsAllocated": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "BitsStored": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "PixelRepresentation": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "SamplesPerPixel": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "PixelSpacing": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "HighBit": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "ImageOrientationPatient": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "ImagePositionPatient": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "ImageType": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "Modality": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "SOPInstanceUID": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "SeriesInstanceUID": {
+            "type": "string"
+          },
+          "StudyInstanceUID": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "Columns",
+          "Rows",
+          "InstanceNumber",
+          "PhotometricInterpretation",
+          "BitsAllocated",
+          "BitsStored",
+          "PixelRepresentation",
+          "SamplesPerPixel",
+          "PixelSpacing",
+          "HighBit",
+          "ImageOrientationPatient",
+          "ImagePositionPatient",
+          "ImageType",
+          "Modality",
+          "SOPInstanceUID",
+          "SeriesInstanceUID",
+          "StudyInstanceUID"
+        ]
+      },
+      "OhifSeries": {
+        "type": "object",
+        "properties": {
+          "SeriesInstanceUID": {
+            "type": "string"
+          },
+          "SeriesDescription": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "instances": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OhifInstance"
+            }
+          }
+        },
+        "required": [
+          "SeriesInstanceUID",
+          "SeriesDescription",
+          "instances"
+        ]
+      },
+      "OhifStudy": {
+        "type": "object",
+        "properties": {
+          "StudyInstanceUID": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "series": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OhifSeries"
+            }
+          }
+        },
+        "required": [
+          "StudyInstanceUID",
+          "series"
+        ]
+      },
+      "PathologyEdit": {
+        "type": "object",
+        "properties": {
+          "pathology_edit_queue_id": {
+            "type": "number"
+          },
+          "edit_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "edit_details": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "pathology_edit_queue_id",
+          "edit_type",
+          "edit_details"
+        ]
+      },
+      "PathologyEditCount": {
+        "type": "object",
+        "properties": {
+          "file_id": {
+            "type": "number"
+          },
+          "count": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "file_id",
+          "count"
+        ]
+      },
+      "PathologyEditCountByPVR": {
+        "description": "the file_id column is\naliased to \"file\" by the query.",
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "number"
+          },
+          "count": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "file",
+          "count"
+        ]
+      },
+      "PathologyFileID": {
+        "description": "A bare file_id, the element type of several pathology lookups.",
+        "type": "object",
+        "properties": {
+          "file_id": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "file_id"
+        ]
+      },
+      "PathologyPatientMapping": {
+        "type": "object",
+        "properties": {
+          "patient_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "patient_id"
+        ]
+      },
+      "PathologyPreviewFile": {
+        "type": "object",
+        "properties": {
+          "file_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "good_status": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "file_name",
+          "good_status"
+        ]
+      },
+      "PathologyPreviewFileID": {
+        "type": "object",
+        "properties": {
+          "preview_file_id": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "preview_file_id"
+        ]
+      },
+      "PathologyRelPath": {
+        "type": "object",
+        "properties": {
+          "root_path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rel_path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "root_path",
+          "rel_path"
+        ]
+      },
+      "PathologyReviewFileID": {
+        "type": "object",
+        "properties": {
+          "path_file_id": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "path_file_id"
         ]
       },
       "PatientDetail": {
@@ -10212,6 +11008,96 @@
           "background_pid"
         ]
       },
+      "PublicCopyError": {
+        "type": "object",
+        "properties": {
+          "subprocess_invocation_id": {
+            "type": "string"
+          },
+          "file_id": {
+            "type": "string"
+          },
+          "collection": {
+            "type": "string"
+          },
+          "site": {
+            "type": "string"
+          },
+          "site_id": {
+            "type": "string"
+          },
+          "batch": {
+            "type": "string"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "third_party_analysis_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error_message": {
+            "type": "string"
+          },
+          "curl": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "subprocess_invocation_id",
+          "file_id",
+          "collection",
+          "site",
+          "site_id",
+          "batch",
+          "filename",
+          "third_party_analysis_url",
+          "error_message",
+          "curl"
+        ]
+      },
+      "PublicCopyReport": {
+        "type": "object",
+        "properties": {
+          "overal_status": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "success": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "count": {
+                  "type": "number"
+                }
+              },
+              "required": [
+                "success",
+                "count"
+              ]
+            }
+          },
+          "total_files": {
+            "type": "number"
+          },
+          "first_5_errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PublicCopyError"
+            }
+          }
+        },
+        "required": [
+          "overal_status",
+          "total_files",
+          "first_5_errors"
+        ]
+      },
       "QueryInvocationSummary": {
         "type": "object",
         "properties": {
@@ -10286,6 +11172,52 @@
         },
         "required": [
           "series_instance_uid"
+        ]
+      },
+      "SendReadyUpdate": {
+        "type": "object",
+        "properties": {
+          "subprocess_invocation_id": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "subprocess_invocation_id"
+        ]
+      },
+      "SendSummary": {
+        "type": "object",
+        "properties": {
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "summary"
+        ]
+      },
+      "SeriesActivities": {
+        "type": "object",
+        "properties": {
+          "activities": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "timepoints": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SeriesTimepoint"
+            }
+          }
+        },
+        "required": [
+          "activities",
+          "timepoints"
         ]
       },
       "SeriesDetail": {
@@ -10400,6 +11332,36 @@
           "name",
           "color",
           "file_ids"
+        ]
+      },
+      "SeriesTimepoint": {
+        "description": "An element of the timepoints list of GET /v1/series/{spec}/activities.",
+        "type": "object",
+        "properties": {
+          "activity_id": {
+            "type": "number"
+          },
+          "activity_timepoint_id": {
+            "type": "number"
+          },
+          "when_created": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "creating_user": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "activity_id",
+          "activity_timepoint_id",
+          "when_created",
+          "creating_user"
         ]
       },
       "SlowDbifQuery": {
@@ -10648,6 +11610,17 @@
           "blocked_query"
         ]
       },
+      "TestMessage": {
+        "type": "object",
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ]
+      },
       "TimelineEntry": {
         "type": "object",
         "properties": {
@@ -10774,6 +11747,36 @@
           "invoking_user",
           "activity_timepoint_id",
           "reports"
+        ]
+      },
+      "User": {
+        "description": "Serializes as the /auth/users/me body: key order matters.",
+        "type": "object",
+        "properties": {
+          "user_id": {
+            "type": "number"
+          },
+          "username": {
+            "type": "string"
+          },
+          "full_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "disabled": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "user_id",
+          "username",
+          "full_name",
+          "disabled"
         ]
       },
       "VisualReviewInstance": {
@@ -10926,6 +11929,20 @@
         },
         "required": [
           "visual_review_instance_id"
+        ]
+      },
+      "VrSummary": {
+        "type": "object",
+        "properties": {
+          "summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "summary"
         ]
       },
       "WorkItem": {

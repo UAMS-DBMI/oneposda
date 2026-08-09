@@ -3,6 +3,12 @@
 import type { App } from "../server";
 import { doc } from "../openapi";
 import { jsonResponse } from "../httpx";
+import type { User } from "../auth";
+
+/** GET /auth/test */
+export interface TestMessage {
+  message: string;
+}
 
 export function registerAuth(app: App): void {
   app.pub("POST", "/auth/token", (ctx) => app.auth.login(ctx.req),
@@ -23,7 +29,7 @@ export function registerAuth(app: App): void {
   );
 
   app.prot("GET", "/auth/users/me", (ctx) => jsonResponse(ctx.user),
-    doc({
+    doc<User>({
       summary: "Read Users Me",
       description: "Get the current logged in user",
     }),
@@ -31,7 +37,7 @@ export function registerAuth(app: App): void {
 
   app.pub("GET", "/auth/test", () =>
     jsonResponse({ message: "everything looks good" }),
-    doc({
+    doc<TestMessage>({
       summary: "Testpoint",
     }),
   );

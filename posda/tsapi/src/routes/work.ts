@@ -31,7 +31,7 @@ export interface WorkItem {
 
 export function registerWork(app: App): void {
   app.prot("GET", "/v1/work/items", (ctx) => getWorkItems(app, ctx),
-    doc({
+    doc<number[]>({
       summary: "Get Work Status",
       params: {
         status: { in: "query", required: true },
@@ -48,7 +48,7 @@ export function registerWork(app: App): void {
     }),
   );
   app.prot("GET", "/v1/work/queues/:queue_name", (ctx) => getWorkQueue(app, ctx),
-    doc({
+    doc<number[]>({
       summary: "Get Work Status",
       params: {
         count: { in: "query", type: "integer" },

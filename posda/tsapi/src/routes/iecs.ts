@@ -51,6 +51,25 @@ export interface IECSharingFOR {
   file_count: number;
 }
 
+/** GET /v1/iecs/{iec}/files */
+export interface IECFileIDs {
+  file_ids: number[];
+}
+
+/** An element of GET /v1/iecs/{iec}/frames. */
+export interface IECFrame {
+  file_id: number;
+  path: string;
+  num_of_frames: number;
+}
+
+/** GET /v1/iecs/{iec}/frames. `frames` is omitted when the request sets
+ * include_frames=false. */
+export interface IECFrames {
+  volumetric: boolean;
+  frames?: IECFrame[];
+}
+
 export function registerIECs(app: App): void {
   const notAllowed = () => {
     throw new HttpError(401, "listing all iecs is not allowed");
@@ -104,7 +123,7 @@ export function registerIECs(app: App): void {
   );
 
   app.prot("GET", "/v1/iecs/:iec/files", (ctx) => getIECFiles(app, ctx),
-    doc({
+    doc<IECFileIDs>({
       summary: "Get Iec Files",
       params: {
         iec: { type: "integer" },
@@ -112,7 +131,7 @@ export function registerIECs(app: App): void {
     }),
   );
   app.prot("GET", "/v1/iecs/:iec/frames", (ctx) => getIECFrames(app, ctx),
-    doc({
+    doc<IECFrames>({
       summary: "Get Iec Frames",
       description: "Get a list of frames (files and frame counts) from this IEC.\n\nAlso returns a guess for if the data is intended to be volumetric.",
       params: {

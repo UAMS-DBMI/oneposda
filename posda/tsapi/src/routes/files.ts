@@ -20,6 +20,38 @@ export interface FileRow {
   ready_to_process: boolean | null;
 }
 
+/** GET /v1/files/{file_id}/path */
+export interface FilePath {
+  file_path: string | null;
+}
+
+/** GET /v1/files/{file_id}/details */
+export interface FileDetails {
+  file: string | null;
+  file_offset: number | null;
+  size: number | null;
+  bits_stored: number | null;
+  bits_allocated: number | null;
+  pixel_representation: number | null;
+  pixel_columns: number | null;
+  pixel_rows: number | null;
+  photometric_interpretation: string | null;
+  slope: string | null;
+  intercept: string | null;
+  window_width: string | null;
+  window_center: string | null;
+  pixel_pad: number | null;
+  project_name: string | null;
+  site_name: string | null;
+  sop_instance_uid: string | null;
+  series_instance_uid: string | null;
+  modality: string | null;
+  body_part_examined: string | null;
+  series_description: string | null;
+  patient_id: string | null;
+  study_instance_uid: string | null;
+}
+
 export function registerFiles(app: App): void {
   const notAllowed = () => {
     throw new HttpError(401, "listing all files is not allowed");
@@ -130,7 +162,7 @@ export function registerFiles(app: App): void {
       `,
       [pathInt(ctx, "file_id")],
     ),
-    doc({
+    doc<OrEmpty<FilePath>>({
       summary: "Get Path",
       params: {
         file_id: { type: "integer" },
@@ -139,7 +171,7 @@ export function registerFiles(app: App): void {
   );
   app.prot("GET", "/v1/files/:file_id/details", (ctx) =>
     getFileDetails(app, ctx),
-    doc({
+    doc<OrEmpty<FileDetails>>({
       summary: "Get Details",
       params: {
         file_id: { type: "integer" },

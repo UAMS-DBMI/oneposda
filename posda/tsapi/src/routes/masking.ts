@@ -57,6 +57,12 @@ const maskingColumns = `
         import_event_id,
         masking_exit_code`;
 
+/** GET /v1/masking/visualreview/{visual_review_instance_id}/values */
+export interface MaskingValueCounts {
+  dicom_file_types: { dicom_file_type: string | null; count: number }[];
+  masking_statuses: { masking_status: string | null; count: number }[];
+}
+
 export function registerMasking(app: App): void {
   const notAllowed = () => {
     throw new HttpError(401, "not allowed");
@@ -132,7 +138,7 @@ export function registerMasking(app: App): void {
     "GET",
     "/v1/masking/visualreview/:visual_review_instance_id",
     (ctx) => getMaskingForVR(app, ctx),
-    doc({
+    doc<number[]>({
       summary: "Get For Visualreview",
       description: "Return list of all IECs in this VR that are flagged for Masking, and\nare waiting to be masked (or those that are awaiting review).\n\nIf awaiting_review is true, it only returns those which are currently\nawaiting review (that is, masking_status is 'process-complete').\n\nIf awaiting_review is false, it only returns those IECs which are\nwaiting to be masked, or are rejected (that is, masking_status is\n'created' or 'rejected').",
       params: {
@@ -145,7 +151,7 @@ export function registerMasking(app: App): void {
     "GET",
     "/v1/masking/visualreview/:visual_review_instance_id/values",
     (ctx) => getMaskingValues(app, ctx),
-    doc({
+    doc<MaskingValueCounts>({
       summary: "Get Masking Values For Vr",
       description: "Get list of valid values for use in filtering, for the given VR.\n\nReturns the valid values for: masking_status and dicom_file_type,\nscoped to IECs in this VR that are flagged for masking.",
       params: {

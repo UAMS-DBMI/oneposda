@@ -189,7 +189,7 @@ export function registerDashboard(app: App): void {
       limit 20;
       `,
     ),
-    doc({
+    doc<FileWithoutType[]>({
       summary: "Files Without Location",
     }),
   );

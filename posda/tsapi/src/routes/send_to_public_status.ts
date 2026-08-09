@@ -9,6 +9,16 @@ import { curlCommand, parse, truncate } from "../evilparse";
 import { fetchJson } from "./common";
 
 /** GET /v1/send_to_public_status/report/{id} */
+/** GET /v1/send_to_public_status/find_send_ready_to_begin_status_updates */
+export interface SendReadyUpdate {
+  subprocess_invocation_id: number;
+}
+
+/** GET /v1/send_to_public_status/get_success_percentage_for_send/{id} */
+export interface SendSummary {
+  summary: string | null;
+}
+
 export interface PublicCopyReport {
   overal_status: { success: boolean | null; count: number }[];
   total_files: number;
@@ -47,11 +57,19 @@ export function registerSendToPublicStatus(app: App): void {
     "GET",
     "/v1/send_to_public_status/report/:subprocess_invocation_id",
     (ctx) => publicCopyReport(app, ctx),
-    doc({
+    doc<PublicCopyReport>({
       summary: "Report",
+      description:
+        "A summary of a public-copy subprocess. With pretty=true the same " +
+        "data is rendered as an HTML page instead of the JSON documented " +
+        "here.",
       params: {
         subprocess_invocation_id: { type: "integer" },
-        pretty: { in: "query", type: "boolean" },
+        pretty: {
+          in: "query",
+          type: "boolean",
+          description: "Render an HTML report instead of JSON.",
+        },
       },
     }),
   );
@@ -72,7 +90,7 @@ export function registerSendToPublicStatus(app: App): void {
                 manual_update = true
         `,
       ),
-    doc({
+    doc<SendReadyUpdate[]>({
       summary: "Find Send Ready To Begin Status Updates",
     }),
   );
@@ -108,7 +126,7 @@ export function registerSendToPublicStatus(app: App): void {
         `,
         [pathInt(ctx, "subprocess_invocation_id")],
       ),
-    doc({
+    doc<SendSummary[]>({
       summary: "Get Success Percentage For Send",
       params: {
         subprocess_invocation_id: { type: "integer" },
