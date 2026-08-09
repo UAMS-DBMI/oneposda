@@ -1,0 +1,13 @@
+{
+  "name": "posda-api-ts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun src/main.ts",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14"
+  }
+}
