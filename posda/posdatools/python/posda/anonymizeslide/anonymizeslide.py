@@ -30,6 +30,7 @@ import struct
 import sys
 import logging
 import enum
+from datetime import date, datetime, timedelta
 from configparser import RawConfigParser
 from io import StringIO
 from glob import glob
@@ -274,24 +275,24 @@ class TiffDirectory:
         self._fh.write_fmt('D', 0)
 
     def replace(self, new_data):
-        descObj = self.entries[TiffTag.ImageDescription]
-        old = descObj.value()
-        oldLen = descObj.my_data_length()
-        newLen = len(new_data.encode('utf-8'))
-        lenDiff = oldLen - newLen
-        #print('oldLen:{} newLen:{}, lenDiff: {}'.format(oldLen, newLen, lenDiff))
-        if lenDiff < 0:
-            raise IOError('Edit data larger than data strip')
 
+        descObj = self.entries[TiffTag.ImageDescription]
+        oldLen = descObj.my_data_length()
+        bytesToWrite = new_data.encode('utf-8') + b'\0'
+        newLen = len(bytesToWrite)
+        lenDiff = oldLen - newLen
+        if lenDiff < 0:
+            raise IOError(
+                f'Edit data larger than data strip '
+                f'({newLen}>{oldLen})'
+            )
+        bytesToWrite += b'\0' * lenDiff
         self._fh.seek(descObj.my_data_start())
-        bytesToWrite = new_data.encode('utf-8')
-        bytesToWrite = bytesToWrite + (b'\0' * lenDiff)
-        if oldLen == len(bytesToWrite):
-            self._fh.write(bytesToWrite)
-            #print('replace completed')
-        else:
-            print('oldLen not same as new: {} vs {}'.format(oldLen,len(bytesToWrite)))
-            print('replace failed')
+        self._fh.write(bytesToWrite)
+        # print(
+        #     f'ImageDescription updated '
+        #     f'old={oldLen} new={newLen}'
+        # )
 
 
 
@@ -402,30 +403,127 @@ def getImageDesc(directory):
             img_desc_dict[split_entry[0]] = split_entry[1] if len(split_entry) > 1 else ''
     return img_desc_dict
 
-def editImageDesc(filename):
-    to_change = 0
+def editImageDesc(filename,details):
     fh = TiffFile(filename)
 
     try:
         desc0 = fh.directories[0].entries[TiffTag.ImageDescription].value()
+
         if not desc0.startswith(b'Aperio'):
             raise UnrecognizedFile
+
     except KeyError:
         raise UnrecognizedFile
 
     for directory in fh.directories:
+
+        desc_entry = directory.entries[TiffTag.ImageDescription]
+
+        original_desc = desc_entry.value().decode(
+            'utf-8',
+            errors='replace'
+        )
+
         desc_dict = getImageDesc(directory)
-        #print("desc_dict {}".format(desc_dict))
-        for tag in desc_dict:
-            if tag.replace(" ", "").lower() in ('user','filename','imageid','scanscopeid','dsrid','title'):
-                #print("bad tag")
-                desc_dict[tag]  = '0'
-                to_change = to_change+1
-        if to_change != 0:
-            new_img_desc = combine_image_desc(desc_dict)
-            directory.replace(new_img_desc)
-            print('{} elements of description edited'.format(to_change))
-            to_change = 0
+
+        changes = 0
+
+        for tag in list(desc_dict.keys()):
+
+            normalized = tag.replace(" ", "").lower()
+
+            if normalized in (
+                'user',
+                'filename',
+                'imageid',
+                'scanscopeid',
+                'dsrid',
+                'title'
+            ):
+                desc_dict[tag] = '0'
+                changes += 1
+
+            elif normalized == 'date':
+                old_date = desc_dict[tag]
+                new_date = changeDate(old_date,details)
+
+                if new_date != old_date:
+                    desc_dict[tag] = new_date
+                    changes += 1
+
+        if changes == 0:
+            continue
+
+        new_img_desc = combine_image_desc(desc_dict)
+
+        old_len = desc_entry.my_data_length()
+
+        # +1 for TIFF ASCII NULL terminator
+        new_len = len(new_img_desc.encode('utf-8')) + 1
+
+        print(
+            f"ImageDescription old={old_len} bytes "
+            f"new={new_len} bytes"
+        )
+
+        if new_len > old_len:
+            raise IOError(
+                f"New ImageDescription too large "
+                f"({new_len}>{old_len})"
+            )
+
+        directory.replace(new_img_desc)
+
+        print(
+            f"{changes} ImageDescription fields modified"
+        )
+def changeDate(originalDate, details):
+    split_details = details.split(':')
+    action = split_details[0].lower()
+    og_date = formatDate(originalDate)
+    if og_date is None:
+        print(f"WARNING: Could not edit date '{originalDate}'")
+        return originalDate
+    if action == 'shift':
+        new_date = shiftDate(og_date, split_details[1])
+    elif action == 'baseline':
+        base_date = formatDate(split_details[1])
+        reg_date = formatDate(split_details[2])
+        calc_shift = (reg_date - base_date).days
+        new_date = shiftDate(og_date, calc_shift)
+    else:
+        new_date = shiftDate(og_date)
+    return new_date
+
+from datetime import datetime
+
+def formatDate(str_date):
+    formats = [
+        "%m/%d/%y",
+        "%m/%d/%Y",
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+        "%m-%d-%Y",
+        "%m-%d-%y",
+        "%d/%m/%Y",
+        "%d-%m-%Y",
+        "%Y%m%d"
+    ]
+
+    for fmt in formats:
+        try:
+            return datetime.strptime(str_date, fmt)
+        except ValueError:
+            pass
+
+    print(f"WARNING: Could not parse date '{str_date}'")
+    return None
+
+def shiftDate(originalDate, shift_days=2000):
+    #originalDate = originalDate.strip()
+    shifted = originalDate - timedelta(days=abs(int(shift_days)))
+    return shifted.strftime("%m/%d/%y")
+
 
 def blackout(im1, l,l_dims, dims, coords):
     im = Image.new("RGB", (im1.size[0], im1.size[1]))
@@ -539,20 +637,32 @@ def saveNew(filepath, ogpath, pixel_data_by_layer):
         print('*** Redaction FAILED: returning original file: {}  ***'.format(ogpath))
         return ogpath
 
-#from MR
 def combine_image_desc(desc_dict):
-    image_desc = ''
-    for e in desc_dict.keys():
-        if desc_dict[e] == '' or  desc_dict[e] == '':
-            image_desc = image_desc + e  + '|'
+    """
+    Rebuild Aperio ImageDescription metadata.
+    """
+
+    entries = []
+
+    for key, value in desc_dict.items():
+
+        if value is None:
+            value = ''
+
+        value = str(value)
+
+        if value == '':
+            entries.append(key)
         else:
-            image_desc = image_desc + e + ' = ' + desc_dict[e] + '|'
-    #print('Combine complete: {}'.format(image_desc))
-    return image_desc
+            entries.append(f"{key} = {value}")
 
+    return '|'.join(entries)
 
+def anonymizeDesc(filepaths,edit_type,shift):
+    for filename in filepaths:
+        editImageDesc(filename,shift)
 
-def anonymize(filepaths,edit_type):
+def anonymize(filepaths,edit_type,edit_details):
     #print("removing slide")
     for filename in filepaths:
         try:
@@ -564,7 +674,7 @@ def anonymize(filepaths,edit_type):
                 remove_label_aperio_svs(filename)
             elif edit_type == '3':
                 #print("removing ImageDesc")
-                editImageDesc(filename)
+                editImageDesc(filename,edit_details)
             #4 is remove whole file, no edit
             #5 is handled in redactPixels
 

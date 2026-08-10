@@ -184,13 +184,13 @@ async def remF(pathid: int, db: Database = Depends()):
         'status': 'success',
     }
 
-@router.put("/editMeta/{pathid}")
-async def editM(pathid: int, db: Database = Depends()):
+@router.put("/editMeta/{pathid}/{details}")
+async def editM(pathid: int, details: str, db: Database = Depends()):
     record = await db.fetch("""\
         INSERT INTO pathology_edit_queue
         (file_id,edit_type, edit_details, status)
-        VALUES($1 , 3, 'imgdesc', 'waiting');
-        """, [pathid])
+        VALUES($1 , 3, $2, 'waiting');
+        """, [pathid,details])
 
     print(record)
     if len(record) < 1:
@@ -238,9 +238,9 @@ async def review(vr_id: int, db: Database = Depends()):
 async def copymapping(oldfile_id: int, newfile_id: int, db: Database = Depends()):
     query = """\
         	insert into pathology_patient_mapping
-            (file_id,patient_id,collection_name,site_name,study_name,image_id,clinical_trial_subject_id)
+            (file_id,patient_id,collection_name,site_name,study_name,image_id,clinical_trial_subject_id,shift_date,base_date,reg_date)
         select
-           $2, patient_id,collection_name,site_name,study_name,image_id,clinical_trial_subject_id
+           $2, patient_id,collection_name,site_name,study_name,image_id,clinical_trial_subject_id,shift_date,base_date,reg_date
         from
             pathology_patient_mapping a
         where
@@ -260,13 +260,25 @@ async def get_mapping(file_id: int, db: Database = Depends()):
              """
     return await db.fetch(query, [file_id])
 
-@router.put("/setmapping/{file_id}/{patient_id}/{collection_name}/{site_name}/{study_name}/{image_id}/{clinical_trial_subject_id}")
-async def setmapping(file_id: int, patient_id: str, collection_name: str, site_name: str, study_name: str, image_id: str, clinical_trial_subject_id: str, db: Database = Depends()):
+@router.get("/find_dateshift/{file_id}")
+async def find_dateshift(file_id: int, db: Database = Depends()):
+    query = """\
+        select
+            shift_date, base_date,reg_date
+        from
+            pathology_patient_mapping a
+        where
+            a.file_id = $1
+             """
+    return await db.fetch(query, [file_id])
+
+@router.put("/setmapping/{file_id}/{patient_id}/{collection_name}/{site_name}/{study_name}/{image_id}/{clinical_trial_subject_id}/{shift_date}/{base_date}/{reg_date}")
+async def setmapping(file_id: int, patient_id: str, collection_name: str, site_name: str, study_name: str, image_id: str, clinical_trial_subject_id: str, shift_date: str, base_date: str, reg_date: str, db: Database = Depends()):
     query = """\
         insert into pathology_patient_mapping
-            (file_id,patient_id,collection_name,site_name,study_name,image_id,clinical_trial_subject_id)
+            (file_id,patient_id,collection_name,site_name,study_name,image_id,clinical_trial_subject_id,shift_date,base_date,reg_date)
         VALUES
-            ($1,$2,$3,$4,$5,$6,$7)
+            ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
         ON CONFLICT (file_id) DO UPDATE
         set
             patient_id=$2,
@@ -274,9 +286,12 @@ async def setmapping(file_id: int, patient_id: str, collection_name: str, site_n
             site_name=$4,
             study_name=$5,
             image_id=$6,
-            clinical_trial_subject_id=$7
+            clinical_trial_subject_id=$7,
+            shift_date=$8,
+            base_date=$9,
+            reg_date=$10
              """
-    return await db.fetch(query, [file_id,patient_id,collection_name,site_name,study_name,image_id,clinical_trial_subject_id])
+    return await db.fetch(query, [file_id,patient_id,collection_name,site_name,study_name,image_id,clinical_trial_subject_id,shift_date,base_date,reg_date])
 
 @router.get("/image_desc/{file_id}")
 async def get_image_desc(file_id: int, db: Database = Depends()):
@@ -466,29 +481,41 @@ async def editBulkLabel(pathology_visual_review_instance_id: int, db: Database =
 
 @router.put("/bulkMeta/{pathology_visual_review_instance_id}")
 async def editBulkMeta(pathology_visual_review_instance_id: int, db: Database = Depends()):
-    record = await db.fetch("""\
-   INSERT INTO pathology_edit_queue
- 			(file_id,edit_type, edit_details, status)
-        	select
-	            file_id,  3, NULL, 'waiting'
-	        from activity_timepoint_file atf
-	        where atf.activity_timepoint_id =
-	               ( select
-	                    max(activity_timepoint_id) as activity_timepoint_id
-	                from
-	                    activity_timepoint att
-	                    join pathology_visual_review_instance pf
-	                	on att.activity_id = pf.activity_creation_id
-	                	where pf.pathology_visual_review_instance_id = $1 );
-        """, [pathology_visual_review_instance_id])
+    myfiles = await db.fetch("""
+                select file_id
+                from activity_timepoint_file atf
+    	        where atf.activity_timepoint_id =
+    	               ( select
+    	                    max(activity_timepoint_id) as activity_timepoint_id
+    	                from
+    	                    activity_timepoint att
+    	                    join pathology_visual_review_instance pf
+    	                	on att.activity_id = pf.activity_creation_id
+    	                	where pf.pathology_visual_review_instance_id = $1 );
+            """, [pathology_visual_review_instance_id])
+    mydata = {}
+    for f in myfiles:
+        mydata["file_id"] = f["file_id"]
+        mydates = await db.fetch("""
+                select
+                    shift_date, base_date,reg_date
+                from
+                    pathology_patient_mapping a
+                where
+                    a.file_id = $1;
+                """,[f["file_id"]])
+        if mydates[0]["shift_date"] != '0':
+            mydata["edit_details"] = 'shift:' + mydates[0]["shift_date"]
+        elif mydates[0]["base_date"] != '0':
+            mydata["edit_details"] = 'baseline:' + mydates[0]["base_date"] + ':' + mydates[0]["reg_date"]
 
-    print(record)
-    if len(record) < 1:
-        raise HTTPException(detail="Error updating edit status", status_code=422)
-
-    return {
-        'status': 'success',
-    }
+        await db.execute("""\
+        INSERT INTO pathology_edit_queue
+        			(file_id,edit_type, edit_details, status)
+            	select
+                    $1,  3, $2, 'waiting'
+                """,[mydata["file_id"],mydata["edit_details"]])
+    return
 
 @router.put("/recordPathDBresponse/{file_id}/{node_id}")
 async def recordPathDBresponse(file_id: int, node_id: str,  db: Database = Depends()):

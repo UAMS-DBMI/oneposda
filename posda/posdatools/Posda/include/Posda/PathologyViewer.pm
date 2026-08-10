@@ -55,6 +55,7 @@ sub SpecificInitialize {
   $self->{edit_status} = "";
   $self->{preview_file_id} = 0;
   $self->{prev_id} = 0;
+  $self->{details} = 'default';
 
 }
 
@@ -90,6 +91,34 @@ sub ContentResponse {
       caption => "Edit Metadata elements",
       sync => "Update();",
     });
+    $http->queue("<h4>Edits queued for this activity:</h4>");
+    for (my $i = 0; $i < $self->{num_files}; $i++) {
+      my $temp_id = $self->{path_files_for_review}->[$i]->{path_file_id};
+      $self->{client}->GET("$self->{MY_API_URL}/find_edits/$temp_id");
+      my $eds = (decode_json($self->{client}->responseContent()));
+      my $num_eds = scalar(@{$eds});
+      if ($num_eds and $num_eds > 0){
+       $http->queue("$temp_id has  $num_eds queued edits: ");
+       my $j = 0;
+       while ($j < $num_eds){
+          if ($eds->[$j]->{edit_type} == '1'){
+             $http->queue("MacroRemoval|");
+          }elsif ($eds->[$j]->{edit_type} == '2'){
+             $http->queue("LabelRemoval|");
+          }elsif ($eds->[$j]->{edit_type} == '3'){
+             $http->queue("MetaDataEdit|");
+          }elsif ($eds->[$j]->{edit_type} == '4'){
+             $http->queue("FileRemoval|");
+          }elsif ($eds->[$j]->{edit_type} == '5'){
+             $http->queue("PixelReduction|");
+          }else{
+             $http->queue("UnexpectedEdit|");
+          }
+          $j++;
+        }
+      }
+      $http->queue("</br>");
+    }
   }elsif($self->{index} < $self->{num_files}){
      if($self->{pixel_view}){
       $self->{pixel_preview_file_id}  = $self->{preview_array}->[$self->{prev_id}]->{preview_file_id};
@@ -521,7 +550,17 @@ sub removeLabelButtonPress(){
 
 sub metaEditButtonPress(){
   my ($self, $http, $dyn) = @_;
-  $self->{client}->PUT("$self->{MY_API_URL}/editMeta/$self->{pathid}");
+  $self->{client}->GET("$self->{MY_API_URL}/find_dateshift/$self->{pathid}");
+  my $row = (decode_json($self->{client}->responseContent()))->[0];
+  if($row){
+    if ($row->{base_date} && $row->{base_date} ne '0') {
+        $self->{details} = 'baseline:' . $row->{base_date} . ':' . $row->{reg_date};
+    }
+    elsif ($row->{shift_date} && $row->{shift_date} ne '0') {
+        $self->{details} = 'shift:' . $row->{shift_date};
+    }
+  }
+  $self->{client}->PUT("$self->{MY_API_URL}/editMeta/$self->{pathid}/$self->{details}");
   $self->{client}->PUT("$self->{MY_API_URL}/set_edit/$self->{pathid}/false/$self->{current_user}");
 }
 

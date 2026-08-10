@@ -82,9 +82,14 @@ def get_root_and_rel_path(file_id):
         res = call_api(str, 0)
         return res[0]['root_path'],res[0]['rel_path']
 
-def editSlide(filepath,edit_type):
+def editSlide(filepath,edit_type,edit_details):
     files = [filepath]
-    anonymizeslide.anonymize(files,edit_type)
+    if edit_type == '1' or edit_type == '2':
+        anonymizeslide.anonymize(files,edit_type)
+    elif edit_type == '3':
+        anonymizeslide.anonymizeDesc(files,edit_type,edit_details)
+    else:
+        print('Problem with requested edit, no matching type')
 
 def create_path_activity_timepoint(activity_id, user):
     str = "/create_path_activity_timepoint/{}/{}".format(activity_id,user)
@@ -193,7 +198,7 @@ def main(pargs):
                     # background.print_to_email("Completed {} edit on file.".format(len(edits)))
                     # background.print_to_email("File {} should  now be file {}.".format(current_file_id, new_file_id))
                 elif e['edit_type'] != '4': #4 is remove file, just dont add to new activity
-                    editSlide(new_destination_path, e['edit_type'])
+                    editSlide(new_destination_path, e['edit_type'],e['edit_details'])
                     completeEdit(e['pathology_edit_queue_id'])
             new_file_id = process(new_destination_path)
             if current_file_id != new_file_id:
