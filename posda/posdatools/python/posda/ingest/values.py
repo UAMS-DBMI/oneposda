@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from pydicom.datadict import dictionary_VM, dictionary_VR
 from pydicom.dataelem import RawDataElement
 from pydicom.dataset import Dataset
+from pydicom.sequence import Sequence
 
 # Posda::Parser is constructed with skip_large => 256 by Posda::NewTry, which
 # is what the live fast-file-processor uses. Any non-SQ element longer than
@@ -116,6 +117,19 @@ _NUMERIC_FORMATS: dict[str, tuple[str, int]] = {
 _PUBLIC_SIG = re.compile(r"^\(([0-9a-fA-F]{4}),([0-9a-fA-F]{4})\)$")
 _PRIVATE_SIG = re.compile(r'^\(([0-9a-fA-F]{4}),"([^"]*)",([0-9a-fA-F]{2})\)$')
 
+# A signature with a trailing navigation expression, e.g.
+# "(3006,0010)[0](3006,00c0)[1](3006,00c2)".
+_SIG_HEAD = re.compile(r"^\(([0-9a-fA-F]{4}),([0-9a-fA-F]{4})\)(.*)$")
+_INDEX_ONLY = re.compile(r"^\[(\d+)\]$")
+_INDEX_THEN_REST = re.compile(r"^\[(\d+)\]>?(.*)$")
+
+# One segment of a Substitutions pattern: a tag with either a literal index
+# or a "<n>" wildcard.
+_PATTERN_SEGMENT = re.compile(
+    r"^\(([0-9a-fA-F]{4}),([0-9a-fA-F]{4})\)\[([^\]]+)\](.*)$"
+)
+_WILDCARD = re.compile(r"^<\d+>$")
+
 
 @dataclass
 class ParsedValues:
@@ -129,12 +143,139 @@ class ParsedValues:
     source_path: str | None = None
 
     def get(self, sig: str) -> object:
-        """Public-tag read, equivalent to ``$ds->ExtractElementBySig($sig)``."""
-        match = _PUBLIC_SIG.match(sig)
+        """Public-tag read, equivalent to ``$ds->ExtractElementBySig($sig)``.
+
+        Supports the navigation suffixes the RT handlers use: ``[n]`` to
+        index into a multi-valued element or a sequence, and ``[n]rest`` (or
+        ``[n]>rest``) to descend into sequence item *n* and carry on.
+        """
+        match = _SIG_HEAD.match(sig)
         if match is None:
             raise DicomValueError(f"Sig ({sig}) didn't match")
         tag = (int(match.group(1), 16) << 16) | int(match.group(2), 16)
-        return self._read(self.dataset, tag, sig)
+        remain = match.group(3)
+        if not remain:
+            return self._read(self.dataset, tag, sig)
+        return self._navigate(self.dataset, tag, remain, sig)
+
+    def _navigate(self, dataset: Dataset, tag: int, remain: str, sig: str) -> object:
+        """Follow a navigation suffix, mirroring ExtractElementBySig."""
+        if dataset is None or tag not in dataset:
+            return None
+
+        # A bare trailing [n] indexes whatever the value is -- Posda checks
+        # this before it checks for SQ, so it serves both multi-valued
+        # elements and sequences.
+        match = _INDEX_ONLY.match(remain)
+        if match is not None:
+            value = self._value_for_navigation(dataset, tag, sig)
+            if not isinstance(value, (list, Sequence)):
+                return None
+            index = int(match.group(1))
+            return value[index] if index < len(value) else None
+
+        vr = _resolve_vr(dataset.get_item(tag), tag)
+        if vr != "SQ":
+            raise DicomValueError(
+                f'invalid remaining ("{remain}") for non-seq ({vr}) element'
+            )
+
+        match = _INDEX_THEN_REST.match(remain)
+        if match is None:
+            raise DicomValueError(f'can\'t make sense of "{sig}"')
+        index = int(match.group(1))
+        rest = match.group(2)
+
+        items = dataset[tag].value
+        if not isinstance(items, (list, Sequence)) or index >= len(items):
+            return None
+        item = items[index]
+        if not isinstance(item, Dataset):
+            return None
+
+        head = _SIG_HEAD.match(rest)
+        if head is None:
+            raise DicomValueError(f"Sig ({rest}) didn't match")
+        next_tag = (int(head.group(1), 16) << 16) | int(head.group(2), 16)
+        next_remain = head.group(3)
+        if not next_remain:
+            return self._read(item, next_tag, rest)
+        return self._navigate(item, next_tag, next_remain, rest)
+
+    def _value_for_navigation(self, dataset: Dataset, tag: int, sig: str) -> object:
+        """The value to index into for a trailing ``[n]``.
+
+        Sequences have to come from ``dataset[tag].value`` -- pydicom's
+        ``get_item`` hands back the undecoded bytes for SQ, which cannot be
+        indexed by item.
+        """
+        vr = _resolve_vr(dataset.get_item(tag), tag)
+        if vr == "SQ":
+            return dataset[tag].value
+        return self._read(dataset, tag, sig)
+
+    def substitutions(self, pattern: str) -> list[list[int]]:
+        """Port of ``$ds->Substitutions($pat)``, returning its ``list``.
+
+        The pattern is a chain of ``(gggg,eeee)[idx]`` segments ending in a
+        bare tag. ``[<n>]`` is a wildcard that iterates every item of that
+        sequence; the result is one list of item indices per match, in
+        document order.
+
+        Note the terminal element only has to *exist*: unlike a value read,
+        a match is recorded even when the element was skipped for size.
+        """
+        matches: list[list[int]] = []
+        self._substitute(self.dataset, pattern, [], matches)
+        return matches
+
+    def _substitute(
+        self,
+        dataset: Dataset,
+        pattern: str,
+        accum: list[int],
+        matches: list[list[int]],
+    ) -> None:
+        segment = _PATTERN_SEGMENT.match(pattern)
+        if segment is not None:
+            tag = (int(segment.group(1), 16) << 16) | int(segment.group(2), 16)
+            index = segment.group(3)
+            remain = segment.group(4)
+            if dataset is None or tag not in dataset:
+                return
+
+            element = dataset[tag]
+            if index.isdigit():
+                if element.VR != "SQ":
+                    raise DicomValueError("indexing a non seq VR")
+                items = element.value
+                position = int(index)
+                if position >= len(items):
+                    raise DicomValueError("specified item of SQ is not a dataset")
+                self._substitute(items[position], remain, accum, matches)
+                return
+
+            if _WILDCARD.match(index) is None:
+                raise DicomValueError("uncovered case")
+            if element.VR != "SQ":
+                raise DicomValueError("indexing a non seq VR")
+            for position, item in enumerate(element.value):
+                if item is None:
+                    continue
+                if not isinstance(item, Dataset):
+                    raise DicomValueError("item in a SQ is not a dataset")
+                if remain:
+                    self._substitute(item, remain, accum + [position], matches)
+                else:
+                    matches.append(accum + [position])
+            return
+
+        terminal = _PUBLIC_SIG.match(pattern)
+        if terminal is None:
+            raise DicomValueError(f"bad pattern: {pattern}")
+        tag = (int(terminal.group(1), 16) << 16) | int(terminal.group(2), 16)
+        if dataset is not None and tag in dataset:
+            matches.append(accum)
 
     def get_private(self, sig: str) -> object:
         """Private-tag read, equivalent to ``$ds->Get('(0013,"CTP",10)')``."""

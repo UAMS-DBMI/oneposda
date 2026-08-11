@@ -140,3 +140,96 @@ class TestLookup:
     def test_private_signature_requires_odd_group(self):
         with pytest.raises(DicomValueError):
             values_for().get_private('(0012,"CTP",10)')
+
+
+def rtstruct() -> ParsedValues:
+    """A small structure set with two ROIs and a nested frame of reference."""
+    from pydicom.sequence import Sequence
+
+    ds = build()
+    ds.Modality = "RTSTRUCT"
+
+    contour_image = Dataset()
+    contour_image.ReferencedSOPClassUID = CTImageStorage
+    contour_image.ReferencedSOPInstanceUID = "1.2.3.700"
+
+    series = Dataset()
+    series.SeriesInstanceUID = "1.2.3.801"
+    series.ContourImageSequence = Sequence([contour_image])
+    study = Dataset()
+    study.RTReferencedSeriesSequence = Sequence([series])
+    ref_for = Dataset()
+    ref_for.FrameOfReferenceUID = "1.2.3.FOR"
+    ref_for.RTReferencedStudySequence = Sequence([study])
+    ds.ReferencedFrameOfReferenceSequence = Sequence([ref_for])
+
+    rois = []
+    for number, name in ((1, "BODY"), (2, "PTV")):
+        roi = Dataset()
+        roi.ROINumber = number
+        roi.ROIName = name
+        rois.append(roi)
+    ds.StructureSetROISequence = Sequence(rois)
+    return ParsedValues(ds)
+
+
+class TestNavigation:
+    """ExtractElementBySig's sequence-navigation suffixes."""
+
+    def test_index_into_a_sequence_then_read(self):
+        assert rtstruct().get("(3006,0020)[1](3006,0026)") == "PTV"
+
+    def test_nested_descent(self):
+        got = rtstruct().get(
+            "(3006,0010)[0](3006,0012)[0](3006,0014)[0](3006,0016)[0](0008,1155)"
+        )
+        assert got == "1.2.3.700"
+
+    def test_angle_bracket_form_is_equivalent(self):
+        # Posda accepts both "[n]rest" and "[n]>rest".
+        values = rtstruct()
+        assert values.get("(3006,0020)[0]>(3006,0026)") == "BODY"
+        assert values.get("(3006,0020)[0](3006,0026)") == "BODY"
+
+    def test_out_of_range_index_is_none(self):
+        assert rtstruct().get("(3006,0020)[9](3006,0022)") is None
+
+    def test_missing_sequence_is_none(self):
+        assert rtstruct().get("(3006,0039)[0](3006,0084)") is None
+
+    def test_trailing_index_selects_one_value_of_a_multi_valued_element(self):
+        # A bare trailing [n] indexes the value itself, not a sequence item.
+        values = build(ImageOrientationPatient=["1", "0", "0", "0", "9", "0"])
+        assert ParsedValues(values).get("(0020,0037)[4]") == "9"
+
+    def test_trailing_index_on_a_scalar_is_none(self):
+        assert ParsedValues(build(PatientID="P1")).get("(0010,0020)[0]") is None
+
+    def test_navigating_a_non_sequence_raises(self):
+        values = ParsedValues(build(PatientID="P1"))
+        with pytest.raises(DicomValueError):
+            values.get("(0010,0020)[0](0008,0060)")
+
+
+class TestSubstitutions:
+    def test_wildcard_yields_one_entry_per_item(self):
+        assert rtstruct().substitutions("(3006,0020)[<0>](3006,0022)") == [[0], [1]]
+
+    def test_nested_wildcards_accumulate_indices(self):
+        got = rtstruct().substitutions(
+            "(3006,0010)[<0>](3006,0012)[<1>](3006,0014)[<2>](3006,0016)[<3>](0008,1155)"
+        )
+        assert got == [[0, 0, 0, 0]]
+
+    def test_absent_terminal_tag_matches_nothing(self):
+        assert rtstruct().substitutions("(3006,0020)[<0>](9999,9999)") == []
+
+    def test_absent_sequence_matches_nothing(self):
+        assert rtstruct().substitutions("(3006,0039)[<0>](3006,0042)") == []
+
+    def test_literal_index_restricts_the_walk(self):
+        assert rtstruct().substitutions("(3006,0020)[1](3006,0022)") == [[]]
+
+    def test_bad_pattern_raises(self):
+        with pytest.raises(DicomValueError):
+            rtstruct().substitutions("not a pattern")
