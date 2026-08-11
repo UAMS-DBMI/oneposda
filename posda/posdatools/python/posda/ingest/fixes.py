@@ -12,6 +12,10 @@ accepting 1/true/yes. Enable them one at a time: several change row counts in
 tables that analyst queries read.
 
 Every defect here was confirmed against a real database, not inferred.
+
+See ``docs/programming/Ingest-Fixes.md`` for the operator-facing version:
+what each flag changes, which ones move row counts, and the migration
+``lookup_upsert`` depends on.
 """
 
 from __future__ import annotations

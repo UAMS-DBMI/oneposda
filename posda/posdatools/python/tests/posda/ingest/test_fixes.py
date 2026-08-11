@@ -93,6 +93,24 @@ class TestConfig:
         assert not Fixes.from_env({"POSDA_INGEST_FIX_XFR_STX": value}).xfr_stx
 
 
+class TestDocumentation:
+    def test_every_flag_is_documented(self):
+        """A flag nobody can find is a flag nobody will use.
+
+        Keeps docs/programming/Ingest-Fixes.md honest: adding a fix without
+        documenting it fails here.
+        """
+        import re
+        from dataclasses import fields
+        from pathlib import Path
+
+        doc = (
+            Path(__file__).resolve().parents[4] / "docs/programming/Ingest-Fixes.md"
+        ).read_text()
+        for spec in fields(Fixes):
+            assert spec.name.upper() in doc, f"{spec.name} is undocumented"
+
+
 class TestXfrStx:
     def test_null_by_default(self, tmp_path):
         db = FakeDb(rows=[[]] * 20)
