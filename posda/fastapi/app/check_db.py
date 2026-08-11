@@ -2,12 +2,12 @@ import asyncpg
 import asyncio
 import sys
 
-async def run():
+async def run() -> None:
     try:
         conn = await asyncpg.connect(database='posda_files')
         await conn.close()
-    except:
+    except Exception as e:
+        print(f"Database check failed: {e}", file=sys.stderr)
         sys.exit(1)
 
-loop = asyncio.get_event_loop()
-loop.run_until_complete(run())
+asyncio.run(run())
