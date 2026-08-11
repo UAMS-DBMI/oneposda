@@ -48,9 +48,6 @@ class SopClass:
 # signature form), which is why they were left on the Perl side for now.
 RT_HANDLERS = frozenset(
     {
-        "StructureSet",
-        "RoiContour",
-        "RtRoiObservations",
         "RtPlan",
         "RtPrescription",
         "RtToleranceTables",

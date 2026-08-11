@@ -21,7 +21,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from posda.ingest import fixes, specs
+from posda.ingest import fixes, rt_structure, specs
 from posda.ingest.coercions import get_attrs
 from posda.ingest.specs import AttrSpec
 from posda.ingest.values import ParsedValues
@@ -657,5 +657,8 @@ HANDLERS: dict[str, object] = {
     "SlopeIntercept": slope_intercept,
     "WindowLevel": window_level,
     "CTImage": ct_image,
+    "StructureSet": rt_structure.structure_set,
+    "RoiContour": rt_structure.roi_contour,
+    "RtRoiObservations": rt_structure.rt_roi_observations,
 }
 HANDLERS.update({name: _make_stub(name) for name in STUBS})

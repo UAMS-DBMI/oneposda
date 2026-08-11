@@ -60,20 +60,15 @@ class TestBlockBatching:
             "RtBeams",
         ]
 
-    def test_structure_set_block_stays_together(self):
-        # StructureSet populates hist->{roi} for the two that follow, so
-        # splitting this block would break them.
+    def test_structure_set_no_longer_uses_the_bridge(self):
+        # StructureSet, RoiContour and RtRoiObservations are native now, so
+        # nothing in an RT Structure Set goes to Perl.
         runner = RecordingRunner()
         db = FakeDb(rows=[[]] * 20)
         iod.import_dataset(
             db, build(RT_STRUCT), 2, RT_STRUCT, handlers={}, rt_runner=runner
         )
-        assert len(runner.calls) == 1
-        assert runner.calls[0][1] == [
-            "StructureSet",
-            "RoiContour",
-            "RtRoiObservations",
-        ]
+        assert runner.calls == []
 
     def test_rt_dose_receives_image_id_from_the_python_handlers(self):
         # RTDose reads hist->{image_id}, which Python's ImagePixel sets.

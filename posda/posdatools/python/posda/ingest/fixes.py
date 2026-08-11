@@ -56,6 +56,14 @@ class Fixes:
     #: unique_pixel_data and pixel_location.
     load_large_values: bool = False
 
+    #: Walk ROIPhysicalPropertiesSequence (3006,00b0) when looking for
+    #: elemental composition. RtRoiObservations walks (3006,00a0), the
+    #: related-observations sequence, using the index from the physical
+    #: properties loop, so roi_elemental_composition is effectively never
+    #: populated.
+    #: CHANGES ROW COUNTS in roi_elemental_composition.
+    elemental_composition: bool = False
+
     #: Use ON CONFLICT against the shared lookup tables instead of
     #: check-then-insert. Requires the unique indexes added by
     #: Posda/sql/migrations/ingest_lookup_unique.sql.
