@@ -357,6 +357,11 @@ class ParsedValues:
         return decode_value(value, vr, vm, sig, self.errors)
 
 
+def _perl_float(value: float) -> str:
+    """Render a float the way Perl's default stringification does."""
+    return f"{value:.15g}"
+
+
 def _dictionary_vm(tag: int) -> str:
     try:
         return dictionary_VM(tag)
@@ -430,6 +435,11 @@ def decode_value(raw: bytes, vr: str, vm: str, sig: str, errors: list[str]) -> o
         fmt, size = _NUMERIC_FORMATS[desc.type]
         count = len(raw) // size
         values = list(struct.unpack(f"<{count}{fmt[1]}", raw[: count * size]))
+        if desc.type in ("float", "double"):
+            # Perl stringifies a float with %.15g on its way to DBI, so an
+            # FL of 5.0 reaches the column as "5", not "5.0". Binding a
+            # Python float would render the trailing zero and diverge.
+            values = [_perl_float(v) for v in values]
         if vm == "1":
             if len(values) != 1:
                 errors.append(

@@ -41,7 +41,7 @@ class RecordingRunner:
 
 
 class TestBlockBatching:
-    def test_rt_plan_block_is_dispatched_in_one_call(self):
+    def test_only_rt_beams_still_uses_the_bridge(self):
         runner = RecordingRunner()
         db = FakeDb(rows=[[]] * 20)
         iod.import_dataset(
@@ -49,16 +49,9 @@ class TestBlockBatching:
         )
         assert len(runner.calls) == 1
         _, handlers, _ = runner.calls[0]
-        # RtBrachy is a print-only stub in the Perl, so it stays on the
-        # Python side and is not part of the block.
-        assert handlers == [
-            "RtPlan",
-            "RtPrescription",
-            "RtToleranceTables",
-            "RtPatientSetup",
-            "RtFractionScheme",
-            "RtBeams",
-        ]
+        # Everything ahead of RtBeams is native now; RtBrachy is a
+        # print-only stub and stays on the Python side.
+        assert handlers == ["RtBeams"]
 
     def test_structure_set_no_longer_uses_the_bridge(self):
         # StructureSet, RoiContour and RtRoiObservations are native now, so

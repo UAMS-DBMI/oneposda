@@ -46,16 +46,7 @@ class SopClass:
 # Handlers implemented in Perl only, dispatched through the RT bridge. Every
 # one of these needs Posda::Dataset's sequence navigation (the "[<0>]"
 # signature form), which is why they were left on the Perl side for now.
-RT_HANDLERS = frozenset(
-    {
-        "RtPlan",
-        "RtPrescription",
-        "RtToleranceTables",
-        "RtPatientSetup",
-        "RtFractionScheme",
-        "RtBeams",
-    }
-)
+RT_HANDLERS = frozenset({"RtBeams"})
 
 
 SOP_HANDLERS: dict[str, SopClass] = {

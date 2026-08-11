@@ -21,7 +21,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from posda.ingest import fixes, rt_dose, rt_structure, specs
+from posda.ingest import fixes, rt_dose, rt_plan, rt_structure, specs
 from posda.ingest.coercions import get_attrs
 from posda.ingest.specs import AttrSpec
 from posda.ingest.values import ParsedValues
@@ -662,5 +662,10 @@ HANDLERS: dict[str, object] = {
     "RtRoiObservations": rt_structure.rt_roi_observations,
     "RTDose": rt_dose.rt_dose,
     "RTDvh": rt_dose.rt_dvh,
+    "RtPlan": rt_plan.rt_plan,
+    "RtPrescription": rt_plan.rt_prescription,
+    "RtToleranceTables": rt_plan.rt_tolerance_tables,
+    "RtPatientSetup": rt_plan.rt_patient_setup,
+    "RtFractionScheme": rt_plan.rt_fraction_scheme,
 }
 HANDLERS.update({name: _make_stub(name) for name in STUBS})

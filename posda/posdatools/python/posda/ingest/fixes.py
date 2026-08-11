@@ -71,6 +71,21 @@ class Fixes:
     #: Safe: fills a column that is currently always NULL.
     dose_normalization_point: bool = False
 
+    #: Read organ-at-risk maximum dose from (300a,002c) and the overdose
+    #: volume fraction from (300a,002d). RtPrescription reads (300a,002b)
+    #: into all three of limit dose, maximum dose and overdose fraction, so
+    #: the last two carry the limit dose.
+    #: CHANGES VALUES in rt_prescription_dose_ref.
+    prescription_organ_at_risk_tags: bool = False
+
+    #: Read fraction_related_dose's own UIDs. RtFractionScheme passes the
+    #: fraction *group* parameter table to GetAttrs in that loop, so neither
+    #: UID is read, both guards fire, and the table stays empty while two
+    #: complaints are recorded per item.
+    #: CHANGES ROW COUNTS in fraction_related_dose and
+    #: dicom_process_errors.
+    fraction_related_dose: bool = False
+
     #: Use ON CONFLICT against the shared lookup tables instead of
     #: check-then-insert. Requires the unique indexes added by
     #: Posda/sql/migrations/ingest_lookup_unique.sql.
