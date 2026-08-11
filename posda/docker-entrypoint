@@ -38,6 +38,19 @@ file_process() {
 	exec ./run_in_posda_env.sh Posda/bin/FastFileProcessDaemon.pl
 }
 
+file_process_py() {
+	echo "Starting Posda Fast File Process Daemon (Python)..."
+
+	cd $APPROOT/systemd
+
+	echo "Working dir is: $(pwd)"
+
+	# Runs alongside the Perl daemon rather than replacing it: both consume
+	# the same Redis queue, so a cutover is a compose command change and a
+	# rollback is the same change in reverse.
+	exec ./run_in_posda_env.sh python3 -m posda.ingest.daemon daemon
+}
+
 backlog_process() {
 	echo "Starting Backlog Process Daemon..."
 
@@ -80,6 +93,7 @@ help() {
   echo "api -- start the Posda API Server (python based)"
 	echo "worker -- start a Posda Worker node"
   echo "file-process -- start the Posda File Process Daemon"
+  echo "file-process-py -- start the Python File Process Daemon"
   echo "backlog-process -- start the Backlog Process Daemon"
 }
 
@@ -99,6 +113,10 @@ case "$1" in
   file-process)
     shift
 	file_process
+    ;;
+  file-process-py)
+    shift
+	file_process_py
     ;;
   backlog-process)
     shift
