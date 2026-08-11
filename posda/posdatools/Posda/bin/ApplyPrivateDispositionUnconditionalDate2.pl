@@ -80,7 +80,7 @@ sub ShiftDate{
     my $epoch = $date->epoch;
     my $shifted_epoch = ShiftIntegerDate($epoch);
     if($epoch == $shifted_epoch) { return $date_string }
-    my $new_date = Time::Piece->new($shifted_epoch);
+    my $new_date = Time::Piece->gmtime($shifted_epoch);
     my $new_date_string = $new_date->strftime("%Y%m%d");
     return $new_date_string . $old_more;
   } else {
