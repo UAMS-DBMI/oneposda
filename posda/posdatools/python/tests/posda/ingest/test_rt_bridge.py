@@ -70,22 +70,15 @@ class TestBlockBatching:
         )
         assert runner.calls == []
 
-    def test_rt_dose_receives_image_id_from_the_python_handlers(self):
-        # RTDose reads hist->{image_id}, which Python's ImagePixel sets.
+    def test_rt_dose_no_longer_uses_the_bridge(self):
+        # RTDose and RTDvh are native now; image_id reaches RTDose directly
+        # through hist rather than being forwarded across a process.
         runner = RecordingRunner()
         db = FakeDb(rows=[[]] * 20)
-
-        def fake_image_pixel(db, values, file_id, hist, errors):
-            hist["image_id"] = 4242
-
-        registry = {"ImagePixel": fake_image_pixel}
         iod.import_dataset(
-            db, build(RT_DOSE), 3, RT_DOSE, handlers=registry, rt_runner=runner
+            db, build(RT_DOSE), 3, RT_DOSE, handlers={}, rt_runner=runner
         )
-        assert len(runner.calls) == 1
-        _, handlers, hist = runner.calls[0]
-        assert handlers == ["RTDose", "RTDvh"]
-        assert hist["image_id"] == 4242
+        assert runner.calls == []
 
     def test_non_rt_sop_class_never_calls_the_bridge(self):
         runner = RecordingRunner()

@@ -38,6 +38,8 @@ from pydicom.dataelem import RawDataElement
 from pydicom.dataset import Dataset
 from pydicom.sequence import Sequence
 
+from posda.ingest.privatedict import private_vm_vr
+
 # Posda::Parser is constructed with skip_large => 256 by Posda::NewTry, which
 # is what the live fast-file-processor uses. Any non-SQ element longer than
 # this is seek-skipped and never gets a value, so ExtractElementBySig returns
@@ -118,8 +120,12 @@ _PUBLIC_SIG = re.compile(r"^\(([0-9a-fA-F]{4}),([0-9a-fA-F]{4})\)$")
 _PRIVATE_SIG = re.compile(r'^\(([0-9a-fA-F]{4}),"([^"]*)",([0-9a-fA-F]{2})\)$')
 
 # A signature with a trailing navigation expression, e.g.
-# "(3006,0010)[0](3006,00c0)[1](3006,00c2)".
+# "(3006,0010)[0](3006,00c0)[1](3006,00c2)". The head may be a private
+# element too: RTDvh reads (3005,"ITC_DVH_Computation",01) from inside a
+# sequence item, so creators have to resolve at any depth, not just at the
+# root.
 _SIG_HEAD = re.compile(r"^\(([0-9a-fA-F]{4}),([0-9a-fA-F]{4})\)(.*)$")
+_SIG_HEAD_PRIVATE = re.compile(r'^\(([0-9a-fA-F]{4}),"([^"]*)",([0-9a-fA-F]{2})\)(.*)$')
 _INDEX_ONLY = re.compile(r"^\[(\d+)\]$")
 _INDEX_THEN_REST = re.compile(r"^\[(\d+)\]>?(.*)$")
 
@@ -143,20 +149,55 @@ class ParsedValues:
     source_path: str | None = None
 
     def get(self, sig: str) -> object:
-        """Public-tag read, equivalent to ``$ds->ExtractElementBySig($sig)``.
+        """Element read, equivalent to ``$ds->Get`` / ``ExtractElementBySig``.
 
-        Supports the navigation suffixes the RT handlers use: ``[n]`` to
-        index into a multi-valued element or a sequence, and ``[n]rest`` (or
-        ``[n]>rest``) to descend into sequence item *n* and carry on.
+        Handles public and private heads, plus the navigation suffixes the
+        RT handlers use: ``[n]`` to index into a multi-valued element or a
+        sequence, and ``[n]rest`` (or ``[n]>rest``) to descend into sequence
+        item *n* and carry on.
         """
+        return self._resolve(self.dataset, sig)
+
+    def _resolve(self, dataset: Dataset, sig: str) -> object:
+        tag, remain, declared = self._split_head(dataset, sig)
+        if tag is None:
+            return None
+        if not remain:
+            return self._read(dataset, tag, sig, declared)
+        return self._navigate(dataset, tag, remain, sig)
+
+    def _split_head(
+        self, dataset: Dataset, sig: str
+    ) -> tuple[int | None, str, tuple[str, str] | None]:
+        """Resolve the leading element of a signature to a tag.
+
+        Returns ``(None, remain, None)`` when a private creator is absent,
+        which Posda reports as an ordinary "no value" rather than an error.
+        The third member carries the private dictionary's (VM, VR) when the
+        head is a private element, since those are not in pydicom's
+        dictionary and drive array-ness the same way public ones do.
+        """
+        match = _SIG_HEAD_PRIVATE.match(sig)
+        if match is not None:
+            group = int(match.group(1), 16)
+            creator = match.group(2)
+            offset = int(match.group(3), 16)
+            if not group & 1:
+                raise DicomValueError(f"only private groups have owner: {sig}")
+            if dataset is None:
+                return None, match.group(4), None
+            try:
+                block = dataset.private_block(group, creator)
+            except KeyError:
+                return None, match.group(4), None
+            declared = private_vm_vr(creator, group, offset)
+            return int(block.get_tag(offset)), match.group(4), declared
+
         match = _SIG_HEAD.match(sig)
         if match is None:
             raise DicomValueError(f"Sig ({sig}) didn't match")
         tag = (int(match.group(1), 16) << 16) | int(match.group(2), 16)
-        remain = match.group(3)
-        if not remain:
-            return self._read(self.dataset, tag, sig)
-        return self._navigate(self.dataset, tag, remain, sig)
+        return tag, match.group(3), None
 
     def _navigate(self, dataset: Dataset, tag: int, remain: str, sig: str) -> object:
         """Follow a navigation suffix, mirroring ExtractElementBySig."""
@@ -193,14 +234,7 @@ class ParsedValues:
         if not isinstance(item, Dataset):
             return None
 
-        head = _SIG_HEAD.match(rest)
-        if head is None:
-            raise DicomValueError(f"Sig ({rest}) didn't match")
-        next_tag = (int(head.group(1), 16) << 16) | int(head.group(2), 16)
-        next_remain = head.group(3)
-        if not next_remain:
-            return self._read(item, next_tag, rest)
-        return self._navigate(item, next_tag, next_remain, rest)
+        return self._resolve(item, rest)
 
     def _value_for_navigation(self, dataset: Dataset, tag: int, sig: str) -> object:
         """The value to index into for a trailing ``[n]``.
@@ -229,12 +263,25 @@ class ParsedValues:
         self._substitute(self.dataset, pattern, [], matches)
         return matches
 
+    def search(self, pattern: str) -> list[list[int]]:
+        """Port of ``$ds->Search($pat)``.
+
+        Semantically the same walk as :meth:`substitutions`, but forgiving
+        where that one dies: a literal index naming something that is not a
+        dataset, or a sequence whose value is not a list, simply ends that
+        branch instead of raising.
+        """
+        matches: list[list[int]] = []
+        self._substitute(self.dataset, pattern, [], matches, strict=False)
+        return matches
+
     def _substitute(
         self,
         dataset: Dataset,
         pattern: str,
         accum: list[int],
         matches: list[list[int]],
+        strict: bool = True,
     ) -> None:
         segment = _PATTERN_SEGMENT.match(pattern)
         if segment is not None:
@@ -251,8 +298,10 @@ class ParsedValues:
                 items = element.value
                 position = int(index)
                 if position >= len(items):
-                    raise DicomValueError("specified item of SQ is not a dataset")
-                self._substitute(items[position], remain, accum, matches)
+                    if strict:
+                        raise DicomValueError("specified item of SQ is not a dataset")
+                    return
+                self._substitute(items[position], remain, accum, matches, strict)
                 return
 
             if _WILDCARD.match(index) is None:
@@ -265,7 +314,7 @@ class ParsedValues:
                 if not isinstance(item, Dataset):
                     raise DicomValueError("item in a SQ is not a dataset")
                 if remain:
-                    self._substitute(item, remain, accum + [position], matches)
+                    self._substitute(item, remain, accum + [position], matches, strict)
                 else:
                     matches.append(accum + [position])
             return
@@ -278,27 +327,24 @@ class ParsedValues:
             matches.append(accum)
 
     def get_private(self, sig: str) -> object:
-        """Private-tag read, equivalent to ``$ds->Get('(0013,"CTP",10)')``."""
-        match = _PRIVATE_SIG.match(sig)
-        if match is None:
+        """Private-tag read. Retained as a name; get() handles both forms."""
+        if _SIG_HEAD_PRIVATE.match(sig) is None:
             raise DicomValueError(f"Sig ({sig}) didn't match")
-        group = int(match.group(1), 16)
-        creator = match.group(2)
-        offset = int(match.group(3), 16)
-        if not group & 1:
-            raise DicomValueError(f"only private groups have owner: {sig}")
-        try:
-            block = self.dataset.private_block(group, creator)
-        except KeyError:
-            return None
-        tag = block.get_tag(offset)
-        return self._read(self.dataset, int(tag), sig)
+        return self.get(sig)
 
-    def _read(self, dataset: Dataset, tag: int, sig: str) -> object:
+    def _read(
+        self,
+        dataset: Dataset,
+        tag: int,
+        sig: str,
+        declared: tuple[str, str] | None = None,
+    ) -> object:
         raw = dataset.get_item(tag)
         if raw is None:
             return None
         vr = _resolve_vr(raw, tag)
+        if vr is None and declared is not None:
+            vr = declared[1]
         if vr is None:
             return None
         if _is_skipped(raw, vr, self.skip_large):
@@ -307,7 +353,8 @@ class ParsedValues:
         if not isinstance(value, bytes):
             # Already-converted element (e.g. one pydicom eagerly decoded).
             return value
-        return decode_value(value, vr, _dictionary_vm(tag), sig, self.errors)
+        vm = declared[0] if declared is not None else _dictionary_vm(tag)
+        return decode_value(value, vr, vm, sig, self.errors)
 
 
 def _dictionary_vm(tag: int) -> str:

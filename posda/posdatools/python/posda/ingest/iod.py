@@ -54,8 +54,6 @@ RT_HANDLERS = frozenset(
         "RtPatientSetup",
         "RtFractionScheme",
         "RtBeams",
-        "RTDose",
-        "RTDvh",
     }
 )
 

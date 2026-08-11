@@ -64,6 +64,13 @@ class Fixes:
     #: CHANGES ROW COUNTS in roi_elemental_composition.
     elemental_composition: bool = False
 
+    #: Populate rt_dose.rt_dose_normalization_point. RTDose reads
+    #: (3004,0008) into 'normalization_point' but passes
+    #: $parms{normalizaton_point} to the insert -- missing an "i" -- so the
+    #: column is unconditionally NULL.
+    #: Safe: fills a column that is currently always NULL.
+    dose_normalization_point: bool = False
+
     #: Use ON CONFLICT against the shared lookup tables instead of
     #: check-then-insert. Requires the unique indexes added by
     #: Posda/sql/migrations/ingest_lookup_unique.sql.
