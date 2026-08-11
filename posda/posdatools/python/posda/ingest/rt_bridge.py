@@ -49,11 +49,21 @@ class RtBridgeError(RuntimeError):
 
 
 def bridge_path() -> str:
-    """Locate the bridge script on PATH, as the Perl bin directory is there."""
+    """Locate the bridge script.
+
+    Normally it is on PATH, since Config/SetEnv puts Posda/bin there.
+    POSDA_RT_BRIDGE overrides that for environments where the script is not
+    installed alongside the rest of the tree -- the differential harness
+    stages it separately.
+    """
+    override = os.environ.get("POSDA_RT_BRIDGE")
+    if override:
+        if not os.path.isfile(override):
+            raise RtBridgeError(f"POSDA_RT_BRIDGE does not exist: {override}")
+        return override
     found = shutil.which(BRIDGE_SCRIPT)
     if found:
         return found
-    # Fall back to POSDA_ROOT/Posda/bin for callers with a bare environment.
     root = os.environ.get("POSDA_ROOT")
     if root:
         candidate = os.path.join(root, "Posda", "bin", BRIDGE_SCRIPT)

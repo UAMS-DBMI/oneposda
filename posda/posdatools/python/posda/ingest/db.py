@@ -25,6 +25,10 @@ class Database:
     """A single autocommit connection, with fetch helpers shaped like DBI's."""
 
     def __init__(self, dbname: str = "posda_files", **overrides: Any) -> None:
+        # POSDA_INGEST_DB redirects the whole pipeline at a scratch database.
+        # The Perl RT bridge honours the same variable, so both halves of a
+        # differential run land in the same place.
+        dbname = os.environ.get("POSDA_INGEST_DB", dbname)
         self.dbname = dbname
         params: dict[str, Any] = {"dbname": dbname}
         # Allow tests and the verification harness to point at a scratch
