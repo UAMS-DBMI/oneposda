@@ -132,7 +132,7 @@ def parse_with_digest_and_length(
         )
 
     meta = _meta_header(dataset, length)
-    values = ParsedValues(dataset, skip_large=skip_large)
+    values = ParsedValues(dataset, skip_large=skip_large, source_path=path)
     return ParseResult(
         path=path,
         digest=digest,

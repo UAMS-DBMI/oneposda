@@ -124,6 +124,9 @@ class ParsedValues:
     dataset: Dataset
     errors: list[str] = field(default_factory=list)
     skip_large: int = SKIP_LARGE
+    # Where the dataset was read from. The RT bridge re-parses the file in
+    # Perl, so it needs the path rather than the in-memory dataset.
+    source_path: str | None = None
 
     def get(self, sig: str) -> object:
         """Public-tag read, equivalent to ``$ds->ExtractElementBySig($sig)``."""
