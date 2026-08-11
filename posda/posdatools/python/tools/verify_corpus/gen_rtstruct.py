@@ -4,15 +4,11 @@ contours and ROI observations.
 """
 
 import io
-import sys
 from pathlib import Path
 
 from pydicom.dataset import Dataset, FileMetaDataset
 from pydicom.sequence import Sequence
 from pydicom.uid import ExplicitVRLittleEndian
-
-OUT = Path(sys.argv[1] if len(sys.argv) > 1 else "corpus")
-OUT.mkdir(parents=True, exist_ok=True)
 
 RT_STRUCT = "1.2.840.10008.5.1.4.1.1.481.3"
 CT = "1.2.840.10008.5.1.4.1.1.2"
@@ -143,7 +139,7 @@ for number, interpreted in ((1, "EXTERNAL"), (2, "PTV")):
     observations.append(obs)
 ds.RTROIObservationsSequence = Sequence(observations)
 
-out = OUT / "rtstruct.dcm"
+out = Path(__file__).parent / "testdata" / "rtstruct.dcm"
 buf = io.BytesIO()
 ds.save_as(buf, enforce_file_format=True)
 out.write_bytes(buf.getvalue())

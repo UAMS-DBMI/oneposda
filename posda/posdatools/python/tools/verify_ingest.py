@@ -32,8 +32,6 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-BRIDGE_SCRIPT = "PosdaIngestRtBridge.pl"
-
 PERL_DB = "posda_verify_perl"
 PYTHON_DB = "posda_verify_python"
 SOURCE_DB = "posda_files"
@@ -323,13 +321,6 @@ def run_python(cfg: Config, files: list[Path]) -> None:
         raise RuntimeError(f"could not stage package: {result.stderr.strip()}")
     in_posda(cfg, f"touch {stage}/posda/__init__.py")
 
-    # The RT bridge lives in Posda/bin, which belongs to the mounted tree
-    # rather than this checkout, so stage it alongside the package.
-    bridge = Path(__file__).resolve().parents[2] / "Posda" / "bin" / BRIDGE_SCRIPT
-    result = run(["docker", "cp", str(bridge), f"{cfg.posda_container}:{stage}/"])
-    if result.returncode != 0:
-        raise RuntimeError(f"could not stage rt bridge: {result.stderr.strip()}")
-
     driver = PYTHON_DRIVER.format(
         files=[p.name for p in files], root=cfg.storage_root, stage=stage
     )
@@ -337,10 +328,7 @@ def run_python(cfg: Config, files: list[Path]) -> None:
     out = in_posda(
         cfg,
         f"python3 {stage}/driver.py",
-        env={
-            "POSDA_INGEST_DB": PYTHON_DB,
-            "POSDA_RT_BRIDGE": f"{stage}/{BRIDGE_SCRIPT}",
-        },
+        env={"POSDA_INGEST_DB": PYTHON_DB},
     )
     print("  " + out.strip().splitlines()[-1])
 

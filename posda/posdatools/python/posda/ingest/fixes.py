@@ -86,6 +86,12 @@ class Fixes:
     #: dicom_process_errors.
     fraction_related_dose: bool = False
 
+    #: Write beam_general_accessory rows. RtBeams' INSERT names the column
+    #: 'general_accessory_id text', a stray type name that makes the
+    #: statement a syntax error, so the table never receives a row.
+    #: CHANGES ROW COUNTS in beam_general_accessory.
+    beam_general_accessory: bool = False
+
     #: Use ON CONFLICT against the shared lookup tables instead of
     #: check-then-insert. Requires the unique indexes added by
     #: Posda/sql/migrations/ingest_lookup_unique.sql.

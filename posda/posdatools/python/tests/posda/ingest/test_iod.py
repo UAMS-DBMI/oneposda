@@ -36,9 +36,9 @@ class TestTable:
         assert len(iod.SOP_HANDLERS) == 81
         assert sum(len(e.handlers) for e in iod.SOP_HANDLERS.values()) == 478
 
-    def test_only_rt_handlers_are_unimplemented_in_python(self):
+    def test_every_referenced_handler_is_implemented_in_python(self):
         referenced = {n for e in iod.SOP_HANDLERS.values() for n in e.handlers}
-        assert referenced - set(modules.HANDLERS) == set(iod.RT_HANDLERS)
+        assert referenced - set(modules.HANDLERS) == set()
 
     def test_ct_handler_order_puts_image_pixel_before_its_dependents(self):
         handlers = iod.SOP_HANDLERS[CT].handlers

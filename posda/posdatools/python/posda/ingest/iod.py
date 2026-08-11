@@ -19,12 +19,8 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from posda.ingest import fixes, modules, rt_bridge, sopclasses, specs
+from posda.ingest import fixes, modules, sopclasses, specs
 from posda.ingest.values import ParsedValues
-
-# Sentinel so that rt_runner=None can mean "skip RT handlers" while the
-# default still means "use the Perl bridge".
-_UNSET = object()
 
 if TYPE_CHECKING:
     from posda.ingest.db import Database
@@ -41,12 +37,6 @@ _WHITESPACE_RE = re.compile(r"\s")
 class SopClass:
     name: str
     handlers: tuple[str, ...]
-
-
-# Handlers implemented in Perl only, dispatched through the RT bridge. Every
-# one of these needs Posda::Dataset's sequence navigation (the "[<0>]"
-# signature form), which is why they were left on the Perl side for now.
-RT_HANDLERS = frozenset({"RtBeams"})
 
 
 SOP_HANDLERS: dict[str, SopClass] = {
@@ -960,20 +950,13 @@ def import_dataset(
     description: str | None = None,
     import_event_id: object = None,
     handlers: dict[str, object] | None = None,
-    rt_runner: object = _UNSET,
 ) -> list[str]:
     """Port of ``Posda::DB::DicomIod::Import``.
-
-    ``rt_runner`` receives any contiguous block of RT handlers; it defaults
-    to the Perl bridge. Pass ``None`` to skip RT handling entirely, which is
-    what the tests do when they only care about the Python handlers.
 
     Returns the error strings that were written to ``dicom_process_errors``.
     """
     errors: list[str] = []
     registry = handlers if handlers is not None else modules.HANDLERS
-    if rt_runner is _UNSET:
-        rt_runner = rt_bridge.run_block
 
     _insert_ctp(db, values, file_id)
     parms = _sop_common_params(values, errors)
@@ -992,7 +975,6 @@ def import_dataset(
             import_event_id,
             errors,
             registry,
-            rt_runner,
         )
     else:
         if not parms.get("sop_class"):
@@ -1148,7 +1130,6 @@ def _run_handlers(
     import_event_id: object,
     errors: list[str],
     registry: dict[str, object],
-    rt_runner: object = None,
 ) -> None:
     entry = SOP_HANDLERS.get(sop_class) if sop_class is not None else None
     if entry is None:
@@ -1159,26 +1140,9 @@ def _run_handlers(
         return
 
     hist: dict = {"import_event_id": import_event_id}
-    handlers = entry.handlers
-    index = 0
-    while index < len(handlers):
-        name = handlers[index]
-
-        # RT handlers are delegated to Perl as a contiguous block. They must
-        # share one process: StructureSet builds nested hist entries that
-        # RoiContour and RtRoiObservations consume, and those cannot survive
-        # a round trip through the bridge.
-        if name in RT_HANDLERS and rt_runner is not None:
-            block = []
-            while index < len(handlers) and handlers[index] in RT_HANDLERS:
-                block.append(handlers[index])
-                index += 1
-            rt_runner(values, file_id, block, hist, errors)
-            continue
-
+    for name in entry.handlers:
         handler = registry.get(name)
         if handler is None:
             log.warning("No implementation registered for handler %s", name)
-        else:
-            handler(db, values, file_id, hist, errors)
-        index += 1
+            continue
+        handler(db, values, file_id, hist, errors)

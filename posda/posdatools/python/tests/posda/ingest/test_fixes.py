@@ -110,7 +110,7 @@ class TestOriginalSpecializedSopClass:
     def test_null_by_default(self):
         db = FakeDb(rows=[[]] * 8)
         values = build(OriginalSpecializedSOPClassUID=CT)
-        iod.import_dataset(db, values, 1, CT, handlers={}, rt_runner=None)
+        iod.import_dataset(db, values, 1, CT, handlers={})
         assert (
             column_value(db, "file_sop_common", "original_specialized_sop_class")
             is None
@@ -120,7 +120,7 @@ class TestOriginalSpecializedSopClass:
         enable(original_specialized_sop_class=True)
         db = FakeDb(rows=[[]] * 8)
         values = build(OriginalSpecializedSOPClassUID=CT)
-        iod.import_dataset(db, values, 1, CT, handlers={}, rt_runner=None)
+        iod.import_dataset(db, values, 1, CT, handlers={})
         assert (
             column_value(db, "file_sop_common", "original_specialized_sop_class") == CT
         )
