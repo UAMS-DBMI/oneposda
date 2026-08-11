@@ -25,6 +25,7 @@ from pathlib import Path
 from pydicom import dcmread
 from pydicom.errors import InvalidDicomError
 
+from posda.ingest import fixes
 from posda.ingest.values import SKIP_LARGE, ParsedValues
 
 log = logging.getLogger(__name__)
@@ -99,8 +100,15 @@ def digest_and_length(path: str | Path) -> tuple[str, int]:
     return md5.hexdigest(), length
 
 
-def parse(path: str | Path, skip_large: int = SKIP_LARGE) -> ParseResult:
-    """Port of ``Posda::NewTry->new``."""
+def parse(path: str | Path, skip_large: int | None = None) -> ParseResult:
+    """Port of ``Posda::NewTry->new``.
+
+    ``skip_large`` defaults to Posda's 256-byte limit, or to no limit when
+    the load_large_values fix is enabled. Callers that need a specific limit
+    (the pixel worker passes 0) still pass one explicitly.
+    """
+    if skip_large is None:
+        skip_large = 0 if fixes.ACTIVE.load_large_values else SKIP_LARGE
     path = str(path)
     digest, length = digest_and_length(path)
     return parse_with_digest_and_length(path, digest, length, skip_large)

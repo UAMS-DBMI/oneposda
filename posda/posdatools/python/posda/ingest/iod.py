@@ -19,7 +19,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from posda.ingest import modules, rt_bridge, sopclasses, specs
+from posda.ingest import fixes, modules, rt_bridge, sopclasses, specs
 from posda.ingest.values import ParsedValues
 
 # Sentinel so that rt_runner=None can mean "skip RT handlers" while the
@@ -1134,12 +1134,16 @@ def _insert_sop_common(db: "Database", file_id: int, parms: dict) -> None:
             parms.get("creation_time"),
             parms.get("creator_uid"),
             parms.get("related_general_sop_class"),
-            # The Perl passes $parms{original_specialized_sop_class}, but the
-            # value was read into the key 'orig_spec_sop_class', so this
+            # The Perl passes $parms{original_specialized_sop_class}, but
+            # the value was read into the key 'orig_spec_sop_class', so this
             # column is unconditionally NULL. Confirmed against the dev
-            # database: 0 of 1256 rows populated. Reproduced here; the fix is
-            # tracked separately.
-            None,
+            # database: 0 of 1256 rows populated. Reproduced by default; see
+            # posda.ingest.fixes.
+            (
+                parms.get("orig_spec_sop_class")
+                if fixes.ACTIVE.original_specialized_sop_class
+                else None
+            ),
             parms.get("offset_from_utc"),
             parms.get("instance_number"),
             parms.get("instance_status"),

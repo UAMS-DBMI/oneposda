@@ -21,7 +21,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from posda.ingest import specs
+from posda.ingest import fixes, specs
 from posda.ingest.coercions import get_attrs
 from posda.ingest.specs import AttrSpec
 from posda.ingest.values import ParsedValues
@@ -413,6 +413,18 @@ def slope_intercept(
         errors.append(f"no slope intercept for file {file_id}")
         return
 
+    if fixes.ACTIVE.lookup_upsert:
+        si_id = db.fetchone(
+            "insert into slope_intercept (slope, intercept, si_units)"
+            " values (%s, %s, %s)"
+            " on conflict (slope, intercept, si_units)"
+            " do update set slope = excluded.slope"
+            " returning slope_intercept_id",
+            [slope, intercept, units],
+        )["slope_intercept_id"]
+        _link_slope_intercept(db, si_id, hist["image_id"], file_id)
+        return
+
     if units is not None:
         row = db.fetchone(
             "select * from slope_intercept"
@@ -436,16 +448,22 @@ def slope_intercept(
             "slope_intercept_id",
         )
 
+    _link_slope_intercept(db, si_id, hist["image_id"], file_id)
+
+
+def _link_slope_intercept(
+    db: "Database", si_id: object, image_id: object, file_id: int
+) -> None:
     existing = db.fetchone(
         "select * from image_slope_intercept"
         " where image_id = %s and slope_intercept_id = %s",
-        [hist["image_id"], si_id],
+        [image_id, si_id],
     )
     if existing is None:
         db.execute(
             "insert into image_slope_intercept (slope_intercept_id, image_id)"
             " values (%s, %s)",
-            [si_id, hist["image_id"]],
+            [si_id, image_id],
         )
     db.execute(
         "insert into file_slope_intercept (slope_intercept_id, file_id)"
@@ -491,8 +509,11 @@ def window_level(
     if explanation is not None:
         if not isinstance(explanation, list) or len(explanation) != len(width):
             return
-        # Faithful reproduction of the shadowed-loop-variable defect.
-        for _ in range(len(explanation)):
+        # The Perl runs the inner loop once per explanation because both
+        # loops use $i and the inner shadows the outer. Reproduced by
+        # default; see posda.ingest.fixes.
+        repeats = 1 if fixes.ACTIVE.window_level_duplication else len(explanation)
+        for _ in range(repeats):
             for index in range(len(centre)):
                 win_lev_id = _window_level_id(
                     db, width[index], centre[index], explanation[index]
@@ -507,6 +528,9 @@ def window_level(
 def _window_level_id(
     db: "Database", width: object, centre: object, explanation: object
 ) -> object:
+    if fixes.ACTIVE.lookup_upsert:
+        return _upsert_window_level(db, width, centre, explanation)
+
     if explanation is not None:
         row = db.fetchone(
             "select * from window_level"
@@ -534,6 +558,26 @@ def _window_level_id(
         [width, centre],
         "window_level_id",
     )
+
+
+def _upsert_window_level(
+    db: "Database", width: object, centre: object, explanation: object
+) -> object:
+    """Race-free lookup, requiring window_level_natural_key.
+
+    The check-then-insert above lets two concurrent workers both miss and
+    both insert. ON CONFLICT collapses that into one row; DO UPDATE rather
+    than DO NOTHING so the id comes back on the conflicting path too.
+    """
+    row = db.fetchone(
+        "insert into window_level (window_width, window_center, win_lev_desc)"
+        " values (%s, %s, %s)"
+        " on conflict (window_width, window_center, win_lev_desc)"
+        " do update set window_width = excluded.window_width"
+        " returning window_level_id",
+        [width, centre, explanation],
+    )
+    return row["window_level_id"]
 
 
 def _link_window_level(

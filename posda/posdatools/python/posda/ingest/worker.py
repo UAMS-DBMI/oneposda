@@ -16,7 +16,7 @@ import logging
 import os
 from dataclasses import dataclass
 
-from posda.ingest import iod, parse
+from posda.ingest import fixes, iod, parse
 from posda.ingest.db import Database
 from posda.ingest.parse import ParseResult
 from posda.ingest.sopclasses import sop_class_description
@@ -118,8 +118,9 @@ def _import_dicom(db: Database, job: FileJob, result: ParseResult) -> None:
             job.file_id,
             # Posda::NewTry declares $xfr_stx and never assigns it, so this
             # column is unconditionally NULL. Confirmed against the dev
-            # database: 0 of 1256 rows populated. Reproduced deliberately.
-            None,
+            # database: 0 of 1256 rows populated. Reproduced by default; see
+            # posda.ingest.fixes.
+            _transfer_syntax(result) if fixes.ACTIVE.xfr_stx else None,
             has_meta,
             is_dicom_dir,
             has_sop_common,
@@ -145,6 +146,14 @@ def _import_dicom(db: Database, job: FileJob, result: ParseResult) -> None:
             str(sop_class),
             dicom_file_type,
         )
+
+
+def _transfer_syntax(result: ParseResult) -> str | None:
+    """The transfer syntax UID from the file meta group, (0002,0010)."""
+    if result.meta is None:
+        return None
+    value = result.meta.get("(0002,0010)")
+    return None if value is None else str(value)
 
 
 def _insert_meta(db: Database, file_id: int, result: ParseResult) -> None:
