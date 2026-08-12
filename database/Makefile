@@ -1,4 +1,9 @@
+# BSD sed (macOS) requires an explicit backup suffix after -i; GNU sed does not.
+# --version is a GNU-only flag, so it doubles as the probe.
+SED_INPLACE := $(shell sed --version >/dev/null 2>&1 && echo "sed -i" || echo "sed -i ''")
+
 SQL=../posda/posdatools/Posda/sql
+
 # SRCFILES := $(shell find ${SQL} -type f)
 SCHEMA_FILES := \
 		${SQL}/dicom_dd.sql \
@@ -29,12 +34,12 @@ DATA_FILES := \
 all: all.sql
 
 clean:
-	rm -f *.sql
+	rm -f all.sql schema.sql data.sql queries.sql
 
 all.sql: schema.sql data.sql queries.sql
 	cat $+ > $@
 	# Remove all changes to tablespaces
-	sed -i '/default_tablespace/d' $@
+	${SED_INPLACE} '/default_tablespace/d' $@
 
 schema.sql: $(SCHEMA_FILES)
 	cat $+ > schema.sql
