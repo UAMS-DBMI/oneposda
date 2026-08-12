@@ -26,7 +26,7 @@ spec:
               cpu: 250m
               memory: 512Mi
             limits:
-              memory: 2Gi
+              memory: 4Gi
           envFrom:
             - secretRef:
                 name: database-env
@@ -75,6 +75,10 @@ spec:
             - name: posda-deploy
               mountPath: /fastapi
               subPath: oneposda/posda/fastapi/app
+              readOnly: true
+            - name: posda-deploy
+              mountPath: /home/posda/posdatools
+              subPath: oneposda/posda/posdatools
               readOnly: true
             - name: posda-env-file
               mountPath: /home/posda/posdatools/posda.env
