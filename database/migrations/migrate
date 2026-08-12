@@ -1,0 +1,520 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.14"
+# dependencies = []
+# ///
+"""Forward-only migration runner for the Posda databases.
+
+Ordering comes from the filenames themselves (sorted), so there is no order
+file to keep in sync. What has been applied to a given database is recorded in
+that database's own ``db_version.migration`` ledger, so a database can always
+answer the question itself.
+
+Work is handed to the ``psql`` binary rather than a Python driver: that keeps
+the dependency list empty, and it means ``COPY FROM STDIN`` and backslash
+meta-commands behave exactly as they do when a human runs the file by hand.
+
+Connection settings come from the standard PG* environment variables
+(PGHOST, PGPORT, PGUSER, PGPASSWORD), which psql reads natively.
+"""
+
+import argparse
+import hashlib
+import os
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+
+SQL_SUFFIX = ".sql"
+SHELL_SUFFIX = ".sh"
+MIGRATION_SUFFIXES = (SQL_SUFFIX, SHELL_SUFFIX)
+
+FIELD_SEPARATOR = "\x1f"
+
+LEDGER_DDL = """
+create schema if not exists db_version;
+
+create table if not exists db_version.migration (
+    filename   text primary key,
+    sha256     text not null,
+    applied_at timestamptz not null default now(),
+    applied_by text not null default current_user
+);
+
+create table if not exists db_version.version (version integer);
+"""
+
+# Interpolation of :'var' only happens for files read with -f; psql sends -c
+# strings straight to the server untouched. Keeping this in a file also means
+# psql does the quoting, so a filename containing a quote cannot inject SQL.
+RECORD_SQL = (
+    "insert into db_version.migration (filename, sha256) "
+    "values (:'filename', :'sha256');\n"
+    "delete from db_version.version;\n"
+    "insert into db_version.version select count(*) from db_version.migration;\n"
+)
+
+
+class MigrationError(Exception):
+    """Base class for failures this tool raises deliberately."""
+
+
+class PsqlError(MigrationError):
+    """psql exited non-zero."""
+
+
+class DriftError(MigrationError):
+    """The database and the migration directory disagree."""
+
+
+@dataclass(frozen=True)
+class Migration:
+    path: Path
+    sha256: str
+
+    @property
+    def name(self) -> str:
+        return self.path.name
+
+    @property
+    def is_shell(self) -> bool:
+        return self.path.suffix == SHELL_SUFFIX
+
+
+@dataclass(frozen=True)
+class Target:
+    name: str
+    directory: Path
+    database: str
+
+
+@dataclass(frozen=True)
+class TargetPlan:
+    target: Target
+    applied: list[Migration]
+    pending: list[Migration]
+    mismatched: list[Migration]
+    missing: list[str]
+    out_of_order: list[Migration]
+
+    @property
+    def is_clean(self) -> bool:
+        return not (self.mismatched or self.missing or self.out_of_order)
+
+
+def sha256_of_file(path: Path) -> str:
+    """Hash a migration so later edits to an applied file can be detected."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def find_repo_root(start: Path) -> Path:
+    """Walk up to the checkout root, where shell migrations expect to run."""
+    for candidate in [start, *start.parents]:
+        if (candidate / ".git").exists():
+            return candidate
+    return start
+
+
+def discover_targets(root: Path, names: list[str], prefix: str) -> list[Target]:
+    """Each subdirectory is one target; the directory name is the database."""
+    available = sorted(
+        entry.name
+        for entry in root.iterdir()
+        if entry.is_dir() and not entry.name.startswith(".") and entry.name != "tests"
+    )
+    selected = names or available
+
+    unknown = sorted(set(selected) - set(available))
+    if unknown:
+        raise MigrationError(
+            f"unknown target(s): {', '.join(unknown)}. "
+            f"Available: {', '.join(available)}"
+        )
+
+    return [Target(name, root / name, f"{prefix}{name}") for name in selected]
+
+
+def load_migrations(target: Target) -> list[Migration]:
+    """Migrations in apply order, which is simply sorted filename order.
+
+    Anything under ``manual/`` is deliberately excluded: teardown scripts and
+    seed data that should never be applied automatically live there.
+    """
+    files = sorted(
+        path
+        for path in target.directory.iterdir()
+        if path.is_file() and path.suffix in MIGRATION_SUFFIXES
+    )
+    return [Migration(path=path, sha256=sha256_of_file(path)) for path in files]
+
+
+def run_psql(database: str, args: list[str], *, capture: bool = True) -> str:
+    """Invoke psql, raising PsqlError on failure.
+
+    When capture is False psql writes straight to the terminal, so the user
+    sees notices and progress from a long migration as it runs.
+    """
+    command = ["psql", "-X", "-v", "ON_ERROR_STOP=1", "-d", database, *args]
+    result = subprocess.run(
+        command,
+        capture_output=capture,
+        text=True,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or "").strip() if capture else ""
+        raise PsqlError(
+            f"psql exited {result.returncode} for database {database}"
+            + (f":\n{detail}" if detail else "")
+        )
+    return result.stdout if capture else ""
+
+
+def query_rows(database: str, sql: str) -> list[list[str]]:
+    """Run a query and return unaligned, untitled rows split into fields."""
+    output = run_psql(
+        database,
+        ["-A", "-t", "-q", "-F", FIELD_SEPARATOR, "-c", sql],
+    )
+    return [line.split(FIELD_SEPARATOR) for line in output.splitlines() if line]
+
+
+def ensure_ledger(target: Target) -> None:
+    """Create the ledger if absent. Safe to run against an initialised database."""
+    with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False) as handle:
+        handle.write(LEDGER_DDL)
+        ddl_path = Path(handle.name)
+    try:
+        run_psql(target.database, ["-q", "--single-transaction", "-f", str(ddl_path)])
+    finally:
+        ddl_path.unlink(missing_ok=True)
+
+
+def fetch_applied(target: Target) -> dict[str, str]:
+    """Map of filename -> sha256 for everything the database says it has."""
+    rows = query_rows(
+        target.database,
+        "select filename, sha256 from db_version.migration order by filename",
+    )
+    return {row[0]: row[1] for row in rows}
+
+
+def build_plan(target: Target) -> TargetPlan:
+    """Compare the directory against the ledger and classify the differences."""
+    migrations = load_migrations(target)
+    applied_hashes = fetch_applied(target)
+
+    applied: list[Migration] = []
+    pending: list[Migration] = []
+    mismatched: list[Migration] = []
+
+    for migration in migrations:
+        recorded = applied_hashes.get(migration.name)
+        if recorded is None:
+            pending.append(migration)
+        elif recorded != migration.sha256:
+            mismatched.append(migration)
+            applied.append(migration)
+        else:
+            applied.append(migration)
+
+    on_disk = {migration.name for migration in migrations}
+    missing = sorted(set(applied_hashes) - on_disk)
+
+    out_of_order = find_out_of_order(pending, applied_hashes)
+
+    return TargetPlan(
+        target=target,
+        applied=applied,
+        pending=pending,
+        mismatched=mismatched,
+        missing=missing,
+        out_of_order=out_of_order,
+    )
+
+
+def find_out_of_order(
+    pending: list[Migration], applied_hashes: dict[str, str]
+) -> list[Migration]:
+    """Pending migrations that sort before something already applied.
+
+    A branch merged late can introduce one of these. Applying it would run it
+    against a schema newer than the one it was written for, and every database
+    would end up with a different effective order, so it is worth refusing.
+    """
+    if not applied_hashes:
+        return []
+    highest_applied = max(applied_hashes)
+    return [migration for migration in pending if migration.name < highest_applied]
+
+
+def apply_migration(target: Target, migration: Migration, repo_root: Path) -> None:
+    if migration.is_shell:
+        apply_shell_migration(target, migration, repo_root)
+    else:
+        apply_sql_migration(target, migration)
+
+
+def apply_sql_migration(target: Target, migration: Migration) -> None:
+    """Apply a .sql migration and record it in the same transaction.
+
+    psql processes -f arguments in order, and --single-transaction wraps the
+    whole invocation, so the schema change and its ledger row commit together
+    or not at all.
+    """
+    with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False) as handle:
+        handle.write(RECORD_SQL)
+        record_path = Path(handle.name)
+    try:
+        run_psql(
+            target.database,
+            [
+                "--single-transaction",
+                "-v",
+                f"filename={migration.name}",
+                "-v",
+                f"sha256={migration.sha256}",
+                "-f",
+                str(migration.path),
+                "-f",
+                str(record_path),
+            ],
+            capture=False,
+        )
+    finally:
+        record_path.unlink(missing_ok=True)
+
+
+def apply_shell_migration(
+    target: Target, migration: Migration, repo_root: Path
+) -> None:
+    """Run an executable migration, then record it.
+
+    This cannot be atomic the way a .sql migration is: the script's effects are
+    outside any transaction we control. If the script succeeds but recording
+    fails, the operator has to reconcile by hand, so say so loudly.
+    """
+    environment = {**os.environ, "PGDATABASE": target.database}
+    result = subprocess.run([str(migration.path)], cwd=repo_root, env=environment)
+    if result.returncode != 0:
+        raise MigrationError(
+            f"{migration.name} exited {result.returncode}; nothing was recorded"
+        )
+    try:
+        record_applied(target, migration)
+    except PsqlError as error:
+        raise MigrationError(
+            f"{migration.name} ran successfully but could not be recorded: {error}\n"
+            f"Re-running it would repeat its effects. Record it by hand with:\n"
+            f"  ./migrate baseline {target.name} --through {migration.name}"
+        ) from error
+
+
+def record_applied(target: Target, migration: Migration) -> None:
+    """Write a ledger row without running the migration."""
+    with tempfile.NamedTemporaryFile("w", suffix=".sql", delete=False) as handle:
+        handle.write(RECORD_SQL)
+        record_path = Path(handle.name)
+    try:
+        run_psql(
+            target.database,
+            [
+                "-q",
+                "--single-transaction",
+                "-v",
+                f"filename={migration.name}",
+                "-v",
+                f"sha256={migration.sha256}",
+                "-f",
+                str(record_path),
+            ],
+        )
+    finally:
+        record_path.unlink(missing_ok=True)
+
+
+def describe_plan(plan: TargetPlan) -> str:
+    lines = [
+        f"{plan.target.name} ({plan.target.database})",
+        f"  applied: {len(plan.applied)}    pending: {len(plan.pending)}",
+    ]
+    for migration in plan.pending:
+        marker = "!" if migration in plan.out_of_order else "+"
+        lines.append(f"  {marker} {migration.name}")
+    for migration in plan.mismatched:
+        lines.append(f"  ~ {migration.name} (changed since it was applied)")
+    for name in plan.missing:
+        lines.append(f"  ? {name} (in ledger, not on disk)")
+    if plan.out_of_order:
+        lines.append(
+            "  ! sorts before an already-applied migration; "
+            "use --allow-out-of-order to apply anyway"
+        )
+    return "\n".join(lines)
+
+
+def report_plans(targets: list[Target], *, pending_is_failure: bool) -> int:
+    exit_code = 0
+    for target in targets:
+        ensure_ledger(target)
+        plan = build_plan(target)
+        print(describe_plan(plan))
+        print()
+        if not plan.is_clean or (pending_is_failure and plan.pending):
+            exit_code = 1
+    return exit_code
+
+
+def cmd_status(targets: list[Target], _: argparse.Namespace, __: Path) -> int:
+    return report_plans(targets, pending_is_failure=False)
+
+
+def cmd_verify(targets: list[Target], _: argparse.Namespace, __: Path) -> int:
+    """Like status, but also treats pending work as a failure. For CI."""
+    return report_plans(targets, pending_is_failure=True)
+
+
+def cmd_up(targets: list[Target], args: argparse.Namespace, repo_root: Path) -> int:
+    for target in targets:
+        ensure_ledger(target)
+        plan = build_plan(target)
+
+        blocked = plan.mismatched or plan.missing
+        out_of_order = plan.out_of_order and not args.allow_out_of_order
+        if blocked or out_of_order:
+            print(describe_plan(plan))
+            sys.stdout.flush()
+            raise DriftError(
+                f"refusing to migrate {target.name}: resolve the differences above"
+            )
+
+        if not plan.pending:
+            print(f"{target.name}: up to date ({len(plan.applied)} applied)")
+            continue
+
+        print(f"{target.name} ({target.database}): {len(plan.pending)} to apply")
+        for migration in plan.pending:
+            if args.dry_run:
+                print(f"  would apply {migration.name}")
+                continue
+            print(f"  applying {migration.name}")
+            apply_migration(target, migration, repo_root)
+        print()
+    return 0
+
+
+def cmd_baseline(targets: list[Target], args: argparse.Namespace, _: Path) -> int:
+    """Record migrations as applied without running them.
+
+    This is how a database that predates the ledger crosses over exactly once:
+    its schema is already current, so the migrations must be stamped, not run.
+    """
+    for target in targets:
+        ensure_ledger(target)
+        migrations = load_migrations(target)
+
+        if args.through is not None:
+            names = [migration.name for migration in migrations]
+            if args.through not in names:
+                raise MigrationError(
+                    f"{args.through} is not a migration in {target.name}"
+                )
+            cutoff = names.index(args.through) + 1
+            migrations = migrations[:cutoff]
+
+        already_applied = fetch_applied(target)
+        to_record = [m for m in migrations if m.name not in already_applied]
+
+        if not to_record:
+            print(f"{target.name}: nothing to baseline")
+            continue
+
+        print(f"{target.name} ({target.database}): stamping {len(to_record)}")
+        for migration in to_record:
+            if args.dry_run:
+                print(f"  would stamp {migration.name}")
+                continue
+            print(f"  stamping {migration.name}")
+            record_applied(target, migration)
+        print()
+    return 0
+
+
+COMMANDS = {
+    "status": cmd_status,
+    "up": cmd_up,
+    "baseline": cmd_baseline,
+    "verify": cmd_verify,
+}
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="migrate",
+        description="Forward-only migrations for the Posda databases.",
+    )
+    parser.add_argument(
+        "--prefix",
+        default=os.environ.get("POSDA_DB_PREFIX", ""),
+        help="prepended to each database name (some deployments use 'N_')",
+    )
+    parser.add_argument(
+        "--dir",
+        type=Path,
+        default=Path(__file__).resolve().parent,
+        help="migrations directory (default: alongside this script)",
+    )
+
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    for name, help_text in [
+        ("status", "show what is applied, pending, or divergent"),
+        ("up", "apply pending migrations"),
+        ("baseline", "record migrations as applied without running them"),
+        ("verify", "exit non-zero if anything is pending or divergent"),
+    ]:
+        sub = subparsers.add_parser(name, help=help_text)
+        sub.add_argument("targets", nargs="*", help="defaults to every target")
+        if name in ("up", "baseline"):
+            sub.add_argument(
+                "--dry-run",
+                action="store_true",
+                help="report what would happen, change nothing",
+            )
+        if name == "up":
+            sub.add_argument(
+                "--allow-out-of-order",
+                action="store_true",
+                help="apply migrations that sort before an applied one",
+            )
+        if name == "baseline":
+            group = sub.add_mutually_exclusive_group(required=True)
+            group.add_argument(
+                "--through",
+                metavar="FILENAME",
+                help="stamp every migration up to and including this one",
+            )
+            group.add_argument(
+                "--all",
+                action="store_true",
+                help="stamp every migration in the target",
+            )
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+
+    try:
+        targets = discover_targets(args.dir.resolve(), args.targets, args.prefix)
+        repo_root = find_repo_root(args.dir.resolve())
+        return COMMANDS[args.command](targets, args, repo_root)
+    except MigrationError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
