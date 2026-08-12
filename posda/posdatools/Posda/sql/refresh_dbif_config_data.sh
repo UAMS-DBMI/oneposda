@@ -9,6 +9,7 @@ echo "\\connect posda_files" > $FILE
 pg_dump -x -a -O \
 	-n dbif_config \
 	-n auth \
+	-n db_version \
 	-T queries \
 	posda_files >> $FILE
 
