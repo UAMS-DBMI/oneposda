@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict VwfH1pgJZuccdWzYxwyXrZnRXU5cS0GMYdwMo8Sm72Imt5Iyah5hZWMrvqxUFXP
+\restrict 6dalNtbfbmMVzsJOZnicfhwi8e8kZdEHQzpaNNM4DwcjvQv0e7OGvFZTzijEZxX
 
 -- Dumped from database version 18.4
 -- Dumped by pg_dump version 18.4 (Homebrew)
@@ -26,9 +26,9 @@ SET row_security = off;
 CREATE DATABASE posda_phi_simple WITH TEMPLATE = template0 ENCODING = 'UTF8' LOCALE_PROVIDER = libc LOCALE = 'en_US.UTF-8';
 
 
-\unrestrict VwfH1pgJZuccdWzYxwyXrZnRXU5cS0GMYdwMo8Sm72Imt5Iyah5hZWMrvqxUFXP
+\unrestrict 6dalNtbfbmMVzsJOZnicfhwi8e8kZdEHQzpaNNM4DwcjvQv0e7OGvFZTzijEZxX
 \connect posda_phi_simple
-\restrict VwfH1pgJZuccdWzYxwyXrZnRXU5cS0GMYdwMo8Sm72Imt5Iyah5hZWMrvqxUFXP
+\restrict 6dalNtbfbmMVzsJOZnicfhwi8e8kZdEHQzpaNNM4DwcjvQv0e7OGvFZTzijEZxX
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -723,9 +723,9 @@ ALTER SEQUENCE public.tiff_tag_seen_tiff_tag_seen_id_seq OWNED BY public.tiff_ta
 CREATE TABLE public.tiff_tag_value_occurrence (
     tiff_tag_seen_id integer NOT NULL,
     tiff_value_seen_id integer NOT NULL,
-    page_id integer NOT NULL,
     tiff_phi_scan_instance_id integer NOT NULL,
-    file_id integer NOT NULL
+    file_id integer NOT NULL,
+    page_id integer NOT NULL
 );
 
 
@@ -984,48 +984,6 @@ CREATE UNIQUE INDEX element_seen_vr_pair_index ON public.element_seen USING btre
 
 
 --
--- Name: element_value_occurance_phi_scan_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX element_value_occurance_phi_scan_id_idx ON public.element_value_occurance USING btree (phi_scan_instance_id);
-
-
---
--- Name: element_value_occurrance_series_scan_instance_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX element_value_occurrance_series_scan_instance_id_idx ON public.element_value_occurance USING btree (series_scan_instance_id);
-
-
---
--- Name: nifti_tag_seen_and_nifti_value_seen_index; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX nifti_tag_seen_and_nifti_value_seen_index ON public.nifti_tag_value_occurrence USING btree (nifti_tag_seen_id, nifti_value_seen_id);
-
-
---
--- Name: phi_scan_instance_pk; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX phi_scan_instance_pk ON public.phi_scan_instance USING btree (phi_scan_instance_id);
-
-
---
--- Name: series_scan_instance_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX series_scan_instance_idx ON public.series_scan_instance USING btree (series_instance_uid, series_scan_instance_id, scan_instance_id);
-
-
---
--- Name: series_scan_instance_pk; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX series_scan_instance_pk ON public.series_scan_instance USING btree (series_scan_instance_id);
-
-
---
 -- Name: sr_path_seen_and_value_seen_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1033,15 +991,8 @@ CREATE INDEX sr_path_seen_and_value_seen_index ON public.sr_path_value_occurance
 
 
 --
--- Name: value_seen_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX value_seen_idx ON public.value_seen USING btree (value_seen_id);
-
-
---
 -- PostgreSQL database dump complete
 --
 
-\unrestrict VwfH1pgJZuccdWzYxwyXrZnRXU5cS0GMYdwMo8Sm72Imt5Iyah5hZWMrvqxUFXP
+\unrestrict 6dalNtbfbmMVzsJOZnicfhwi8e8kZdEHQzpaNNM4DwcjvQv0e7OGvFZTzijEZxX
 

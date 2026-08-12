@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict NfAGmkRafRgQu6iegYqfzB2oicBQtCMstdpYZusP8oU9W7aYgYtn7nDcwWutIAW
+\restrict MEpeEAazQj3eIrdcIGhV93DtXFOxMaqWr2bSpEKovVMTwdqma7lRjKtMVudY6Yg
 
 -- Dumped from database version 18.4
 -- Dumped by pg_dump version 18.4 (Homebrew)
@@ -26,9 +26,9 @@ SET row_security = off;
 CREATE DATABASE posda_files WITH TEMPLATE = template0 ENCODING = 'UTF8' LOCALE_PROVIDER = libc LOCALE = 'en_US.UTF-8';
 
 
-\unrestrict NfAGmkRafRgQu6iegYqfzB2oicBQtCMstdpYZusP8oU9W7aYgYtn7nDcwWutIAW
+\unrestrict MEpeEAazQj3eIrdcIGhV93DtXFOxMaqWr2bSpEKovVMTwdqma7lRjKtMVudY6Yg
 \connect posda_files
-\restrict NfAGmkRafRgQu6iegYqfzB2oicBQtCMstdpYZusP8oU9W7aYgYtn7nDcwWutIAW
+\restrict MEpeEAazQj3eIrdcIGhV93DtXFOxMaqWr2bSpEKovVMTwdqma7lRjKtMVudY6Yg
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -49,9 +49,9 @@ SET row_security = off;
 ALTER DATABASE posda_files SET search_path TO 'public', 'dbif_config', 'dicom_conv';
 
 
-\unrestrict NfAGmkRafRgQu6iegYqfzB2oicBQtCMstdpYZusP8oU9W7aYgYtn7nDcwWutIAW
+\unrestrict MEpeEAazQj3eIrdcIGhV93DtXFOxMaqWr2bSpEKovVMTwdqma7lRjKtMVudY6Yg
 \connect posda_files
-\restrict NfAGmkRafRgQu6iegYqfzB2oicBQtCMstdpYZusP8oU9W7aYgYtn7nDcwWutIAW
+\restrict MEpeEAazQj3eIrdcIGhV93DtXFOxMaqWr2bSpEKovVMTwdqma7lRjKtMVudY6Yg
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -64,13 +64,6 @@ SET check_function_bodies = false;
 SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
-
---
--- Name: archive; Type: SCHEMA; Schema: -; Owner: -
---
-
-CREATE SCHEMA archive;
-
 
 --
 -- Name: auth; Type: SCHEMA; Schema: -; Owner: -
@@ -144,27 +137,11 @@ COMMENT ON TYPE public.export_status_type IS 'The status of an export_event';
 
 
 --
--- Name: masking_status_type; Type: TYPE; Schema: public; Owner: -
---
-
-CREATE TYPE public.masking_status_type AS ENUM (
-    'created',
-    'ready-to-process',
-    'in-process',
-    'process-complete',
-    'accepted',
-    'rejected',
-    'errored',
-    'nonmaskable',
-    'skipped'
-);
-
-
---
 -- Name: request_status_type; Type: TYPE; Schema: public; Owner: -
 --
 
 CREATE TYPE public.request_status_type AS ENUM (
+    'start',
     'pause',
     'abort',
     'retry failures'
@@ -215,55 +192,6 @@ COMMENT ON TYPE public.transfer_status_type IS 'The status of an export_event tr
 
 
 --
--- Name: format_bytes_human_readable(bigint); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.format_bytes_human_readable(size_bytes bigint) RETURNS text
-    LANGUAGE plpgsql
-    AS $$
-
-DECLARE
-
-    size_num NUMERIC := size_bytes;
-
-    size_units TEXT[] := ARRAY['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB'];
-
-    unit_index INT := 1;
-
-BEGIN
-
-    WHILE size_num >= 1024 AND unit_index < array_length(size_units, 1) LOOP
-
-        size_num := size_num / 1024;
-
-        unit_index := unit_index + 1;
-
-    END LOOP;
-
-
-
-    RETURN ROUND(size_num, 2) || ' ' || size_units[unit_index];
-
-END;
-
-$$;
-
-
---
--- Name: new_ctp_file_insert_trigger(); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.new_ctp_file_insert_trigger() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-BEGIN
-    INSERT INTO archive.ctp_file_current VALUES (NEW.*);
-    RETURN NULL;
-END;
-$$;
-
-
---
 -- Name: notify_transfer_queued(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -297,47 +225,6 @@ $$;
 
 
 --
--- Name: shrink_imports(); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.shrink_imports() RETURNS text
-    LANGUAGE plpgsql
-    AS $$
-declare
-	import_rec record;
-	counter integer := 0;
-	total integer := 0;
-begin
-	for import_rec in (select import_event_id, import_time, file_id
-					   from import_event 
-					   natural join file_import
-					   where import_type = 'Processing Backlog' 
-					   ) loop
-		counter := counter + 1;
-		total := total + 1;
-		if (counter >= 100000) then
-			counter := 0;
-			raise notice '100000 have been processed';
-		end if;
-
-		update file_import
-		set import_event_id = 0,
-			file_import_time = import_rec.import_time
-		where import_event_id = import_rec.import_event_id
-		  and file_id = import_rec.file_id;
-
-		delete from import_event
-		where import_event_id = import_rec.import_event_id;
-		
-	end loop;
-	raise notice 'Total processed: %', total;
-	/* raise exception 'things broke'; */
-	return 'looks good boss';
-end;
-$$;
-
-
---
 -- Name: storage_path(integer); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -357,261 +244,7 @@ $$;
 
 SET default_tablespace = '';
 
---
--- Name: dicom_file; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.dicom_file (
-    file_id integer NOT NULL,
-    dataset_digest text,
-    xfr_stx text,
-    has_meta boolean,
-    is_dicom_dir boolean,
-    has_sop_common boolean,
-    dicom_file_type text,
-    has_pixel_data boolean,
-    pixel_data_digest text,
-    pixel_data_offset integer,
-    pixel_data_length integer,
-    has_no_roi_linkages boolean
-)
-PARTITION BY RANGE (file_id);
-
-
 SET default_table_access_method = heap;
-
---
--- Name: dicom_file_archive; Type: TABLE; Schema: archive; Owner: -
---
-
-CREATE TABLE archive.dicom_file_archive (
-    file_id integer NOT NULL,
-    dataset_digest text,
-    xfr_stx text,
-    has_meta boolean,
-    is_dicom_dir boolean,
-    has_sop_common boolean,
-    dicom_file_type text,
-    has_pixel_data boolean,
-    pixel_data_digest text,
-    pixel_data_offset integer,
-    pixel_data_length integer,
-    has_no_roi_linkages boolean
-);
-
-
---
--- Name: dicom_file_current; Type: TABLE; Schema: archive; Owner: -
---
-
-CREATE TABLE archive.dicom_file_current (
-    file_id integer NOT NULL,
-    dataset_digest text,
-    xfr_stx text,
-    has_meta boolean,
-    is_dicom_dir boolean,
-    has_sop_common boolean,
-    dicom_file_type text,
-    has_pixel_data boolean,
-    pixel_data_digest text,
-    pixel_data_offset integer,
-    pixel_data_length integer,
-    has_no_roi_linkages boolean
-);
-
-
---
--- Name: dicom_process_errors; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.dicom_process_errors (
-    file_id integer NOT NULL,
-    error_msg text
-)
-PARTITION BY RANGE (file_id);
-
-
---
--- Name: dicom_process_errors_archive; Type: TABLE; Schema: archive; Owner: -
---
-
-CREATE TABLE archive.dicom_process_errors_archive (
-    file_id integer NOT NULL,
-    error_msg text
-);
-
-
---
--- Name: dicom_process_errors_current; Type: TABLE; Schema: archive; Owner: -
---
-
-CREATE TABLE archive.dicom_process_errors_current (
-    file_id integer NOT NULL,
-    error_msg text
-);
-
-
---
--- Name: file_import; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.file_import (
-    import_event_id integer NOT NULL,
-    file_id integer NOT NULL,
-    rel_path text,
-    rel_dir text,
-    file_name text,
-    file_import_time timestamp with time zone
-)
-PARTITION BY RANGE (file_id);
-
-
---
--- Name: file_import_current; Type: TABLE; Schema: archive; Owner: -
---
-
-CREATE TABLE archive.file_import_current (
-    import_event_id integer NOT NULL,
-    file_id integer NOT NULL,
-    rel_path text,
-    rel_dir text,
-    file_name text,
-    file_import_time timestamp with time zone
-);
-
-
---
--- Name: file_import_old; Type: TABLE; Schema: archive; Owner: -
---
-
-CREATE TABLE archive.file_import_old (
-    import_event_id integer NOT NULL,
-    file_id integer NOT NULL,
-    rel_path text,
-    rel_dir text,
-    file_name text,
-    file_import_time timestamp with time zone
-);
-
-
---
--- Name: file_meta; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.file_meta (
-    file_id integer NOT NULL,
-    file_meta integer,
-    data_set_size integer,
-    data_set_start integer,
-    media_storage_sop_class text,
-    media_storage_sop_instance text,
-    xfer_syntax text,
-    imp_class_uid text,
-    imp_version_name text,
-    source_ae_title text,
-    private_info_uid text,
-    private_info text
-)
-PARTITION BY RANGE (file_id);
-
-
---
--- Name: file_meta_archive; Type: TABLE; Schema: archive; Owner: -
---
-
-CREATE TABLE archive.file_meta_archive (
-    file_id integer NOT NULL,
-    file_meta integer,
-    data_set_size integer,
-    data_set_start integer,
-    media_storage_sop_class text,
-    media_storage_sop_instance text,
-    xfer_syntax text,
-    imp_class_uid text,
-    imp_version_name text,
-    source_ae_title text,
-    private_info_uid text,
-    private_info text
-);
-
-
---
--- Name: file_meta_current; Type: TABLE; Schema: archive; Owner: -
---
-
-CREATE TABLE archive.file_meta_current (
-    file_id integer NOT NULL,
-    file_meta integer,
-    data_set_size integer,
-    data_set_start integer,
-    media_storage_sop_class text,
-    media_storage_sop_instance text,
-    xfer_syntax text,
-    imp_class_uid text,
-    imp_version_name text,
-    source_ae_title text,
-    private_info_uid text,
-    private_info text
-);
-
-
---
--- Name: file_study; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.file_study (
-    file_id integer NOT NULL,
-    study_instance_uid text NOT NULL,
-    study_date date,
-    study_time time without time zone,
-    referring_phy_name text,
-    study_id text,
-    accession_number text,
-    study_description text,
-    phys_of_record text,
-    phys_reading text,
-    admitting_diag text
-)
-PARTITION BY RANGE (file_id);
-
-
---
--- Name: file_study_archive; Type: TABLE; Schema: archive; Owner: -
---
-
-CREATE TABLE archive.file_study_archive (
-    file_id integer NOT NULL,
-    study_instance_uid text NOT NULL,
-    study_date date,
-    study_time time without time zone,
-    referring_phy_name text,
-    study_id text,
-    accession_number text,
-    study_description text,
-    phys_of_record text,
-    phys_reading text,
-    admitting_diag text
-);
-
-
---
--- Name: file_study_current; Type: TABLE; Schema: archive; Owner: -
---
-
-CREATE TABLE archive.file_study_current (
-    file_id integer NOT NULL,
-    study_instance_uid text NOT NULL,
-    study_date date,
-    study_time time without time zone,
-    referring_phy_name text,
-    study_id text,
-    accession_number text,
-    study_description text,
-    phys_of_record text,
-    phys_reading text,
-    admitting_diag text
-);
-
 
 --
 -- Name: apps; Type: TABLE; Schema: auth; Owner: -
@@ -1042,8 +675,7 @@ CREATE TABLE public.activity_timepoint (
     when_created timestamp without time zone,
     who_created text,
     comment text,
-    creating_user text,
-    subprocess_invocation_id integer
+    creating_user text
 );
 
 
@@ -1105,41 +737,6 @@ CREATE SEQUENCE public.adverse_file_event_adverse_file_event_id_seq
 --
 
 ALTER SEQUENCE public.adverse_file_event_adverse_file_event_id_seq OWNED BY public.adverse_file_event.adverse_file_event_id;
-
-
---
--- Name: annotation_annotation; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.annotation_annotation (
-    id integer NOT NULL,
-    created_at timestamp with time zone NOT NULL,
-    updated_at timestamp with time zone NOT NULL,
-    start timestamp with time zone NOT NULL,
-    "end" timestamp with time zone NOT NULL,
-    title text,
-    body text NOT NULL,
-    annotation_type integer NOT NULL,
-    edit_count integer NOT NULL,
-    object_type_id integer NOT NULL,
-    object_id integer NOT NULL,
-    author_id integer NOT NULL,
-    organization_id integer
-);
-
-
---
--- Name: annotation_annotation_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-ALTER TABLE public.annotation_annotation ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.annotation_annotation_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
 
 
 --
@@ -1732,133 +1329,6 @@ ALTER SEQUENCE public.copy_from_public_copy_from_public_id_seq OWNED BY public.c
 
 
 --
--- Name: core_organization; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.core_organization (
-    id integer NOT NULL,
-    slug character varying(254) NOT NULL,
-    name character varying(254) NOT NULL,
-    description text,
-    logo_url character varying(254),
-    inherits boolean NOT NULL,
-    report_timezone character varying(254)
-);
-
-
---
--- Name: core_organization_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-ALTER TABLE public.core_organization ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.core_organization_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Name: core_permissionsviolation; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.core_permissionsviolation (
-    id integer NOT NULL,
-    url character varying(254) NOT NULL,
-    "timestamp" timestamp with time zone NOT NULL,
-    user_id integer NOT NULL
-);
-
-
---
--- Name: core_permissionsviolation_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-ALTER TABLE public.core_permissionsviolation ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.core_permissionsviolation_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Name: core_session; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.core_session (
-    id character varying(254) NOT NULL,
-    user_id integer NOT NULL,
-    created_at timestamp with time zone NOT NULL
-);
-
-
---
--- Name: core_user; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.core_user (
-    id integer NOT NULL,
-    email character varying(254) NOT NULL,
-    first_name character varying(254) NOT NULL,
-    last_name character varying(254) NOT NULL,
-    password character varying(254) NOT NULL,
-    password_salt character varying(254) DEFAULT 'default'::character varying NOT NULL,
-    date_joined timestamp with time zone NOT NULL,
-    last_login timestamp with time zone,
-    is_staff boolean NOT NULL,
-    is_superuser boolean NOT NULL,
-    is_active boolean NOT NULL,
-    reset_token character varying(254),
-    reset_triggered bigint
-);
-
-
---
--- Name: core_user_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-ALTER TABLE public.core_user ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.core_user_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Name: core_userorgperm; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.core_userorgperm (
-    id integer NOT NULL,
-    admin boolean NOT NULL,
-    user_id integer NOT NULL,
-    organization_id integer NOT NULL
-);
-
-
---
--- Name: core_userorgperm_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-ALTER TABLE public.core_userorgperm ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.core_userorgperm_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
 -- Name: ctp_file; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -1929,40 +1399,6 @@ CREATE TABLE public.ctp_manifest_row (
 CREATE TABLE public.ctp_upload_event (
     file_id integer NOT NULL,
     rcv_timestamp timestamp with time zone NOT NULL
-);
-
-
---
--- Name: databasechangelog; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.databasechangelog (
-    id character varying(255) NOT NULL,
-    author character varying(255) NOT NULL,
-    filename character varying(255) NOT NULL,
-    dateexecuted timestamp without time zone NOT NULL,
-    orderexecuted integer NOT NULL,
-    exectype character varying(10) NOT NULL,
-    md5sum character varying(35),
-    description character varying(255),
-    comments character varying(255),
-    tag character varying(255),
-    liquibase character varying(20),
-    contexts character varying(255),
-    labels character varying(255),
-    deployment_id character varying(10)
-);
-
-
---
--- Name: databasechangeloglock; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.databasechangeloglock (
-    id integer NOT NULL,
-    locked boolean NOT NULL,
-    lockgranted timestamp without time zone,
-    lockedby character varying(255)
 );
 
 
@@ -2181,20 +1617,6 @@ CREATE TABLE public.dbif_query_args (
 
 
 --
--- Name: dcm4chee_copy; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.dcm4chee_copy (
-    subprocess_invocation_id integer NOT NULL,
-    file_id integer NOT NULL,
-    rel_path text NOT NULL,
-    processed boolean DEFAULT false NOT NULL,
-    failed boolean,
-    error text
-);
-
-
---
 -- Name: dedup_dicom_file; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2357,6 +1779,26 @@ ALTER SEQUENCE public.dicom_edit_event_dicom_edit_event_id_seq OWNED BY public.d
 
 
 --
+-- Name: dicom_file; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.dicom_file (
+    file_id integer NOT NULL,
+    dataset_digest text,
+    xfr_stx text,
+    has_meta boolean,
+    is_dicom_dir boolean,
+    has_sop_common boolean,
+    dicom_file_type text,
+    has_pixel_data boolean,
+    pixel_data_digest text,
+    pixel_data_offset integer,
+    pixel_data_length integer,
+    has_no_roi_linkages boolean
+);
+
+
+--
 -- Name: dicom_file_edit; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -2422,6 +1864,16 @@ CREATE TABLE public.dicom_patient_dir_rec (
     dicom_patient_spec_char_set text,
     patients_name text,
     patient_id text
+);
+
+
+--
+-- Name: dicom_process_errors; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.dicom_process_errors (
+    file_id integer NOT NULL,
+    error_msg text
 );
 
 
@@ -2825,6 +2277,7 @@ COMMENT ON COLUMN public.export_event.export_status IS 'The current status of th
 --
 
 CREATE SEQUENCE public.export_event_export_event_id_seq
+    AS integer
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -2856,6 +2309,7 @@ CREATE TABLE public.export_file_dispositions_params (
 --
 
 CREATE SEQUENCE public.export_file_dispositions_para_export_file_dispositions_para_seq
+    AS integer
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -2868,17 +2322,6 @@ CREATE SEQUENCE public.export_file_dispositions_para_export_file_dispositions_pa
 --
 
 ALTER SEQUENCE public.export_file_dispositions_para_export_file_dispositions_para_seq OWNED BY public.export_file_dispositions_params.export_file_dispositions_params_id;
-
-
---
--- Name: extra_values; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.extra_values (
-    file_id integer NOT NULL,
-    value_name text NOT NULL,
-    value text
-);
 
 
 --
@@ -3085,16 +2528,6 @@ CREATE TABLE public.file_for (
 
 
 --
--- Name: file_grouping; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.file_grouping (
-    grouping_id integer NOT NULL,
-    file_id integer NOT NULL
-);
-
-
---
 -- Name: file_image; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -3113,6 +2546,20 @@ CREATE TABLE public.file_image (
 CREATE TABLE public.file_image_geometry (
     file_id integer NOT NULL,
     image_geometry_id integer NOT NULL
+);
+
+
+--
+-- Name: file_import; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.file_import (
+    import_event_id integer NOT NULL,
+    file_id integer NOT NULL,
+    rel_path text,
+    rel_dir text,
+    file_name text,
+    file_import_time timestamp with time zone
 );
 
 
@@ -3180,6 +2627,42 @@ ALTER SEQUENCE public.file_import_study_file_import_study_id_seq OWNED BY public
 
 
 --
+-- Name: import_event; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.import_event (
+    import_event_id integer NOT NULL,
+    import_type text,
+    importing_user text,
+    originating_ip_addr text,
+    import_comment text,
+    import_time timestamp with time zone,
+    remote_file text,
+    volume_name text,
+    import_close_time timestamp with time zone,
+    related_id_1 integer,
+    related_id_2 integer,
+    import_origin text,
+    import_expected_count integer
+);
+
+
+--
+-- Name: file_imports_over_time; Type: MATERIALIZED VIEW; Schema: public; Owner: -
+--
+
+CREATE MATERIALIZED VIEW public.file_imports_over_time AS
+ SELECT count(file.file_id) AS count,
+    date_part('month'::text, import_event.import_time) AS importmonth,
+    date_part('year'::text, import_event.import_time) AS importyear
+   FROM ((public.file
+     JOIN public.file_import USING (file_id))
+     JOIN public.import_event USING (import_event_id))
+  GROUP BY (date_part('year'::text, import_event.import_time)), (date_part('month'::text, import_event.import_time))
+  WITH NO DATA;
+
+
+--
 -- Name: file_location; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -3193,192 +2676,6 @@ CREATE TABLE public.file_location (
 
 
 --
--- Name: file_patient; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.file_patient (
-    file_id integer NOT NULL,
-    patient_name text,
-    patient_id text,
-    id_issuer text,
-    dob date,
-    sex text,
-    time_ob time without time zone,
-    other_ids text,
-    other_names text,
-    ethnic_group text,
-    comments text,
-    patient_age text
-);
-
-
---
--- Name: file_series; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.file_series (
-    file_id integer NOT NULL,
-    modality text,
-    series_instance_uid text NOT NULL,
-    series_number integer,
-    laterality text,
-    series_date date,
-    series_time time without time zone,
-    performing_phys text,
-    protocol_name text,
-    series_description text,
-    operators_name text,
-    body_part_examined text,
-    patient_position text,
-    smallest_pixel_value integer,
-    largest_pixel_value integer,
-    performed_procedure_step_id text,
-    performed_procedure_step_start_date date,
-    performed_procedure_step_start_time time without time zone,
-    performed_procedure_step_desc text,
-    performed_procedure_step_comments text,
-    date_fixed boolean
-);
-
-
---
--- Name: file_sop_common; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.file_sop_common (
-    file_id integer NOT NULL,
-    sop_class_uid text NOT NULL,
-    sop_instance_uid text NOT NULL,
-    specific_character_set text,
-    creation_date date,
-    creation_time time without time zone,
-    creator_uid text,
-    related_general_sop_class text,
-    original_specialized_sop_class text,
-    offset_from_utc integer,
-    instance_number text,
-    instance_status text,
-    auth_date_time time with time zone,
-    auth_comment text,
-    auth_cert_num text
-);
-
-
---
--- Name: file_storage_root; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.file_storage_root (
-    file_storage_root_id integer NOT NULL,
-    root_path text,
-    current boolean,
-    storage_class text
-);
-
-
---
--- Name: image; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.image (
-    image_id integer NOT NULL,
-    image_type text,
-    samples_per_pixel integer,
-    pixel_spacing text,
-    photometric_interpretation text,
-    pixel_rows integer,
-    pixel_columns integer,
-    bits_allocated integer,
-    bits_stored integer,
-    high_bit integer,
-    pixel_representation integer,
-    planar_configuration integer,
-    number_of_frames integer,
-    unique_pixel_data_id integer,
-    row_spacing double precision,
-    col_spacing double precision
-);
-
-
---
--- Name: image_geometry; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.image_geometry (
-    image_geometry_id integer NOT NULL,
-    image_id integer NOT NULL,
-    iop text,
-    ipp text,
-    for_uid text,
-    normalized_iop text,
-    iop_error text,
-    row_x double precision,
-    row_y double precision,
-    row_z double precision,
-    col_x double precision,
-    col_y double precision,
-    col_z double precision,
-    pos_x double precision,
-    pos_y double precision,
-    pos_z double precision
-);
-
-
---
--- Name: file_info; Type: VIEW; Schema: public; Owner: -
---
-
-CREATE VIEW public.file_info AS
- SELECT f.file_id,
-    f.size,
-    f.file_type,
-    f.is_dicom_file,
-    df.is_dicom_dir,
-    df.xfr_stx,
-    df.dicom_file_type,
-    fsc.sop_class_uid,
-    fse.modality,
-    fp.patient_id,
-    fst.study_instance_uid,
-    fse.series_instance_uid,
-    fsc.sop_instance_uid,
-    fsc.instance_number,
-    fse.laterality,
-    fse.patient_position,
-    fsc.specific_character_set,
-    ig.iop,
-    ig.ipp,
-    i.photometric_interpretation,
-    i.samples_per_pixel,
-    df.pixel_data_offset,
-    df.pixel_data_length,
-    i.pixel_spacing,
-    i.pixel_rows,
-    i.pixel_columns,
-    i.bits_allocated,
-    i.bits_stored,
-    i.high_bit,
-    i.number_of_frames,
-    i.pixel_representation,
-    i.planar_configuration,
-    i.row_spacing,
-    i.col_spacing,
-    fsr.root_path,
-    fl.rel_path
-   FROM ((((((((((public.file f
-     LEFT JOIN public.dicom_file df ON ((df.file_id = f.file_id)))
-     LEFT JOIN public.file_patient fp ON ((fp.file_id = f.file_id)))
-     LEFT JOIN public.file_study fst ON ((fst.file_id = f.file_id)))
-     LEFT JOIN public.file_series fse ON ((fse.file_id = f.file_id)))
-     LEFT JOIN public.file_sop_common fsc ON ((fsc.file_id = f.file_id)))
-     LEFT JOIN public.file_location fl ON ((fl.file_id = f.file_id)))
-     LEFT JOIN public.file_storage_root fsr ON ((fsr.file_storage_root_id = fl.file_storage_root_id)))
-     LEFT JOIN public.file_image fi ON ((fi.file_id = f.file_id)))
-     LEFT JOIN public.image i ON ((i.image_id = fi.image_id)))
-     LEFT JOIN public.image_geometry ig ON ((ig.image_id = i.image_id)));
-
-
---
 -- Name: file_locationx; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -3387,6 +2684,26 @@ CREATE TABLE public.file_locationx (
     file_storage_root_id integer,
     rel_path text,
     is_home text
+);
+
+
+--
+-- Name: file_meta; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.file_meta (
+    file_id integer NOT NULL,
+    file_meta integer,
+    data_set_size integer,
+    data_set_start integer,
+    media_storage_sop_class text,
+    media_storage_sop_instance text,
+    xfer_syntax text,
+    imp_class_uid text,
+    imp_version_name text,
+    source_ae_title text,
+    private_info_uid text,
+    private_info text
 );
 
 
@@ -3423,21 +2740,11 @@ CREATE TABLE public.file_mr (
 
 
 --
--- Name: file_name; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.file_name (
-    file_id integer NOT NULL,
-    file_name_text text
-);
-
-
---
 -- Name: file_nifti; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.file_nifti (
-    file_id integer,
+    file_id integer NOT NULL,
     magic text,
     is_zipped boolean,
     descrip text,
@@ -3452,14 +2759,14 @@ CREATE TABLE public.file_nifti (
     dim5 integer,
     dim6 integer,
     dim7 integer,
-    pixdim_0 double precision,
-    pixdim_1 double precision,
-    pixdim_2 double precision,
-    pixdim_3 double precision,
-    pixdim_4 double precision,
-    pixdim_5 double precision,
-    pixdim_6 double precision,
-    pixdim_7 double precision,
+    pixdim_0 text,
+    pixdim_1 text,
+    pixdim_2 text,
+    pixdim_3 text,
+    pixdim_4 text,
+    pixdim_5 text,
+    pixdim_6 text,
+    pixdim_7 text,
     intent_code integer,
     intent_name text,
     intent_p1 double precision,
@@ -3503,6 +2810,8 @@ CREATE TABLE public.file_nifti (
 
 CREATE TABLE public.file_nifti_defacing (
     file_nifti_defacing_id integer NOT NULL,
+    operation text NOT NULL,
+    face_box jsonb,
     from_nifti_file integer NOT NULL,
     to_nifti_file integer,
     three_d_rendered_face integer,
@@ -3534,6 +2843,26 @@ CREATE SEQUENCE public.file_nifti_defacing_file_nifti_defacing_id_seq
 --
 
 ALTER SEQUENCE public.file_nifti_defacing_file_nifti_defacing_id_seq OWNED BY public.file_nifti_defacing.file_nifti_defacing_id;
+
+
+--
+-- Name: file_patient; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.file_patient (
+    file_id integer NOT NULL,
+    patient_name text,
+    patient_id text,
+    id_issuer text,
+    dob date,
+    sex text,
+    time_ob time without time zone,
+    other_ids text,
+    other_names text,
+    ethnic_group text,
+    comments text,
+    patient_age text
+);
 
 
 --
@@ -3633,12 +2962,76 @@ CREATE TABLE public.file_seg_image_linkage (
 
 
 --
+-- Name: file_series; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.file_series (
+    file_id integer NOT NULL,
+    modality text,
+    series_instance_uid text NOT NULL,
+    series_number integer,
+    laterality text,
+    series_date date,
+    series_time time without time zone,
+    performing_phys text,
+    protocol_name text,
+    series_description text,
+    operators_name text,
+    body_part_examined text,
+    patient_position text,
+    smallest_pixel_value integer,
+    largest_pixel_value integer,
+    performed_procedure_step_id text,
+    performed_procedure_step_start_date date,
+    performed_procedure_step_start_time time without time zone,
+    performed_procedure_step_desc text,
+    performed_procedure_step_comments text,
+    date_fixed boolean
+);
+
+
+--
 -- Name: file_slope_intercept; Type: TABLE; Schema: public; Owner: -
 --
 
 CREATE TABLE public.file_slope_intercept (
     file_id integer NOT NULL,
     slope_intercept_id integer NOT NULL
+);
+
+
+--
+-- Name: file_sop_common; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.file_sop_common (
+    file_id integer NOT NULL,
+    sop_class_uid text NOT NULL,
+    sop_instance_uid text NOT NULL,
+    specific_character_set text,
+    creation_date date,
+    creation_time time without time zone,
+    creator_uid text,
+    related_general_sop_class text,
+    original_specialized_sop_class text,
+    offset_from_utc integer,
+    instance_number text,
+    instance_status text,
+    auth_date_time time with time zone,
+    auth_comment text,
+    auth_cert_num text
+);
+
+
+--
+-- Name: file_storage_root; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.file_storage_root (
+    file_storage_root_id integer NOT NULL,
+    root_path text,
+    current boolean,
+    storage_class text
 );
 
 
@@ -3669,6 +3062,25 @@ CREATE TABLE public.file_structure_set (
     file_id integer NOT NULL,
     structure_set_id integer NOT NULL,
     instance_number text
+);
+
+
+--
+-- Name: file_study; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.file_study (
+    file_id integer NOT NULL,
+    study_instance_uid text NOT NULL,
+    study_date date,
+    study_time time without time zone,
+    referring_phy_name text,
+    study_id text,
+    accession_number text,
+    study_description text,
+    phys_of_record text,
+    phys_reading text,
+    admitting_diag text
 );
 
 
@@ -3825,35 +3237,27 @@ CREATE TABLE public.fraction_related_dose (
 
 
 --
--- Name: grouping; Type: TABLE; Schema: public; Owner: -
+-- Name: image; Type: TABLE; Schema: public; Owner: -
 --
 
-CREATE TABLE public."grouping" (
-    grouping_id integer NOT NULL,
-    grouping_name text,
-    grouping_type text,
-    grouping_date timestamp with time zone
+CREATE TABLE public.image (
+    image_id integer NOT NULL,
+    image_type text,
+    samples_per_pixel integer,
+    pixel_spacing text,
+    photometric_interpretation text,
+    pixel_rows integer,
+    pixel_columns integer,
+    bits_allocated integer,
+    bits_stored integer,
+    high_bit integer,
+    pixel_representation integer,
+    planar_configuration integer,
+    number_of_frames integer,
+    unique_pixel_data_id integer,
+    row_spacing double precision,
+    col_spacing double precision
 );
-
-
---
--- Name: grouping_grouping_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.grouping_grouping_id_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: grouping_grouping_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.grouping_grouping_id_seq OWNED BY public."grouping".grouping_id;
 
 
 --
@@ -3921,6 +3325,30 @@ CREATE TABLE public.image_frame_offset (
     image_id integer NOT NULL,
     frame_index integer,
     frame_offset text
+);
+
+
+--
+-- Name: image_geometry; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.image_geometry (
+    image_geometry_id integer NOT NULL,
+    image_id integer NOT NULL,
+    iop text,
+    ipp text,
+    for_uid text,
+    normalized_iop text,
+    iop_error text,
+    row_x double precision,
+    row_y double precision,
+    row_z double precision,
+    col_x double precision,
+    col_y double precision,
+    col_z double precision,
+    pos_x double precision,
+    pos_y double precision,
+    pos_z double precision
 );
 
 
@@ -4037,27 +3465,6 @@ CREATE TABLE public.import_ct_series (
 
 
 --
--- Name: import_event; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.import_event (
-    import_event_id integer NOT NULL,
-    import_type text,
-    importing_user text,
-    originating_ip_addr text,
-    import_comment text,
-    import_time timestamp with time zone,
-    remote_file text,
-    volume_name text,
-    import_close_time timestamp with time zone,
-    related_id_1 integer,
-    related_id_2 integer,
-    import_origin text,
-    import_expected_count integer
-);
-
-
---
 -- Name: import_event_import_event_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
 
@@ -4087,226 +3494,6 @@ CREATE TABLE public.log_iec_hide (
     patient text,
     hidden boolean,
     date timestamp without time zone DEFAULT now() NOT NULL
-);
-
-
---
--- Name: masking; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.masking (
-    image_equivalence_class_id integer NOT NULL,
-    masking_parameters jsonb,
-    masking_status public.masking_status_type DEFAULT 'created'::public.masking_status_type NOT NULL,
-    import_event_id integer,
-    masking_exit_code integer
-);
-
-
---
--- Name: masking_exit_code; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.masking_exit_code (
-    masking_exit_code integer NOT NULL,
-    exit_code_name text,
-    exit_code_description text
-);
-
-
---
--- Name: masking_history; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.masking_history (
-    image_equivalence_class_id integer,
-    new_status public.masking_status_type,
-    when_changed timestamp with time zone NOT NULL,
-    who_changed integer NOT NULL
-);
-
-
---
--- Name: metabase_database; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.metabase_database (
-    id integer NOT NULL,
-    created_at timestamp with time zone NOT NULL,
-    updated_at timestamp with time zone NOT NULL,
-    name character varying(254) NOT NULL,
-    description text,
-    organization_id integer,
-    details text,
-    engine character varying(254) NOT NULL
-);
-
-
---
--- Name: metabase_database_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-ALTER TABLE public.metabase_database ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.metabase_database_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Name: metabase_field; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.metabase_field (
-    id integer NOT NULL,
-    created_at timestamp with time zone NOT NULL,
-    updated_at timestamp with time zone NOT NULL,
-    name character varying(254) NOT NULL,
-    base_type character varying(255) NOT NULL,
-    special_type character varying(255),
-    active boolean NOT NULL,
-    description text,
-    preview_display boolean NOT NULL,
-    "position" integer NOT NULL,
-    table_id integer NOT NULL,
-    field_type character varying(254) NOT NULL,
-    parent_id integer,
-    display_name character varying(254)
-);
-
-
---
--- Name: metabase_field_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-ALTER TABLE public.metabase_field ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.metabase_field_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Name: metabase_fieldvalues; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.metabase_fieldvalues (
-    id integer NOT NULL,
-    created_at timestamp with time zone NOT NULL,
-    updated_at timestamp with time zone NOT NULL,
-    "values" text,
-    human_readable_values text,
-    field_id integer NOT NULL
-);
-
-
---
--- Name: metabase_fieldvalues_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-ALTER TABLE public.metabase_fieldvalues ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.metabase_fieldvalues_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Name: metabase_foreignkey; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.metabase_foreignkey (
-    id integer NOT NULL,
-    created_at timestamp with time zone NOT NULL,
-    updated_at timestamp with time zone NOT NULL,
-    relationship character varying(254) NOT NULL,
-    destination_id integer NOT NULL,
-    origin_id integer NOT NULL
-);
-
-
---
--- Name: metabase_foreignkey_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-ALTER TABLE public.metabase_foreignkey ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.metabase_foreignkey_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Name: metabase_table; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.metabase_table (
-    id integer NOT NULL,
-    created_at timestamp with time zone NOT NULL,
-    updated_at timestamp with time zone NOT NULL,
-    name character varying(254) NOT NULL,
-    rows integer,
-    description text,
-    entity_name character varying(254),
-    entity_type character varying(254),
-    active boolean NOT NULL,
-    db_id integer NOT NULL,
-    display_name character varying(254),
-    visibility_type character varying(254)
-);
-
-
---
--- Name: metabase_table_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-ALTER TABLE public.metabase_table ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.metabase_table_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Name: metabase_tablesegment; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.metabase_tablesegment (
-    id integer NOT NULL,
-    created_at timestamp with time zone NOT NULL,
-    updated_at timestamp with time zone NOT NULL,
-    name character varying(254) NOT NULL,
-    table_id integer NOT NULL,
-    filter_clause text NOT NULL
-);
-
-
---
--- Name: metabase_tablesegment_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-ALTER TABLE public.metabase_tablesegment ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.metabase_tablesegment_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
 );
 
 
@@ -4462,61 +3649,6 @@ CREATE TABLE public.nifti_projection_review (
     reviewer text NOT NULL,
     review_status text NOT NULL,
     review_time timestamp with time zone NOT NULL
-);
-
-
---
--- Name: nifti_visual_review_files; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.nifti_visual_review_files (
-    nifti_visual_review_instance_id integer CONSTRAINT nifti_visual_review_files_nifti_visual_review_instance_not_null NOT NULL,
-    nifti_file_id integer NOT NULL,
-    nifti_file_name text
-);
-
-
---
--- Name: nifti_visual_review_instance; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.nifti_visual_review_instance (
-    nifti_visual_review_instance_id integer CONSTRAINT nifti_visual_review_instanc_nifti_visual_review_instan_not_null NOT NULL,
-    activity_id integer NOT NULL,
-    scheduler text NOT NULL,
-    scheduled timestamp without time zone
-);
-
-
---
--- Name: nifti_visual_review_instance_nifti_visual_review_instance_i_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-CREATE SEQUENCE public.nifti_visual_review_instance_nifti_visual_review_instance_i_seq
-    AS integer
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1;
-
-
---
--- Name: nifti_visual_review_instance_nifti_visual_review_instance_i_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
---
-
-ALTER SEQUENCE public.nifti_visual_review_instance_nifti_visual_review_instance_i_seq OWNED BY public.nifti_visual_review_instance.nifti_visual_review_instance_id;
-
-
---
--- Name: nifti_visual_review_status; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.nifti_visual_review_status (
-    nifti_file_id integer NOT NULL,
-    review_status text,
-    reviewing_user text,
-    review_time timestamp without time zone
 );
 
 
@@ -4770,7 +3902,6 @@ CREATE TABLE public.pathology_patient_mapping (
 CREATE TABLE public.pathology_visual_review_files (
     pathology_visual_review_instance_id integer CONSTRAINT pathology_visual_review_fil_pathology_visual_review_in_not_null NOT NULL,
     path_file_id integer NOT NULL,
-    gammaindex integer,
     needs_edit boolean
 );
 
@@ -4813,8 +3944,7 @@ ALTER SEQUENCE public.pathology_visual_review_insta_pathology_visual_review_inst
 
 CREATE TABLE public.pathology_visual_review_preview_files (
     path_file_id integer,
-    preview_file_id integer,
-    gammaindex integer
+    preview_file_id integer
 );
 
 
@@ -5334,76 +4464,6 @@ COMMENT ON TABLE public.query_log IS 'A table to track Posda::DB Query usage';
 
 
 --
--- Name: query_query; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.query_query (
-    id integer NOT NULL,
-    created_at timestamp with time zone NOT NULL,
-    updated_at timestamp with time zone NOT NULL,
-    name character varying(254) NOT NULL,
-    type character varying(254) NOT NULL,
-    details text NOT NULL,
-    version integer NOT NULL,
-    public_perms integer NOT NULL,
-    creator_id integer NOT NULL,
-    database_id integer NOT NULL
-);
-
-
---
--- Name: query_query_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-ALTER TABLE public.query_query ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.query_query_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Name: query_queryexecution; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.query_queryexecution (
-    id integer NOT NULL,
-    uuid character varying(254) NOT NULL,
-    version integer NOT NULL,
-    "json_query" text NOT NULL,
-    raw_query text NOT NULL,
-    status character varying(254) NOT NULL,
-    started_at timestamp with time zone NOT NULL,
-    finished_at timestamp with time zone,
-    running_time integer NOT NULL,
-    error text NOT NULL,
-    result_file character varying(254) NOT NULL,
-    result_rows integer NOT NULL,
-    result_data text NOT NULL,
-    query_id integer,
-    additional_info text NOT NULL,
-    executor_id integer NOT NULL
-);
-
-
---
--- Name: query_queryexecution_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-ALTER TABLE public.query_queryexecution ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.query_queryexecution_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
 -- Name: recordset; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -5633,247 +4693,6 @@ CREATE TABLE public.related_roi_observations (
 
 
 --
--- Name: report_card; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.report_card (
-    id integer NOT NULL,
-    created_at timestamp with time zone NOT NULL,
-    updated_at timestamp with time zone NOT NULL,
-    name character varying(254) NOT NULL,
-    description text,
-    display character varying(254) NOT NULL,
-    public_perms integer NOT NULL,
-    dataset_query text NOT NULL,
-    visualization_settings text NOT NULL,
-    creator_id integer NOT NULL,
-    organization_id integer,
-    database_id integer,
-    table_id integer,
-    query_type character varying(16)
-);
-
-
---
--- Name: report_card_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-ALTER TABLE public.report_card ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.report_card_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Name: report_cardfavorite; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.report_cardfavorite (
-    id integer NOT NULL,
-    created_at timestamp with time zone NOT NULL,
-    updated_at timestamp with time zone NOT NULL,
-    card_id integer NOT NULL,
-    owner_id integer NOT NULL
-);
-
-
---
--- Name: report_cardfavorite_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-ALTER TABLE public.report_cardfavorite ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.report_cardfavorite_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Name: report_dashboard; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.report_dashboard (
-    id integer NOT NULL,
-    created_at timestamp with time zone NOT NULL,
-    updated_at timestamp with time zone NOT NULL,
-    name character varying(254) NOT NULL,
-    description text,
-    public_perms integer NOT NULL,
-    creator_id integer NOT NULL,
-    organization_id integer
-);
-
-
---
--- Name: report_dashboard_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-ALTER TABLE public.report_dashboard ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.report_dashboard_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Name: report_dashboardcard; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.report_dashboardcard (
-    id integer NOT NULL,
-    created_at timestamp with time zone NOT NULL,
-    updated_at timestamp with time zone NOT NULL,
-    "sizeX" integer NOT NULL,
-    "sizeY" integer NOT NULL,
-    "row" integer,
-    col integer,
-    card_id integer NOT NULL,
-    dashboard_id integer NOT NULL
-);
-
-
---
--- Name: report_dashboardcard_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-ALTER TABLE public.report_dashboardcard ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.report_dashboardcard_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Name: report_dashboardsubscription; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.report_dashboardsubscription (
-    id integer NOT NULL,
-    dashboard_id integer NOT NULL,
-    user_id integer NOT NULL
-);
-
-
---
--- Name: report_dashboardsubscription_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-ALTER TABLE public.report_dashboardsubscription ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.report_dashboardsubscription_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Name: report_emailreport; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.report_emailreport (
-    id integer NOT NULL,
-    created_at timestamp with time zone NOT NULL,
-    updated_at timestamp with time zone NOT NULL,
-    name character varying(254) NOT NULL,
-    description text,
-    public_perms integer NOT NULL,
-    mode integer NOT NULL,
-    version integer NOT NULL,
-    dataset_query text NOT NULL,
-    email_addresses text,
-    creator_id integer NOT NULL,
-    organization_id integer,
-    schedule text NOT NULL
-);
-
-
---
--- Name: report_emailreport_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-ALTER TABLE public.report_emailreport ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.report_emailreport_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Name: report_emailreport_recipients; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.report_emailreport_recipients (
-    id integer NOT NULL,
-    emailreport_id integer NOT NULL,
-    user_id integer NOT NULL
-);
-
-
---
--- Name: report_emailreport_recipients_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-ALTER TABLE public.report_emailreport_recipients ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.report_emailreport_recipients_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
--- Name: report_emailreportexecutions; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.report_emailreportexecutions (
-    id integer NOT NULL,
-    details text NOT NULL,
-    status character varying(254) NOT NULL,
-    created_at timestamp with time zone NOT NULL,
-    started_at timestamp with time zone,
-    finished_at timestamp with time zone,
-    error text NOT NULL,
-    sent_email text NOT NULL,
-    organization_id integer,
-    report_id integer
-);
-
-
---
--- Name: report_emailreportexecutions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-ALTER TABLE public.report_emailreportexecutions ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.report_emailreportexecutions_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
 -- Name: report_inserted; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -5905,35 +4724,6 @@ ALTER SEQUENCE public.report_inserted_report_inserted_id_seq OWNED BY public.rep
 
 
 --
--- Name: revision; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.revision (
-    id integer NOT NULL,
-    model character varying(16) NOT NULL,
-    model_id integer NOT NULL,
-    user_id integer NOT NULL,
-    "timestamp" timestamp with time zone NOT NULL,
-    object text NOT NULL,
-    is_reversion boolean DEFAULT false NOT NULL
-);
-
-
---
--- Name: revision_id_seq; Type: SEQUENCE; Schema: public; Owner: -
---
-
-ALTER TABLE public.revision ALTER COLUMN id ADD GENERATED BY DEFAULT AS IDENTITY (
-    SEQUENCE NAME public.revision_id_seq
-    START WITH 1
-    INCREMENT BY 1
-    NO MINVALUE
-    NO MAXVALUE
-    CACHE 1
-);
-
-
---
 -- Name: roi; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -5958,6 +4748,24 @@ CREATE TABLE public.roi (
     roi_obser_desc text,
     roi_obser_label text
 );
+
+
+--
+-- Name: roi_body_parts; Type: MATERIALIZED VIEW; Schema: public; Owner: -
+--
+
+CREATE MATERIALIZED VIEW public.roi_body_parts AS
+ SELECT file_series.series_instance_uid,
+    file_series.body_part_examined
+   FROM ((((public.file_series
+     JOIN public.file_sop_common USING (file_id))
+     JOIN public.file_roi_image_linkage ON ((file_roi_image_linkage.linked_sop_instance_uid = file_sop_common.sop_instance_uid)))
+     JOIN public.ctp_file ON ((ctp_file.file_id = file_sop_common.file_id)))
+     JOIN public.roi USING (roi_id))
+  WHERE ((roi.roi_name ~~ 'GTV%'::text) AND (ctp_file.visibility IS NULL))
+  GROUP BY file_series.series_instance_uid, file_series.body_part_examined
+ HAVING (array_length(array_agg(file_sop_common.file_id), 1) > 0)
+  WITH NO DATA;
 
 
 --
@@ -6676,16 +5484,6 @@ CREATE TABLE public.seg_slice_to_contour (
 
 
 --
--- Name: setting; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE public.setting (
-    key character varying(254) NOT NULL,
-    value character varying(254) NOT NULL
-);
-
-
---
 -- Name: site_codes; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -6881,8 +5679,7 @@ CREATE TABLE public.submissions (
     body_part text,
     access_type public.access_type,
     baseline_date timestamp without time zone,
-    date_shift integer,
-    uid_root text DEFAULT '1.3.6.1.4.1.14519.5.2.1'::text
+    date_shift integer
 );
 
 
@@ -7126,6 +5923,7 @@ COMMENT ON TABLE public.transfer_status IS 'Detailed error messages for export_e
 --
 
 CREATE SEQUENCE public.transfer_status_transfer_status_id_seq
+    AS integer
     START WITH 1
     INCREMENT BY 1
     NO MINVALUE
@@ -7558,11 +6356,49 @@ ALTER TABLE public.wp_object_map ALTER COLUMN map_id ADD GENERATED BY DEFAULT AS
 
 
 --
--- Name: bads; Type: TABLE; Schema: quasar; Owner: -
+-- Name: files_to_archive; Type: TABLE; Schema: quasar; Owner: -
 --
 
-CREATE TABLE quasar.bads (
-    file_id integer
+CREATE TABLE quasar.files_to_archive (
+    file_id integer,
+    done boolean,
+    in_progress boolean DEFAULT false,
+    error boolean DEFAULT false,
+    error_message text
+);
+
+
+--
+-- Name: ldct_all; Type: TABLE; Schema: quasar; Owner: -
+--
+
+CREATE TABLE quasar.ldct_all (
+    file_id integer,
+    file_name text
+);
+
+
+--
+-- Name: ldct_and_projection; Type: TABLE; Schema: quasar; Owner: -
+--
+
+CREATE TABLE quasar.ldct_and_projection (
+    filename text
+);
+
+
+--
+-- Name: ldct_missing; Type: TABLE; Schema: quasar; Owner: -
+--
+
+CREATE TABLE quasar.ldct_missing (
+    filename text,
+    import_event_id integer,
+    file_id integer,
+    rel_path text,
+    rel_dir text,
+    file_name text,
+    file_import_time timestamp with time zone
 );
 
 
@@ -7578,87 +6414,24 @@ CREATE MATERIALIZED VIEW quasar.mvtest AS
 
 
 --
--- Name: test; Type: TABLE; Schema: quasar; Owner: -
+-- Name: phantom_files; Type: TABLE; Schema: quasar; Owner: -
 --
 
-CREATE TABLE quasar.test (
-    import_event_id integer NOT NULL,
-    file_id integer NOT NULL,
-    rel_path text,
-    rel_dir text,
-    file_name text,
-    file_import_time timestamp with time zone
+CREATE TABLE quasar.phantom_files (
+    file_id integer
 );
 
 
 --
--- Name: dicom_file_archive; Type: TABLE ATTACH; Schema: archive; Owner: -
+-- Name: site_ids; Type: TABLE; Schema: quasar; Owner: -
 --
 
-ALTER TABLE ONLY public.dicom_file ATTACH PARTITION archive.dicom_file_archive FOR VALUES FROM (MINVALUE) TO (50000000);
-
-
---
--- Name: dicom_file_current; Type: TABLE ATTACH; Schema: archive; Owner: -
---
-
-ALTER TABLE ONLY public.dicom_file ATTACH PARTITION archive.dicom_file_current FOR VALUES FROM (50000000) TO (MAXVALUE);
-
-
---
--- Name: dicom_process_errors_archive; Type: TABLE ATTACH; Schema: archive; Owner: -
---
-
-ALTER TABLE ONLY public.dicom_process_errors ATTACH PARTITION archive.dicom_process_errors_archive FOR VALUES FROM (MINVALUE) TO (70000000);
-
-
---
--- Name: dicom_process_errors_current; Type: TABLE ATTACH; Schema: archive; Owner: -
---
-
-ALTER TABLE ONLY public.dicom_process_errors ATTACH PARTITION archive.dicom_process_errors_current FOR VALUES FROM (70000000) TO (MAXVALUE);
-
-
---
--- Name: file_import_current; Type: TABLE ATTACH; Schema: archive; Owner: -
---
-
-ALTER TABLE ONLY public.file_import ATTACH PARTITION archive.file_import_current FOR VALUES FROM (120000000) TO (MAXVALUE);
-
-
---
--- Name: file_import_old; Type: TABLE ATTACH; Schema: archive; Owner: -
---
-
-ALTER TABLE ONLY public.file_import ATTACH PARTITION archive.file_import_old FOR VALUES FROM (MINVALUE) TO (120000000);
-
-
---
--- Name: file_meta_archive; Type: TABLE ATTACH; Schema: archive; Owner: -
---
-
-ALTER TABLE ONLY public.file_meta ATTACH PARTITION archive.file_meta_archive FOR VALUES FROM (MINVALUE) TO (50000000);
-
-
---
--- Name: file_meta_current; Type: TABLE ATTACH; Schema: archive; Owner: -
---
-
-ALTER TABLE ONLY public.file_meta ATTACH PARTITION archive.file_meta_current FOR VALUES FROM (50000000) TO (MAXVALUE);
-
-
---
--- Name: file_study_archive; Type: TABLE ATTACH; Schema: archive; Owner: -
---
-
-ALTER TABLE ONLY public.file_study ATTACH PARTITION archive.file_study_archive FOR VALUES FROM (MINVALUE) TO (50000000);
-
-
---
--- Name: file_study_current; Type: TABLE ATTACH; Schema: archive; Owner: -
---
-
-ALTER TABLE ONLY public.file_study ATTACH PARTITION archive.file_study_current FOR VALUES FROM (50000000) TO (MAXVALUE);
+CREATE TABLE quasar.site_ids (
+    collection_name text,
+    site_name text,
+    pk_id text,
+    site_id text
+);
 
 
 --
@@ -7872,13 +6645,6 @@ ALTER TABLE ONLY public.file_storage_root ALTER COLUMN file_storage_root_id SET 
 
 
 --
--- Name: grouping grouping_id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."grouping" ALTER COLUMN grouping_id SET DEFAULT nextval('public.grouping_grouping_id_seq'::regclass);
-
-
---
 -- Name: image image_id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -7911,13 +6677,6 @@ ALTER TABLE ONLY public.import_event ALTER COLUMN import_event_id SET DEFAULT ne
 --
 
 ALTER TABLE ONLY public.nifti_file_from_series ALTER COLUMN nifti_file_from_series_id SET DEFAULT nextval('public.nifti_file_from_series_nifti_file_from_series_id_seq'::regclass);
-
-
---
--- Name: nifti_visual_review_instance nifti_visual_review_instance_id; Type: DEFAULT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.nifti_visual_review_instance ALTER COLUMN nifti_visual_review_instance_id SET DEFAULT nextval('public.nifti_visual_review_instance_nifti_visual_review_instance_i_seq'::regclass);
 
 
 --
@@ -8138,54 +6897,6 @@ ALTER TABLE ONLY public.work ALTER COLUMN work_id SET DEFAULT nextval('public.wo
 
 
 --
--- Name: file_meta new_file_meta_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.file_meta
-    ADD CONSTRAINT new_file_meta_pkey PRIMARY KEY (file_id);
-
-
---
--- Name: file_meta_archive file_meta_archive_pkey; Type: CONSTRAINT; Schema: archive; Owner: -
---
-
-ALTER TABLE ONLY archive.file_meta_archive
-    ADD CONSTRAINT file_meta_archive_pkey PRIMARY KEY (file_id);
-
-
---
--- Name: file_meta_current file_meta_current_pkey; Type: CONSTRAINT; Schema: archive; Owner: -
---
-
-ALTER TABLE ONLY archive.file_meta_current
-    ADD CONSTRAINT file_meta_current_pkey PRIMARY KEY (file_id);
-
-
---
--- Name: file_study new_file_study_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.file_study
-    ADD CONSTRAINT new_file_study_pkey PRIMARY KEY (file_id);
-
-
---
--- Name: file_study_archive file_study_archive_pkey; Type: CONSTRAINT; Schema: archive; Owner: -
---
-
-ALTER TABLE ONLY archive.file_study_archive
-    ADD CONSTRAINT file_study_archive_pkey PRIMARY KEY (file_id);
-
-
---
--- Name: file_study_current file_study_current_pkey; Type: CONSTRAINT; Schema: archive; Owner: -
---
-
-ALTER TABLE ONLY archive.file_study_current
-    ADD CONSTRAINT file_study_current_pkey PRIMARY KEY (file_id);
-
-
---
 -- Name: apps apps_pkey; Type: CONSTRAINT; Schema: auth; Owner: -
 --
 
@@ -8266,22 +6977,6 @@ ALTER TABLE ONLY dbif_config.spreadsheet_operation
 
 
 --
--- Name: activity activity_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.activity
-    ADD CONSTRAINT activity_pkey PRIMARY KEY (activity_id);
-
-
---
--- Name: annotation_annotation annotation_annotation_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.annotation_annotation
-    ADD CONSTRAINT annotation_annotation_pkey PRIMARY KEY (id);
-
-
---
 -- Name: background_subprocess background_subprocess_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -8314,62 +7009,6 @@ ALTER TABLE ONLY public.collection_codes
 
 
 --
--- Name: core_organization core_organization_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.core_organization
-    ADD CONSTRAINT core_organization_pkey PRIMARY KEY (id);
-
-
---
--- Name: core_organization core_organization_slug_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.core_organization
-    ADD CONSTRAINT core_organization_slug_key UNIQUE (slug);
-
-
---
--- Name: core_permissionsviolation core_permissionsviolation_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.core_permissionsviolation
-    ADD CONSTRAINT core_permissionsviolation_pkey PRIMARY KEY (id);
-
-
---
--- Name: core_session core_session_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.core_session
-    ADD CONSTRAINT core_session_pkey PRIMARY KEY (id);
-
-
---
--- Name: core_user core_user_email_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.core_user
-    ADD CONSTRAINT core_user_email_key UNIQUE (email);
-
-
---
--- Name: core_user core_user_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.core_user
-    ADD CONSTRAINT core_user_pkey PRIMARY KEY (id);
-
-
---
--- Name: core_userorgperm core_userorgperm_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.core_userorgperm
-    ADD CONSTRAINT core_userorgperm_pkey PRIMARY KEY (id);
-
-
---
 -- Name: ctp_file_new ctp_file_new_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -8383,22 +7022,6 @@ ALTER TABLE ONLY public.ctp_file_new
 
 ALTER TABLE ONLY public.ctp_file
     ADD CONSTRAINT ctp_file_pkey PRIMARY KEY (file_id);
-
-
---
--- Name: databasechangeloglock databasechangeloglock_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.databasechangeloglock
-    ADD CONSTRAINT databasechangeloglock_pkey PRIMARY KEY (id);
-
-
---
--- Name: dcm4chee_copy dcm4chee_copy_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.dcm4chee_copy
-    ADD CONSTRAINT dcm4chee_copy_pkey PRIMARY KEY (subprocess_invocation_id, file_id);
 
 
 --
@@ -8482,11 +7105,11 @@ ALTER TABLE ONLY public.file_for
 
 
 --
--- Name: file_grouping file_grouping_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: file_meta file_meta_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.file_grouping
-    ADD CONSTRAINT file_grouping_pkey PRIMARY KEY (grouping_id, file_id);
+ALTER TABLE ONLY public.file_meta
+    ADD CONSTRAINT file_meta_pkey PRIMARY KEY (file_id);
 
 
 --
@@ -8498,14 +7121,6 @@ ALTER TABLE ONLY public.file_mr
 
 
 --
--- Name: file_name file_name_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.file_name
-    ADD CONSTRAINT file_name_pkey PRIMARY KEY (file_id);
-
-
---
 -- Name: file_nifti_defacing file_nifti_defacing_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -8514,11 +7129,11 @@ ALTER TABLE ONLY public.file_nifti_defacing
 
 
 --
--- Name: file_nifti file_nifti_file_id_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: file_nifti file_nifti_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.file_nifti
-    ADD CONSTRAINT file_nifti_file_id_key UNIQUE (file_id);
+    ADD CONSTRAINT file_nifti_pkey PRIMARY KEY (file_id);
 
 
 --
@@ -8554,51 +7169,11 @@ ALTER TABLE ONLY public.file_sop_common
 
 
 --
--- Name: extra_values file_value_type; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: file_study file_study_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.extra_values
-    ADD CONSTRAINT file_value_type PRIMARY KEY (file_id, value_name);
-
-
---
--- Name: grouping grouping_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public."grouping"
-    ADD CONSTRAINT grouping_pkey PRIMARY KEY (grouping_id);
-
-
---
--- Name: report_dashboardsubscription idx_uniq_dashsubscrip_dashboard_id_user_id; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.report_dashboardsubscription
-    ADD CONSTRAINT idx_uniq_dashsubscrip_dashboard_id_user_id UNIQUE (dashboard_id, user_id);
-
-
---
--- Name: report_emailreport_recipients idx_uniq_emailreportrecip_emailreport_id_user_id; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.report_emailreport_recipients
-    ADD CONSTRAINT idx_uniq_emailreportrecip_emailreport_id_user_id UNIQUE (emailreport_id, user_id);
-
-
---
--- Name: report_cardfavorite idx_unique_cardfavorite_card_id_owner_id; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.report_cardfavorite
-    ADD CONSTRAINT idx_unique_cardfavorite_card_id_owner_id UNIQUE (card_id, owner_id);
-
-
---
--- Name: core_userorgperm idx_unique_user_id_organization_id; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.core_userorgperm
-    ADD CONSTRAINT idx_unique_user_id_organization_id UNIQUE (user_id, organization_id);
+ALTER TABLE ONLY public.file_study
+    ADD CONSTRAINT file_study_pkey PRIMARY KEY (file_id);
 
 
 --
@@ -8615,70 +7190,6 @@ ALTER TABLE ONLY public.wp_object_map
 
 ALTER TABLE ONLY public.image_equivalence_class_input_image
     ADD CONSTRAINT image_equivalence_class_input_image_uniq UNIQUE (image_equivalence_class_id, file_id);
-
-
---
--- Name: masking_exit_code masking_exit_code_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.masking_exit_code
-    ADD CONSTRAINT masking_exit_code_pkey PRIMARY KEY (masking_exit_code);
-
-
---
--- Name: masking masking_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.masking
-    ADD CONSTRAINT masking_pkey PRIMARY KEY (image_equivalence_class_id);
-
-
---
--- Name: metabase_database metabase_database_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.metabase_database
-    ADD CONSTRAINT metabase_database_pkey PRIMARY KEY (id);
-
-
---
--- Name: metabase_field metabase_field_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.metabase_field
-    ADD CONSTRAINT metabase_field_pkey PRIMARY KEY (id);
-
-
---
--- Name: metabase_fieldvalues metabase_fieldvalues_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.metabase_fieldvalues
-    ADD CONSTRAINT metabase_fieldvalues_pkey PRIMARY KEY (id);
-
-
---
--- Name: metabase_foreignkey metabase_foreignkey_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.metabase_foreignkey
-    ADD CONSTRAINT metabase_foreignkey_pkey PRIMARY KEY (id);
-
-
---
--- Name: metabase_table metabase_table_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.metabase_table
-    ADD CONSTRAINT metabase_table_pkey PRIMARY KEY (id);
-
-
---
--- Name: metabase_tablesegment metabase_tablesegment_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.metabase_tablesegment
-    ADD CONSTRAINT metabase_tablesegment_pkey PRIMARY KEY (id);
 
 
 --
@@ -8703,38 +7214,6 @@ ALTER TABLE ONLY public.nifti_jpeg_slice
 
 ALTER TABLE ONLY public.nifti_jpeg_vol_projection
     ADD CONSTRAINT nifti_jpeg_vol_projection_nifti_file_id_vol_num_proj_type_j_key UNIQUE (nifti_file_id, vol_num, proj_type, jpeg_file_id);
-
-
---
--- Name: nifti_visual_review_files nifti_visual_review_files_nifti_file_id_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.nifti_visual_review_files
-    ADD CONSTRAINT nifti_visual_review_files_nifti_file_id_key UNIQUE (nifti_file_id);
-
-
---
--- Name: nifti_visual_review_files nifti_visual_review_files_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.nifti_visual_review_files
-    ADD CONSTRAINT nifti_visual_review_files_pkey PRIMARY KEY (nifti_visual_review_instance_id, nifti_file_id);
-
-
---
--- Name: nifti_visual_review_instance nifti_visual_review_instance_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.nifti_visual_review_instance
-    ADD CONSTRAINT nifti_visual_review_instance_pkey PRIMARY KEY (nifti_visual_review_instance_id);
-
-
---
--- Name: nifti_visual_review_status nifti_visual_review_status_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.nifti_visual_review_status
-    ADD CONSTRAINT nifti_visual_review_status_pkey PRIMARY KEY (nifti_file_id);
 
 
 --
@@ -9034,115 +7513,11 @@ ALTER TABLE ONLY public.public_copy_status
 
 
 --
--- Name: query_query query_query_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.query_query
-    ADD CONSTRAINT query_query_pkey PRIMARY KEY (id);
-
-
---
--- Name: query_queryexecution query_queryexecution_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.query_queryexecution
-    ADD CONSTRAINT query_queryexecution_pkey PRIMARY KEY (id);
-
-
---
--- Name: query_queryexecution query_queryexecution_uuid_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.query_queryexecution
-    ADD CONSTRAINT query_queryexecution_uuid_key UNIQUE (uuid);
-
-
---
--- Name: report_card report_card_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.report_card
-    ADD CONSTRAINT report_card_pkey PRIMARY KEY (id);
-
-
---
--- Name: report_cardfavorite report_cardfavorite_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.report_cardfavorite
-    ADD CONSTRAINT report_cardfavorite_pkey PRIMARY KEY (id);
-
-
---
--- Name: report_dashboard report_dashboard_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.report_dashboard
-    ADD CONSTRAINT report_dashboard_pkey PRIMARY KEY (id);
-
-
---
--- Name: report_dashboardcard report_dashboardcard_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.report_dashboardcard
-    ADD CONSTRAINT report_dashboardcard_pkey PRIMARY KEY (id);
-
-
---
--- Name: report_dashboardsubscription report_dashboardsubscription_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.report_dashboardsubscription
-    ADD CONSTRAINT report_dashboardsubscription_pkey PRIMARY KEY (id);
-
-
---
--- Name: report_emailreport report_emailreport_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.report_emailreport
-    ADD CONSTRAINT report_emailreport_pkey PRIMARY KEY (id);
-
-
---
--- Name: report_emailreport_recipients report_emailreport_recipients_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.report_emailreport_recipients
-    ADD CONSTRAINT report_emailreport_recipients_pkey PRIMARY KEY (id);
-
-
---
--- Name: report_emailreportexecutions report_emailreportexecutions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.report_emailreportexecutions
-    ADD CONSTRAINT report_emailreportexecutions_pkey PRIMARY KEY (id);
-
-
---
--- Name: revision revision_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.revision
-    ADD CONSTRAINT revision_pkey PRIMARY KEY (id);
-
-
---
 -- Name: seg_bitmap_file seg_bitmap_file_seg_bitmap_file_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.seg_bitmap_file
     ADD CONSTRAINT seg_bitmap_file_seg_bitmap_file_id_key UNIQUE (seg_bitmap_file_id);
-
-
---
--- Name: setting setting_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.setting
-    ADD CONSTRAINT setting_pkey PRIMARY KEY (key);
 
 
 --
@@ -9354,132 +7729,6 @@ ALTER TABLE ONLY public.work
 
 
 --
--- Name: new_dicom_file_file_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX new_dicom_file_file_id_idx ON ONLY public.dicom_file USING btree (file_id);
-
-
---
--- Name: dicom_file_archive_file_id_idx; Type: INDEX; Schema: archive; Owner: -
---
-
-CREATE INDEX dicom_file_archive_file_id_idx ON archive.dicom_file_archive USING btree (file_id);
-
-
---
--- Name: dicom_file_current_file_id_idx; Type: INDEX; Schema: archive; Owner: -
---
-
-CREATE INDEX dicom_file_current_file_id_idx ON archive.dicom_file_current USING btree (file_id);
-
-
---
--- Name: new_dicom_process_errors_file_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX new_dicom_process_errors_file_id_idx ON ONLY public.dicom_process_errors USING btree (file_id);
-
-
---
--- Name: dicom_process_errors_archive_file_id_idx; Type: INDEX; Schema: archive; Owner: -
---
-
-CREATE INDEX dicom_process_errors_archive_file_id_idx ON archive.dicom_process_errors_archive USING btree (file_id);
-
-
---
--- Name: dicom_process_errors_current_file_id_idx; Type: INDEX; Schema: archive; Owner: -
---
-
-CREATE INDEX dicom_process_errors_current_file_id_idx ON archive.dicom_process_errors_current USING btree (file_id);
-
-
---
--- Name: fi_file_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX fi_file_id_idx ON ONLY public.file_import USING btree (file_id);
-
-
---
--- Name: file_import_current_file_id_idx; Type: INDEX; Schema: archive; Owner: -
---
-
-CREATE INDEX file_import_current_file_id_idx ON archive.file_import_current USING btree (file_id);
-
-
---
--- Name: fi_file_import_time_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX fi_file_import_time_idx ON ONLY public.file_import USING btree (file_import_time);
-
-
---
--- Name: file_import_current_file_import_time_idx; Type: INDEX; Schema: archive; Owner: -
---
-
-CREATE INDEX file_import_current_file_import_time_idx ON archive.file_import_current USING btree (file_import_time);
-
-
---
--- Name: fi_import_event_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX fi_import_event_id_idx ON ONLY public.file_import USING btree (import_event_id);
-
-
---
--- Name: file_import_current_import_event_id_idx; Type: INDEX; Schema: archive; Owner: -
---
-
-CREATE INDEX file_import_current_import_event_id_idx ON archive.file_import_current USING btree (import_event_id);
-
-
---
--- Name: file_import_old_file_id_idx; Type: INDEX; Schema: archive; Owner: -
---
-
-CREATE INDEX file_import_old_file_id_idx ON archive.file_import_old USING btree (file_id);
-
-
---
--- Name: file_import_old_file_import_time_idx; Type: INDEX; Schema: archive; Owner: -
---
-
-CREATE INDEX file_import_old_file_import_time_idx ON archive.file_import_old USING btree (file_import_time);
-
-
---
--- Name: file_import_old_import_event_id_idx; Type: INDEX; Schema: archive; Owner: -
---
-
-CREATE INDEX file_import_old_import_event_id_idx ON archive.file_import_old USING btree (import_event_id);
-
-
---
--- Name: new_file_study_study_instance_uid_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX new_file_study_study_instance_uid_idx ON ONLY public.file_study USING btree (study_instance_uid);
-
-
---
--- Name: file_study_archive_study_instance_uid_idx; Type: INDEX; Schema: archive; Owner: -
---
-
-CREATE INDEX file_study_archive_study_instance_uid_idx ON archive.file_study_archive USING btree (study_instance_uid);
-
-
---
--- Name: file_study_current_study_instance_uid_idx; Type: INDEX; Schema: archive; Owner: -
---
-
-CREATE INDEX file_study_current_study_instance_uid_idx ON archive.file_study_current USING btree (study_instance_uid);
-
-
---
 -- Name: queries_name_index; Type: INDEX; Schema: dbif_config; Owner: -
 --
 
@@ -9491,20 +7740,6 @@ CREATE UNIQUE INDEX queries_name_index ON dbif_config.queries USING btree (name)
 --
 
 CREATE UNIQUE INDEX role_tabs_uidx ON dbif_config.role_tabs USING btree (role_name, query_tab_name);
-
-
---
--- Name: activity_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX activity_id_idx ON public.activity USING btree (activity_id);
-
-
---
--- Name: activity_timepoint_file_file_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX activity_timepoint_file_file_id_idx ON public.activity_timepoint_file USING btree (file_id);
 
 
 --
@@ -9641,13 +7876,6 @@ CREATE UNIQUE INDEX ctp_upload_index ON public.ctp_upload_event USING btree (fil
 
 
 --
--- Name: dcm4chee_copy_processed; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX dcm4chee_copy_processed ON public.dcm4chee_copy USING btree (processed);
-
-
---
 -- Name: dec_from_file_dig_index; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -9669,10 +7897,24 @@ CREATE INDEX dicom_edit_compare_subprocess_index ON public.dicom_edit_compare US
 
 
 --
+-- Name: dicom_file_file_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX dicom_file_file_id_index ON public.dicom_file USING btree (file_id);
+
+
+--
 -- Name: dicom_file_send_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX dicom_file_send_idx ON public.dicom_file_send USING btree (dicom_send_event_id);
+
+
+--
+-- Name: dicom_process_errors_file_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX dicom_process_errors_file_id_idx ON public.dicom_process_errors USING btree (file_id);
 
 
 --
@@ -9760,6 +8002,27 @@ CREATE INDEX file_image_main_idx ON public.file_image USING btree (file_id, imag
 
 
 --
+-- Name: file_import_file_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX file_import_file_id_idx ON public.file_import USING btree (file_id);
+
+
+--
+-- Name: file_import_import_event_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX file_import_import_event_id_idx ON public.file_import USING btree (import_event_id);
+
+
+--
+-- Name: file_import_import_event_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX file_import_import_event_index ON public.file_import USING btree (import_event_id);
+
+
+--
 -- Name: file_import_series_file_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -9837,10 +8100,10 @@ CREATE INDEX file_seg_image_linkage_linked_sop_idx ON public.file_seg_image_link
 
 
 --
--- Name: file_series_modality_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: file_series_file_id_index; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX file_series_modality_idx ON public.file_series USING btree (modality);
+CREATE INDEX file_series_file_id_index ON public.file_series USING btree (file_id);
 
 
 --
@@ -9865,10 +8128,10 @@ CREATE INDEX file_slope_intercept_id_idx ON public.file_slope_intercept USING bt
 
 
 --
--- Name: file_sop_common_sop_class_uid_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: file_sop_common_file_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX file_sop_common_sop_class_uid_idx ON public.file_sop_common USING btree (sop_class_uid);
+CREATE INDEX file_sop_common_file_id_idx ON public.file_sop_common USING btree (file_id);
 
 
 --
@@ -9890,6 +8153,20 @@ CREATE UNIQUE INDEX file_storage_root_pk ON public.file_storage_root USING btree
 --
 
 CREATE INDEX file_structure_set_idx ON public.file_structure_set USING btree (file_id, structure_set_id);
+
+
+--
+-- Name: file_study_file_id_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX file_study_file_id_index ON public.file_study USING btree (file_id);
+
+
+--
+-- Name: file_study_uid; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX file_study_uid ON public.file_study USING btree (study_instance_uid);
 
 
 --
@@ -9935,111 +8212,6 @@ CREATE INDEX fraction_reference_beam_plan_idx ON public.fraction_reference_beam 
 
 
 --
--- Name: idx_annotation_author_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_annotation_author_id ON public.annotation_annotation USING btree (author_id);
-
-
---
--- Name: idx_annotation_object_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_annotation_object_id ON public.annotation_annotation USING btree (object_id);
-
-
---
--- Name: idx_annotation_object_type_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_annotation_object_type_id ON public.annotation_annotation USING btree (object_type_id);
-
-
---
--- Name: idx_annotation_organization_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_annotation_organization_id ON public.annotation_annotation USING btree (organization_id);
-
-
---
--- Name: idx_card_creator_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_card_creator_id ON public.report_card USING btree (creator_id);
-
-
---
--- Name: idx_card_organization_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_card_organization_id ON public.report_card USING btree (organization_id);
-
-
---
--- Name: idx_cardfavorite_card_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_cardfavorite_card_id ON public.report_cardfavorite USING btree (card_id);
-
-
---
--- Name: idx_cardfavorite_owner_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_cardfavorite_owner_id ON public.report_cardfavorite USING btree (owner_id);
-
-
---
--- Name: idx_dashboard_creator_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_dashboard_creator_id ON public.report_dashboard USING btree (creator_id);
-
-
---
--- Name: idx_dashboard_organization_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_dashboard_organization_id ON public.report_dashboard USING btree (organization_id);
-
-
---
--- Name: idx_dashboardcard_card_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_dashboardcard_card_id ON public.report_dashboardcard USING btree (card_id);
-
-
---
--- Name: idx_dashboardcard_dashboard_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_dashboardcard_dashboard_id ON public.report_dashboardcard USING btree (dashboard_id);
-
-
---
--- Name: idx_dashboardsubscription_dashboard_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_dashboardsubscription_dashboard_id ON public.report_dashboardsubscription USING btree (dashboard_id);
-
-
---
--- Name: idx_dashboardsubscription_user_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_dashboardsubscription_user_id ON public.report_dashboardsubscription USING btree (user_id);
-
-
---
--- Name: idx_database_organization_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_database_organization_id ON public.metabase_database USING btree (organization_id);
-
-
---
 -- Name: idx_dataset_release_dataset_id; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -10061,83 +8233,6 @@ CREATE INDEX idx_dataset_release_transfer_dataset_release_id ON public.dataset_r
 
 
 --
--- Name: idx_emailreport_creator_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_emailreport_creator_id ON public.report_emailreport USING btree (creator_id);
-
-
---
--- Name: idx_emailreport_organization_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_emailreport_organization_id ON public.report_emailreport USING btree (organization_id);
-
-
---
--- Name: idx_emailreport_recipients_emailreport_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_emailreport_recipients_emailreport_id ON public.report_emailreport_recipients USING btree (emailreport_id);
-
-
---
--- Name: idx_emailreport_recipients_user_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_emailreport_recipients_user_id ON public.report_emailreport_recipients USING btree (user_id);
-
-
---
--- Name: idx_emailreportexecutions_organization_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_emailreportexecutions_organization_id ON public.report_emailreportexecutions USING btree (organization_id);
-
-
---
--- Name: idx_emailreportexecutions_report_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_emailreportexecutions_report_id ON public.report_emailreportexecutions USING btree (report_id);
-
-
---
--- Name: idx_field_table_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_field_table_id ON public.metabase_field USING btree (table_id);
-
-
---
--- Name: idx_fieldvalues_field_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_fieldvalues_field_id ON public.metabase_fieldvalues USING btree (field_id);
-
-
---
--- Name: idx_foreignkey_destination_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_foreignkey_destination_id ON public.metabase_foreignkey USING btree (destination_id);
-
-
---
--- Name: idx_foreignkey_origin_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_foreignkey_origin_id ON public.metabase_foreignkey USING btree (origin_id);
-
-
---
--- Name: idx_permissionsviolation_user_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_permissionsviolation_user_id ON public.core_permissionsviolation USING btree (user_id);
-
-
---
 -- Name: idx_qc_review_assignment_assigned_to; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -10156,34 +8251,6 @@ CREATE INDEX idx_qc_review_assignment_qc_review_id ON public.qc_review_assignmen
 --
 
 CREATE INDEX idx_qc_unit_assignment_id ON public.qc_unit USING btree (assignment_id);
-
-
---
--- Name: idx_query_creator_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_query_creator_id ON public.query_query USING btree (creator_id);
-
-
---
--- Name: idx_query_database_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_query_database_id ON public.query_query USING btree (database_id);
-
-
---
--- Name: idx_queryexecution_executor_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_queryexecution_executor_id ON public.query_queryexecution USING btree (executor_id);
-
-
---
--- Name: idx_queryexecution_query_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_queryexecution_query_id ON public.query_queryexecution USING btree (query_id);
 
 
 --
@@ -10212,27 +8279,6 @@ CREATE INDEX idx_recordset_release_file_file_id ON public.recordset_release_file
 --
 
 CREATE INDEX idx_recordset_release_recordset_id ON public.recordset_release USING btree (recordset_id);
-
-
---
--- Name: idx_revision_model_model_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_revision_model_model_id ON public.revision USING btree (model, model_id);
-
-
---
--- Name: idx_table_db_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_table_db_id ON public.metabase_table USING btree (db_id);
-
-
---
--- Name: idx_tablesegment_table_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_tablesegment_table_id ON public.metabase_tablesegment USING btree (table_id);
 
 
 --
@@ -10268,20 +8314,6 @@ CREATE INDEX idx_user_flag_flagged_for ON public.user_flag USING btree (flagged_
 --
 
 CREATE INDEX idx_user_flag_object ON public.user_flag USING btree (object_type, object_id);
-
-
---
--- Name: idx_userorgperm_organization_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_userorgperm_organization_id ON public.core_userorgperm USING btree (organization_id);
-
-
---
--- Name: idx_userorgperm_user_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX idx_userorgperm_user_id ON public.core_userorgperm USING btree (user_id);
 
 
 --
@@ -10331,13 +8363,6 @@ CREATE INDEX image_equivalence_class_vri ON public.image_equivalence_class USING
 --
 
 CREATE INDEX image_geometry_image_id_index ON public.image_geometry USING btree (image_id);
-
-
---
--- Name: image_geometry_iop_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX image_geometry_iop_idx ON public.image_geometry USING btree (iop);
 
 
 --
@@ -10394,13 +8419,6 @@ CREATE UNIQUE INDEX import_event_import_event_id_idx ON public.import_event USIN
 --
 
 CREATE INDEX import_event_import_time_idx ON public.import_event USING btree (import_time);
-
-
---
--- Name: masking_history_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX masking_history_idx ON public.masking_history USING btree (image_equivalence_class_id);
 
 
 --
@@ -10684,115 +8702,17 @@ CREATE UNIQUE INDEX window_level_pk ON public.window_level USING btree (window_l
 
 
 --
--- Name: dicom_file_archive_file_id_idx; Type: INDEX ATTACH; Schema: archive; Owner: -
+-- Name: fta_idx; Type: INDEX; Schema: quasar; Owner: -
 --
 
-ALTER INDEX public.new_dicom_file_file_id_idx ATTACH PARTITION archive.dicom_file_archive_file_id_idx;
-
-
---
--- Name: dicom_file_current_file_id_idx; Type: INDEX ATTACH; Schema: archive; Owner: -
---
-
-ALTER INDEX public.new_dicom_file_file_id_idx ATTACH PARTITION archive.dicom_file_current_file_id_idx;
+CREATE INDEX fta_idx ON quasar.files_to_archive USING btree (file_id, done, in_progress, error);
 
 
 --
--- Name: dicom_process_errors_archive_file_id_idx; Type: INDEX ATTACH; Schema: archive; Owner: -
+-- Name: phantom_files_idx; Type: INDEX; Schema: quasar; Owner: -
 --
 
-ALTER INDEX public.new_dicom_process_errors_file_id_idx ATTACH PARTITION archive.dicom_process_errors_archive_file_id_idx;
-
-
---
--- Name: dicom_process_errors_current_file_id_idx; Type: INDEX ATTACH; Schema: archive; Owner: -
---
-
-ALTER INDEX public.new_dicom_process_errors_file_id_idx ATTACH PARTITION archive.dicom_process_errors_current_file_id_idx;
-
-
---
--- Name: file_import_current_file_id_idx; Type: INDEX ATTACH; Schema: archive; Owner: -
---
-
-ALTER INDEX public.fi_file_id_idx ATTACH PARTITION archive.file_import_current_file_id_idx;
-
-
---
--- Name: file_import_current_file_import_time_idx; Type: INDEX ATTACH; Schema: archive; Owner: -
---
-
-ALTER INDEX public.fi_file_import_time_idx ATTACH PARTITION archive.file_import_current_file_import_time_idx;
-
-
---
--- Name: file_import_current_import_event_id_idx; Type: INDEX ATTACH; Schema: archive; Owner: -
---
-
-ALTER INDEX public.fi_import_event_id_idx ATTACH PARTITION archive.file_import_current_import_event_id_idx;
-
-
---
--- Name: file_import_old_file_id_idx; Type: INDEX ATTACH; Schema: archive; Owner: -
---
-
-ALTER INDEX public.fi_file_id_idx ATTACH PARTITION archive.file_import_old_file_id_idx;
-
-
---
--- Name: file_import_old_file_import_time_idx; Type: INDEX ATTACH; Schema: archive; Owner: -
---
-
-ALTER INDEX public.fi_file_import_time_idx ATTACH PARTITION archive.file_import_old_file_import_time_idx;
-
-
---
--- Name: file_import_old_import_event_id_idx; Type: INDEX ATTACH; Schema: archive; Owner: -
---
-
-ALTER INDEX public.fi_import_event_id_idx ATTACH PARTITION archive.file_import_old_import_event_id_idx;
-
-
---
--- Name: file_meta_archive_pkey; Type: INDEX ATTACH; Schema: archive; Owner: -
---
-
-ALTER INDEX public.new_file_meta_pkey ATTACH PARTITION archive.file_meta_archive_pkey;
-
-
---
--- Name: file_meta_current_pkey; Type: INDEX ATTACH; Schema: archive; Owner: -
---
-
-ALTER INDEX public.new_file_meta_pkey ATTACH PARTITION archive.file_meta_current_pkey;
-
-
---
--- Name: file_study_archive_pkey; Type: INDEX ATTACH; Schema: archive; Owner: -
---
-
-ALTER INDEX public.new_file_study_pkey ATTACH PARTITION archive.file_study_archive_pkey;
-
-
---
--- Name: file_study_archive_study_instance_uid_idx; Type: INDEX ATTACH; Schema: archive; Owner: -
---
-
-ALTER INDEX public.new_file_study_study_instance_uid_idx ATTACH PARTITION archive.file_study_archive_study_instance_uid_idx;
-
-
---
--- Name: file_study_current_pkey; Type: INDEX ATTACH; Schema: archive; Owner: -
---
-
-ALTER INDEX public.new_file_study_pkey ATTACH PARTITION archive.file_study_current_pkey;
-
-
---
--- Name: file_study_current_study_instance_uid_idx; Type: INDEX ATTACH; Schema: archive; Owner: -
---
-
-ALTER INDEX public.new_file_study_study_instance_uid_idx ATTACH PARTITION archive.file_study_current_study_instance_uid_idx;
+CREATE INDEX phantom_files_idx ON quasar.phantom_files USING btree (file_id);
 
 
 --
@@ -10857,35 +8777,11 @@ ALTER TABLE ONLY dbif_config.role_tabs
 
 
 --
--- Name: activity_timepoint activity_timepoint_subprocess_invocation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.activity_timepoint
-    ADD CONSTRAINT activity_timepoint_subprocess_invocation_id_fkey FOREIGN KEY (subprocess_invocation_id) REFERENCES public.subprocess_invocation(subprocess_invocation_id);
-
-
---
 -- Name: background_subprocess_report background_subprocess_report_background_subprocess_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.background_subprocess_report
     ADD CONSTRAINT background_subprocess_report_background_subprocess_id_fkey FOREIGN KEY (background_subprocess_id) REFERENCES public.background_subprocess(background_subprocess_id);
-
-
---
--- Name: dcm4chee_copy dcm4chee_copy_file_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.dcm4chee_copy
-    ADD CONSTRAINT dcm4chee_copy_file_id_fkey FOREIGN KEY (file_id) REFERENCES public.file(file_id);
-
-
---
--- Name: dcm4chee_copy dcm4chee_copy_subprocess_invocation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.dcm4chee_copy
-    ADD CONSTRAINT dcm4chee_copy_subprocess_invocation_id_fkey FOREIGN KEY (subprocess_invocation_id) REFERENCES public.subprocess_invocation(subprocess_invocation_id);
 
 
 --
@@ -10937,14 +8833,6 @@ ALTER TABLE ONLY public.export_event
 
 
 --
--- Name: extra_values extra_values_file_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.extra_values
-    ADD CONSTRAINT extra_values_file_id_fkey FOREIGN KEY (file_id) REFERENCES public.file(file_id);
-
-
---
 -- Name: file_export file_export_export_event_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -10966,30 +8854,6 @@ ALTER TABLE ONLY public.file_export
 
 ALTER TABLE ONLY public.file_export
     ADD CONSTRAINT file_export_transfer_status_id_fkey FOREIGN KEY (transfer_status_id) REFERENCES public.transfer_status(transfer_status_id);
-
-
---
--- Name: file_grouping file_grouping_file_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.file_grouping
-    ADD CONSTRAINT file_grouping_file_id_fkey FOREIGN KEY (file_id) REFERENCES public.file(file_id);
-
-
---
--- Name: file_grouping file_grouping_grouping_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.file_grouping
-    ADD CONSTRAINT file_grouping_grouping_id_fkey FOREIGN KEY (grouping_id) REFERENCES public."grouping"(grouping_id);
-
-
---
--- Name: file_name file_name_file_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.file_name
-    ADD CONSTRAINT file_name_file_id_fkey FOREIGN KEY (file_id) REFERENCES public.file(file_id);
 
 
 --
@@ -11041,75 +8905,11 @@ ALTER TABLE ONLY public.file_nifti_defacing
 
 
 --
--- Name: annotation_annotation fk_annotation_ref_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: file_nifti file_nifti_file_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.annotation_annotation
-    ADD CONSTRAINT fk_annotation_ref_user_id FOREIGN KEY (author_id) REFERENCES public.core_user(id);
-
-
---
--- Name: report_card fk_card_ref_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.report_card
-    ADD CONSTRAINT fk_card_ref_user_id FOREIGN KEY (creator_id) REFERENCES public.core_user(id);
-
-
---
--- Name: report_cardfavorite fk_cardfavorite_ref_card_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.report_cardfavorite
-    ADD CONSTRAINT fk_cardfavorite_ref_card_id FOREIGN KEY (card_id) REFERENCES public.report_card(id);
-
-
---
--- Name: report_cardfavorite fk_cardfavorite_ref_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.report_cardfavorite
-    ADD CONSTRAINT fk_cardfavorite_ref_user_id FOREIGN KEY (owner_id) REFERENCES public.core_user(id);
-
-
---
--- Name: report_dashboard fk_dashboard_ref_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.report_dashboard
-    ADD CONSTRAINT fk_dashboard_ref_user_id FOREIGN KEY (creator_id) REFERENCES public.core_user(id);
-
-
---
--- Name: report_dashboardcard fk_dashboardcard_ref_card_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.report_dashboardcard
-    ADD CONSTRAINT fk_dashboardcard_ref_card_id FOREIGN KEY (card_id) REFERENCES public.report_card(id);
-
-
---
--- Name: report_dashboardcard fk_dashboardcard_ref_dashboard_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.report_dashboardcard
-    ADD CONSTRAINT fk_dashboardcard_ref_dashboard_id FOREIGN KEY (dashboard_id) REFERENCES public.report_dashboard(id);
-
-
---
--- Name: report_dashboardsubscription fk_dashboardsubscription_ref_dashboard_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.report_dashboardsubscription
-    ADD CONSTRAINT fk_dashboardsubscription_ref_dashboard_id FOREIGN KEY (dashboard_id) REFERENCES public.report_dashboard(id);
-
-
---
--- Name: report_dashboardsubscription fk_dashboardsubscription_ref_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.report_dashboardsubscription
-    ADD CONSTRAINT fk_dashboardsubscription_ref_user_id FOREIGN KEY (user_id) REFERENCES public.core_user(id);
+ALTER TABLE ONLY public.file_nifti
+    ADD CONSTRAINT file_nifti_file_id_fkey FOREIGN KEY (file_id) REFERENCES public.file(file_id);
 
 
 --
@@ -11257,86 +9057,6 @@ ALTER TABLE ONLY public.dataset
 
 
 --
--- Name: report_emailreport_recipients fk_emailreport_recipients_ref_emailreport_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.report_emailreport_recipients
-    ADD CONSTRAINT fk_emailreport_recipients_ref_emailreport_id FOREIGN KEY (emailreport_id) REFERENCES public.report_emailreport(id);
-
-
---
--- Name: report_emailreport_recipients fk_emailreport_recipients_ref_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.report_emailreport_recipients
-    ADD CONSTRAINT fk_emailreport_recipients_ref_user_id FOREIGN KEY (user_id) REFERENCES public.core_user(id);
-
-
---
--- Name: report_emailreport fk_emailreport_ref_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.report_emailreport
-    ADD CONSTRAINT fk_emailreport_ref_user_id FOREIGN KEY (creator_id) REFERENCES public.core_user(id);
-
-
---
--- Name: report_emailreportexecutions fk_emailreportexecutions_ref_report_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.report_emailreportexecutions
-    ADD CONSTRAINT fk_emailreportexecutions_ref_report_id FOREIGN KEY (report_id) REFERENCES public.report_emailreport(id);
-
-
---
--- Name: metabase_field fk_field_parent_ref_field_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.metabase_field
-    ADD CONSTRAINT fk_field_parent_ref_field_id FOREIGN KEY (parent_id) REFERENCES public.metabase_field(id);
-
-
---
--- Name: metabase_field fk_field_ref_table_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.metabase_field
-    ADD CONSTRAINT fk_field_ref_table_id FOREIGN KEY (table_id) REFERENCES public.metabase_table(id);
-
-
---
--- Name: metabase_fieldvalues fk_fieldvalues_ref_field_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.metabase_fieldvalues
-    ADD CONSTRAINT fk_fieldvalues_ref_field_id FOREIGN KEY (field_id) REFERENCES public.metabase_field(id);
-
-
---
--- Name: metabase_foreignkey fk_foreignkey_dest_ref_field_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.metabase_foreignkey
-    ADD CONSTRAINT fk_foreignkey_dest_ref_field_id FOREIGN KEY (destination_id) REFERENCES public.metabase_field(id);
-
-
---
--- Name: metabase_foreignkey fk_foreignkey_origin_ref_field_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.metabase_foreignkey
-    ADD CONSTRAINT fk_foreignkey_origin_ref_field_id FOREIGN KEY (origin_id) REFERENCES public.metabase_field(id);
-
-
---
--- Name: core_permissionsviolation fk_permissionviolation_ref_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.core_permissionsviolation
-    ADD CONSTRAINT fk_permissionviolation_ref_user_id FOREIGN KEY (user_id) REFERENCES public.core_user(id);
-
-
---
 -- Name: qc_review_assignment fk_qc_review_assignment_assigned_to; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -11438,38 +9158,6 @@ ALTER TABLE ONLY public.qc_unit
 
 ALTER TABLE ONLY public.qc_unit
     ADD CONSTRAINT fk_qc_unit_recordset_draft_file FOREIGN KEY (recordset_draft_file_id) REFERENCES public.recordset_draft_file(recordset_draft_file_id) ON DELETE CASCADE;
-
-
---
--- Name: query_query fk_query_ref_database_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.query_query
-    ADD CONSTRAINT fk_query_ref_database_id FOREIGN KEY (database_id) REFERENCES public.metabase_database(id);
-
-
---
--- Name: query_query fk_query_ref_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.query_query
-    ADD CONSTRAINT fk_query_ref_user_id FOREIGN KEY (creator_id) REFERENCES public.core_user(id);
-
-
---
--- Name: query_queryexecution fk_queryexecution_ref_query_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.query_queryexecution
-    ADD CONSTRAINT fk_queryexecution_ref_query_id FOREIGN KEY (query_id) REFERENCES public.query_query(id);
-
-
---
--- Name: query_queryexecution fk_queryexecution_ref_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.query_queryexecution
-    ADD CONSTRAINT fk_queryexecution_ref_user_id FOREIGN KEY (executor_id) REFERENCES public.core_user(id);
 
 
 --
@@ -11609,54 +9297,6 @@ ALTER TABLE ONLY public.recordset
 
 
 --
--- Name: report_card fk_report_card_ref_database_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.report_card
-    ADD CONSTRAINT fk_report_card_ref_database_id FOREIGN KEY (database_id) REFERENCES public.metabase_database(id);
-
-
---
--- Name: report_card fk_report_card_ref_table_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.report_card
-    ADD CONSTRAINT fk_report_card_ref_table_id FOREIGN KEY (table_id) REFERENCES public.metabase_table(id);
-
-
---
--- Name: revision fk_revision_ref_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.revision
-    ADD CONSTRAINT fk_revision_ref_user_id FOREIGN KEY (user_id) REFERENCES public.core_user(id);
-
-
---
--- Name: core_session fk_session_ref_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.core_session
-    ADD CONSTRAINT fk_session_ref_user_id FOREIGN KEY (user_id) REFERENCES public.core_user(id);
-
-
---
--- Name: metabase_table fk_table_ref_database_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.metabase_table
-    ADD CONSTRAINT fk_table_ref_database_id FOREIGN KEY (db_id) REFERENCES public.metabase_database(id);
-
-
---
--- Name: metabase_tablesegment fk_tablesegment_ref_table_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.metabase_tablesegment
-    ADD CONSTRAINT fk_tablesegment_ref_table_id FOREIGN KEY (table_id) REFERENCES public.metabase_table(id);
-
-
---
 -- Name: transfer_aspera fk_transfer_aspera_dataset_release_transfer; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -11793,83 +9433,59 @@ ALTER TABLE ONLY public.user_flag
 
 
 --
--- Name: core_userorgperm fk_userorgperm_ref_organization_id; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: nifti_jpeg_projection nifti_jpeg_projection_jpeg_file_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.core_userorgperm
-    ADD CONSTRAINT fk_userorgperm_ref_organization_id FOREIGN KEY (organization_id) REFERENCES public.core_organization(id);
-
-
---
--- Name: core_userorgperm fk_userorgperm_ref_user_id; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.core_userorgperm
-    ADD CONSTRAINT fk_userorgperm_ref_user_id FOREIGN KEY (user_id) REFERENCES public.core_user(id);
+ALTER TABLE ONLY public.nifti_jpeg_projection
+    ADD CONSTRAINT nifti_jpeg_projection_jpeg_file_id_fkey FOREIGN KEY (jpeg_file_id) REFERENCES public.file(file_id);
 
 
 --
--- Name: masking_history masking_history_image_equivalence_class_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: nifti_jpeg_projection nifti_jpeg_projection_nifti_file_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.masking_history
-    ADD CONSTRAINT masking_history_image_equivalence_class_id_fkey FOREIGN KEY (image_equivalence_class_id) REFERENCES public.masking(image_equivalence_class_id);
-
-
---
--- Name: masking_history masking_history_who_changed_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.masking_history
-    ADD CONSTRAINT masking_history_who_changed_fkey FOREIGN KEY (who_changed) REFERENCES auth.users(user_id);
+ALTER TABLE ONLY public.nifti_jpeg_projection
+    ADD CONSTRAINT nifti_jpeg_projection_nifti_file_id_fkey FOREIGN KEY (nifti_file_id) REFERENCES public.file(file_id);
 
 
 --
--- Name: masking masking_image_equivalence_class_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: nifti_jpeg_slice nifti_jpeg_slice_jpeg_file_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.masking
-    ADD CONSTRAINT masking_image_equivalence_class_id_fkey FOREIGN KEY (image_equivalence_class_id) REFERENCES public.image_equivalence_class(image_equivalence_class_id);
-
-
---
--- Name: masking masking_import_event_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.masking
-    ADD CONSTRAINT masking_import_event_id_fkey FOREIGN KEY (import_event_id) REFERENCES public.import_event(import_event_id);
+ALTER TABLE ONLY public.nifti_jpeg_slice
+    ADD CONSTRAINT nifti_jpeg_slice_jpeg_file_id_fkey FOREIGN KEY (jpeg_file_id) REFERENCES public.file(file_id);
 
 
 --
--- Name: nifti_visual_review_files nifti_visual_review_files_nifti_file_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: nifti_jpeg_slice nifti_jpeg_slice_nifti_file_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.nifti_visual_review_files
-    ADD CONSTRAINT nifti_visual_review_files_nifti_file_id_fkey FOREIGN KEY (nifti_file_id) REFERENCES public.file_nifti(file_id);
-
-
---
--- Name: nifti_visual_review_files nifti_visual_review_files_nifti_visual_review_instance_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.nifti_visual_review_files
-    ADD CONSTRAINT nifti_visual_review_files_nifti_visual_review_instance_id_fkey FOREIGN KEY (nifti_visual_review_instance_id) REFERENCES public.nifti_visual_review_instance(nifti_visual_review_instance_id);
+ALTER TABLE ONLY public.nifti_jpeg_slice
+    ADD CONSTRAINT nifti_jpeg_slice_nifti_file_id_fkey FOREIGN KEY (nifti_file_id) REFERENCES public.file(file_id);
 
 
 --
--- Name: nifti_visual_review_instance nifti_visual_review_instance_activity_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: nifti_jpeg_vol_projection nifti_jpeg_vol_projection_jpeg_file_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.nifti_visual_review_instance
-    ADD CONSTRAINT nifti_visual_review_instance_activity_id_fkey FOREIGN KEY (activity_id) REFERENCES public.activity(activity_id);
+ALTER TABLE ONLY public.nifti_jpeg_vol_projection
+    ADD CONSTRAINT nifti_jpeg_vol_projection_jpeg_file_id_fkey FOREIGN KEY (jpeg_file_id) REFERENCES public.file(file_id);
 
 
 --
--- Name: nifti_visual_review_status nifti_visual_review_status_nifti_file_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: nifti_jpeg_vol_projection nifti_jpeg_vol_projection_nifti_file_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
-ALTER TABLE ONLY public.nifti_visual_review_status
-    ADD CONSTRAINT nifti_visual_review_status_nifti_file_id_fkey FOREIGN KEY (nifti_file_id) REFERENCES public.file_nifti(file_id);
+ALTER TABLE ONLY public.nifti_jpeg_vol_projection
+    ADD CONSTRAINT nifti_jpeg_vol_projection_nifti_file_id_fkey FOREIGN KEY (nifti_file_id) REFERENCES public.file(file_id);
+
+
+--
+-- Name: nifti_projection_review nifti_projection_review_nifti_file_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.nifti_projection_review
+    ADD CONSTRAINT nifti_projection_review_nifti_file_id_fkey FOREIGN KEY (nifti_file_id) REFERENCES public.file(file_id);
 
 
 --
@@ -11964,5 +9580,5 @@ ALTER TABLE ONLY public.work
 -- PostgreSQL database dump complete
 --
 
-\unrestrict NfAGmkRafRgQu6iegYqfzB2oicBQtCMstdpYZusP8oU9W7aYgYtn7nDcwWutIAW
+\unrestrict MEpeEAazQj3eIrdcIGhV93DtXFOxMaqWr2bSpEKovVMTwdqma7lRjKtMVudY6Yg
 

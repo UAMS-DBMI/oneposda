@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict f6pDjvPleFNuBqLUeMbsyvKbNB66Qa6gVPe3TC4d293yvSRw0aAfMKqFzbKcqx3
+\restrict piDXZmbvHufxWyzYFTghowsAcW6XLS4R95EPg6Uiv6KAOmJJo0FrIwZcIl9c0t4
 
 -- Dumped from database version 18.4
 -- Dumped by pg_dump version 18.4 (Homebrew)
@@ -26,9 +26,9 @@ SET row_security = off;
 CREATE DATABASE posda_nicknames WITH TEMPLATE = template0 ENCODING = 'UTF8' LOCALE_PROVIDER = libc LOCALE = 'en_US.UTF-8';
 
 
-\unrestrict f6pDjvPleFNuBqLUeMbsyvKbNB66Qa6gVPe3TC4d293yvSRw0aAfMKqFzbKcqx3
+\unrestrict piDXZmbvHufxWyzYFTghowsAcW6XLS4R95EPg6Uiv6KAOmJJo0FrIwZcIl9c0t4
 \connect posda_nicknames
-\restrict f6pDjvPleFNuBqLUeMbsyvKbNB66Qa6gVPe3TC4d293yvSRw0aAfMKqFzbKcqx3
+\restrict piDXZmbvHufxWyzYFTghowsAcW6XLS4R95EPg6Uiv6KAOmJJo0FrIwZcIl9c0t4
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -219,5 +219,5 @@ CREATE UNIQUE INDEX study_nickname_lookup_by_uid ON public.study_nickname USING 
 -- PostgreSQL database dump complete
 --
 
-\unrestrict f6pDjvPleFNuBqLUeMbsyvKbNB66Qa6gVPe3TC4d293yvSRw0aAfMKqFzbKcqx3
+\unrestrict piDXZmbvHufxWyzYFTghowsAcW6XLS4R95EPg6Uiv6KAOmJJo0FrIwZcIl9c0t4
 

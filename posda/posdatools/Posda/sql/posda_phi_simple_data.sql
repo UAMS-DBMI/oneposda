@@ -3,12 +3,15 @@
 -- PostgreSQL database dump
 --
 
--- Dumped from database version 13.7
--- Dumped by pg_dump version 14.9 (Ubuntu 14.9-0ubuntu0.22.04.1)
+\restrict s73PmX2V1u1u1jubSbH5AGmaNZpVYLMBzbU05svsqJSxd2ovH7Vg1TzA9A9exJf
+
+-- Dumped from database version 18.4
+-- Dumped by pg_dump version 18.4 (Homebrew)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
+SET transaction_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
 SELECT pg_catalog.set_config('search_path', '', false);
@@ -16,6 +19,26 @@ SET check_function_bodies = false;
 SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
+
+--
+-- Data for Name: migration; Type: TABLE DATA; Schema: db_version; Owner: -
+--
+
+COPY db_version.migration (filename, sha256, applied_at, applied_by) FROM stdin;
+0001_createSRscanTables.sql	98aae090b703e85bd16e3295903a297e9a5b322a4ebad93070fa6b580dbcff68	2026-08-12 22:44:22.154694+00	postgres
+0002_createTiffPHITables.sql	65cb2c651662c9397a3893de5a6c1394b9847f25a36396427ca2ef4866713136	2026-08-12 22:45:10.191867+00	postgres
+0003_add_nifti_phi_tables.sql	53acf80417c5aa0da8d1bfe548c67052453d41aac5f730cc29590f89535d9ac3	2026-08-12 22:45:12.616094+00	postgres
+\.
+
+
+--
+-- Data for Name: version; Type: TABLE DATA; Schema: db_version; Owner: -
+--
+
+COPY db_version.version (version) FROM stdin;
+3
+\.
+
 
 --
 -- Data for Name: element_seen; Type: TABLE DATA; Schema: public; Owner: -
@@ -7130,4 +7153,6 @@ SELECT pg_catalog.setval('public.element_seen_element_seen_id_seq', 7096, true);
 --
 -- PostgreSQL database dump complete
 --
+
+\unrestrict s73PmX2V1u1u1jubSbH5AGmaNZpVYLMBzbU05svsqJSxd2ovH7Vg1TzA9A9exJf
 
