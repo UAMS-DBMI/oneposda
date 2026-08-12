@@ -2,12 +2,15 @@
 -- PostgreSQL database dump
 --
 
--- Dumped from database version 13.7
--- Dumped by pg_dump version 14.9 (Ubuntu 14.9-0ubuntu0.22.04.1)
+\restrict zKZZzj1rnNhsuOjMSzAOGj9sBdPthVuxlIgnObfECdXA9HUWymVcya75FBPanqk
+
+-- Dumped from database version 18.4
+-- Dumped by pg_dump version 18.4 (Homebrew)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
+SET transaction_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
 SELECT pg_catalog.set_config('search_path', '', false);
@@ -20,14 +23,17 @@ SET row_security = off;
 -- Name: posda_counts; Type: DATABASE; Schema: -; Owner: -
 --
 
-CREATE DATABASE posda_counts WITH TEMPLATE = template0 ENCODING = 'UTF8' LOCALE = 'en_US.UTF-8';
+CREATE DATABASE posda_counts WITH TEMPLATE = template0 ENCODING = 'UTF8' LOCALE_PROVIDER = libc LOCALE = 'en_US.UTF-8';
 
 
+\unrestrict zKZZzj1rnNhsuOjMSzAOGj9sBdPthVuxlIgnObfECdXA9HUWymVcya75FBPanqk
 \connect posda_counts
+\restrict zKZZzj1rnNhsuOjMSzAOGj9sBdPthVuxlIgnObfECdXA9HUWymVcya75FBPanqk
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
+SET transaction_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
 SELECT pg_catalog.set_config('search_path', '', false);
@@ -94,4 +100,6 @@ ALTER TABLE ONLY public.count_report ALTER COLUMN count_report_id SET DEFAULT ne
 --
 -- PostgreSQL database dump complete
 --
+
+\unrestrict zKZZzj1rnNhsuOjMSzAOGj9sBdPthVuxlIgnObfECdXA9HUWymVcya75FBPanqk
 

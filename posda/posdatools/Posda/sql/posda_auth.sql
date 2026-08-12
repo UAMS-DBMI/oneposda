@@ -2,12 +2,15 @@
 -- PostgreSQL database dump
 --
 
--- Dumped from database version 13.7
--- Dumped by pg_dump version 14.9 (Ubuntu 14.9-0ubuntu0.22.04.1)
+\restrict EpRghxqEbG0kV8D8d7v1Vz9I8l4C7mTyFBSY2X7ZuI6LobNh7zy3ux1Sh1bVHRk
+
+-- Dumped from database version 18.4
+-- Dumped by pg_dump version 18.4 (Homebrew)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
+SET transaction_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
 SELECT pg_catalog.set_config('search_path', '', false);
@@ -20,14 +23,17 @@ SET row_security = off;
 -- Name: posda_auth; Type: DATABASE; Schema: -; Owner: -
 --
 
-CREATE DATABASE posda_auth WITH TEMPLATE = template0 ENCODING = 'UTF8' LOCALE = 'en_US.utf8';
+CREATE DATABASE posda_auth WITH TEMPLATE = template0 ENCODING = 'UTF8' LOCALE_PROVIDER = libc LOCALE = 'en_US.utf8';
 
 
+\unrestrict EpRghxqEbG0kV8D8d7v1Vz9I8l4C7mTyFBSY2X7ZuI6LobNh7zy3ux1Sh1bVHRk
 \connect posda_auth
+\restrict EpRghxqEbG0kV8D8d7v1Vz9I8l4C7mTyFBSY2X7ZuI6LobNh7zy3ux1Sh1bVHRk
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
+SET transaction_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
 SELECT pg_catalog.set_config('search_path', '', false);
@@ -46,6 +52,18 @@ CREATE SCHEMA db_version;
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
+
+--
+-- Name: migration; Type: TABLE; Schema: db_version; Owner: -
+--
+
+CREATE TABLE db_version.migration (
+    filename text NOT NULL,
+    sha256 text NOT NULL,
+    applied_at timestamp with time zone DEFAULT now() NOT NULL,
+    applied_by text DEFAULT CURRENT_USER NOT NULL
+);
+
 
 --
 -- Name: version; Type: TABLE; Schema: db_version; Owner: -
@@ -178,6 +196,14 @@ ALTER TABLE ONLY public.users ALTER COLUMN user_id SET DEFAULT nextval('public.u
 
 
 --
+-- Name: migration migration_pkey; Type: CONSTRAINT; Schema: db_version; Owner: -
+--
+
+ALTER TABLE ONLY db_version.migration
+    ADD CONSTRAINT migration_pkey PRIMARY KEY (filename);
+
+
+--
 -- Name: apps apps_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -236,4 +262,6 @@ ALTER TABLE ONLY public.user_permissions
 --
 -- PostgreSQL database dump complete
 --
+
+\unrestrict EpRghxqEbG0kV8D8d7v1Vz9I8l4C7mTyFBSY2X7ZuI6LobNh7zy3ux1Sh1bVHRk
 

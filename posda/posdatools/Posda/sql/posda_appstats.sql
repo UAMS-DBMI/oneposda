@@ -2,12 +2,15 @@
 -- PostgreSQL database dump
 --
 
--- Dumped from database version 13.7
--- Dumped by pg_dump version 14.9 (Ubuntu 14.9-0ubuntu0.22.04.1)
+\restrict wq6nxKguzh0Td4fVewAV7vWKpJSChdababQyDyf82nKM9NJnBbm0YsJ8d0x3qVp
+
+-- Dumped from database version 18.4
+-- Dumped by pg_dump version 18.4 (Homebrew)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
+SET transaction_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
 SELECT pg_catalog.set_config('search_path', '', false);
@@ -20,14 +23,17 @@ SET row_security = off;
 -- Name: posda_appstats; Type: DATABASE; Schema: -; Owner: -
 --
 
-CREATE DATABASE posda_appstats WITH TEMPLATE = template0 ENCODING = 'UTF8' LOCALE = 'en_US.UTF-8';
+CREATE DATABASE posda_appstats WITH TEMPLATE = template0 ENCODING = 'UTF8' LOCALE_PROVIDER = libc LOCALE = 'en_US.UTF-8';
 
 
+\unrestrict wq6nxKguzh0Td4fVewAV7vWKpJSChdababQyDyf82nKM9NJnBbm0YsJ8d0x3qVp
 \connect posda_appstats
+\restrict wq6nxKguzh0Td4fVewAV7vWKpJSChdababQyDyf82nKM9NJnBbm0YsJ8d0x3qVp
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
+SET transaction_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
 SELECT pg_catalog.set_config('search_path', '', false);
@@ -106,4 +112,6 @@ ALTER TABLE ONLY public.app_instance ALTER COLUMN app_instance_id SET DEFAULT ne
 --
 -- PostgreSQL database dump complete
 --
+
+\unrestrict wq6nxKguzh0Td4fVewAV7vWKpJSChdababQyDyf82nKM9NJnBbm0YsJ8d0x3qVp
 

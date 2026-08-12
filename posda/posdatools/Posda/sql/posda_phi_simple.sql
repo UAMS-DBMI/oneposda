@@ -2,12 +2,15 @@
 -- PostgreSQL database dump
 --
 
--- Dumped from database version 13.7
--- Dumped by pg_dump version 14.9 (Ubuntu 14.9-0ubuntu0.22.04.1)
+\restrict VwfH1pgJZuccdWzYxwyXrZnRXU5cS0GMYdwMo8Sm72Imt5Iyah5hZWMrvqxUFXP
+
+-- Dumped from database version 18.4
+-- Dumped by pg_dump version 18.4 (Homebrew)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
+SET transaction_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
 SELECT pg_catalog.set_config('search_path', '', false);
@@ -20,14 +23,17 @@ SET row_security = off;
 -- Name: posda_phi_simple; Type: DATABASE; Schema: -; Owner: -
 --
 
-CREATE DATABASE posda_phi_simple WITH TEMPLATE = template0 ENCODING = 'UTF8' LOCALE = 'en_US.UTF-8';
+CREATE DATABASE posda_phi_simple WITH TEMPLATE = template0 ENCODING = 'UTF8' LOCALE_PROVIDER = libc LOCALE = 'en_US.UTF-8';
 
 
+\unrestrict VwfH1pgJZuccdWzYxwyXrZnRXU5cS0GMYdwMo8Sm72Imt5Iyah5hZWMrvqxUFXP
 \connect posda_phi_simple
+\restrict VwfH1pgJZuccdWzYxwyXrZnRXU5cS0GMYdwMo8Sm72Imt5Iyah5hZWMrvqxUFXP
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
 SET idle_in_transaction_session_timeout = 0;
+SET transaction_timeout = 0;
 SET client_encoding = 'UTF8';
 SET standard_conforming_strings = on;
 SELECT pg_catalog.set_config('search_path', '', false);
@@ -36,9 +42,37 @@ SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
 
+--
+-- Name: db_version; Type: SCHEMA; Schema: -; Owner: -
+--
+
+CREATE SCHEMA db_version;
+
+
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
+
+--
+-- Name: migration; Type: TABLE; Schema: db_version; Owner: -
+--
+
+CREATE TABLE db_version.migration (
+    filename text NOT NULL,
+    sha256 text NOT NULL,
+    applied_at timestamp with time zone DEFAULT now() NOT NULL,
+    applied_by text DEFAULT CURRENT_USER NOT NULL
+);
+
+
+--
+-- Name: version; Type: TABLE; Schema: db_version; Owner: -
+--
+
+CREATE TABLE db_version.version (
+    version integer
+);
+
 
 --
 -- Name: dciodvfy_error; Type: TABLE; Schema: public; Owner: -
@@ -264,6 +298,110 @@ CREATE TABLE public.element_value_occurance (
 
 
 --
+-- Name: nifti_phi_scan_instance; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.nifti_phi_scan_instance (
+    nifti_phi_scan_instance_id integer NOT NULL,
+    description text NOT NULL,
+    start_time timestamp with time zone,
+    end_time timestamp with time zone
+);
+
+
+--
+-- Name: nifti_phi_scan_instance_nifti_phi_scan_instance_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.nifti_phi_scan_instance_nifti_phi_scan_instance_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: nifti_phi_scan_instance_nifti_phi_scan_instance_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.nifti_phi_scan_instance_nifti_phi_scan_instance_id_seq OWNED BY public.nifti_phi_scan_instance.nifti_phi_scan_instance_id;
+
+
+--
+-- Name: nifti_tag_seen; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.nifti_tag_seen (
+    nifti_tag_seen_id integer NOT NULL,
+    tag_name text
+);
+
+
+--
+-- Name: nifti_tag_seen_nifti_tag_seen_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.nifti_tag_seen_nifti_tag_seen_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: nifti_tag_seen_nifti_tag_seen_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.nifti_tag_seen_nifti_tag_seen_id_seq OWNED BY public.nifti_tag_seen.nifti_tag_seen_id;
+
+
+--
+-- Name: nifti_tag_value_occurrence; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.nifti_tag_value_occurrence (
+    nifti_tag_seen_id integer NOT NULL,
+    nifti_value_seen_id integer NOT NULL,
+    nifti_phi_scan_instance_id integer NOT NULL,
+    file_id integer NOT NULL
+);
+
+
+--
+-- Name: nifti_value_seen; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.nifti_value_seen (
+    nifti_value_seen_id integer NOT NULL,
+    value text NOT NULL
+);
+
+
+--
+-- Name: nifti_value_seen_nifti_value_seen_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.nifti_value_seen_nifti_value_seen_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: nifti_value_seen_nifti_value_seen_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.nifti_value_seen_nifti_value_seen_id_seq OWNED BY public.nifti_value_seen.nifti_value_seen_id;
+
+
+--
 -- Name: non_dicom_file_scan; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -344,7 +482,7 @@ CREATE TABLE public.non_dicom_path_value_occurrance (
 --
 
 CREATE TABLE public.phi_non_dicom_scan_instance (
-    phi_non_dicom_scan_instance_id integer NOT NULL,
+    phi_non_dicom_scan_instance_id integer CONSTRAINT phi_non_dicom_scan_instance_phi_non_dicom_scan_instanc_not_null NOT NULL,
     pndsi_description text,
     pndsi_start_time timestamp with time zone,
     pndsi_num_files integer,
@@ -441,6 +579,81 @@ ALTER SEQUENCE public.series_scan_instance_series_scan_instance_id_seq OWNED BY 
 
 
 --
+-- Name: sr_path_seen; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sr_path_seen (
+    sr_path_seen_id integer NOT NULL,
+    path_sig_pattern text
+);
+
+
+--
+-- Name: sr_path_seen_sr_path_seen_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.sr_path_seen_sr_path_seen_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: sr_path_seen_sr_path_seen_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.sr_path_seen_sr_path_seen_id_seq OWNED BY public.sr_path_seen.sr_path_seen_id;
+
+
+--
+-- Name: sr_path_value_occurance; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sr_path_value_occurance (
+    sr_path_seen_id integer NOT NULL,
+    value_seen_id integer NOT NULL,
+    tag text,
+    sr_series_scan_instance_id text NOT NULL,
+    sr_phi_scan_instance_id integer NOT NULL
+);
+
+
+--
+-- Name: sr_phi_scan_instance; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.sr_phi_scan_instance (
+    sr_phi_scan_instance_id integer NOT NULL,
+    description text NOT NULL,
+    start_time timestamp with time zone,
+    end_time timestamp with time zone
+);
+
+
+--
+-- Name: sr_phi_scan_instance_sr_phi_scan_instance_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.sr_phi_scan_instance_sr_phi_scan_instance_id_seq
+    AS integer
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- Name: sr_phi_scan_instance_sr_phi_scan_instance_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.sr_phi_scan_instance_sr_phi_scan_instance_id_seq OWNED BY public.sr_phi_scan_instance.sr_phi_scan_instance_id;
+
+
+--
 -- Name: tiff_phi_scan_instance; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -510,9 +723,9 @@ ALTER SEQUENCE public.tiff_tag_seen_tiff_tag_seen_id_seq OWNED BY public.tiff_ta
 CREATE TABLE public.tiff_tag_value_occurrence (
     tiff_tag_seen_id integer NOT NULL,
     tiff_value_seen_id integer NOT NULL,
+    page_id integer NOT NULL,
     tiff_phi_scan_instance_id integer NOT NULL,
-    file_id integer NOT NULL,
-    page_id integer NOT NULL
+    file_id integer NOT NULL
 );
 
 
@@ -611,6 +824,27 @@ ALTER TABLE ONLY public.element_seen ALTER COLUMN element_seen_id SET DEFAULT ne
 
 
 --
+-- Name: nifti_phi_scan_instance nifti_phi_scan_instance_id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.nifti_phi_scan_instance ALTER COLUMN nifti_phi_scan_instance_id SET DEFAULT nextval('public.nifti_phi_scan_instance_nifti_phi_scan_instance_id_seq'::regclass);
+
+
+--
+-- Name: nifti_tag_seen nifti_tag_seen_id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.nifti_tag_seen ALTER COLUMN nifti_tag_seen_id SET DEFAULT nextval('public.nifti_tag_seen_nifti_tag_seen_id_seq'::regclass);
+
+
+--
+-- Name: nifti_value_seen nifti_value_seen_id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.nifti_value_seen ALTER COLUMN nifti_value_seen_id SET DEFAULT nextval('public.nifti_value_seen_nifti_value_seen_id_seq'::regclass);
+
+
+--
 -- Name: non_dicom_file_scan non_dicom_file_scan_id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -646,6 +880,20 @@ ALTER TABLE ONLY public.series_scan_instance ALTER COLUMN series_scan_instance_i
 
 
 --
+-- Name: sr_path_seen sr_path_seen_id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sr_path_seen ALTER COLUMN sr_path_seen_id SET DEFAULT nextval('public.sr_path_seen_sr_path_seen_id_seq'::regclass);
+
+
+--
+-- Name: sr_phi_scan_instance sr_phi_scan_instance_id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.sr_phi_scan_instance ALTER COLUMN sr_phi_scan_instance_id SET DEFAULT nextval('public.sr_phi_scan_instance_sr_phi_scan_instance_id_seq'::regclass);
+
+
+--
 -- Name: tiff_phi_scan_instance tiff_phi_scan_instance_id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -671,6 +919,30 @@ ALTER TABLE ONLY public.tiff_value_seen ALTER COLUMN tiff_value_seen_id SET DEFA
 --
 
 ALTER TABLE ONLY public.value_seen ALTER COLUMN value_seen_id SET DEFAULT nextval('public.value_seen_value_seen_id_seq'::regclass);
+
+
+--
+-- Name: migration migration_pkey; Type: CONSTRAINT; Schema: db_version; Owner: -
+--
+
+ALTER TABLE ONLY db_version.migration
+    ADD CONSTRAINT migration_pkey PRIMARY KEY (filename);
+
+
+--
+-- Name: nifti_tag_seen nifti_tag_seen_tag_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.nifti_tag_seen
+    ADD CONSTRAINT nifti_tag_seen_tag_key UNIQUE (tag_name);
+
+
+--
+-- Name: nifti_value_seen nifti_value_seen_value_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.nifti_value_seen
+    ADD CONSTRAINT nifti_value_seen_value_key UNIQUE (value);
 
 
 --
@@ -712,6 +984,64 @@ CREATE UNIQUE INDEX element_seen_vr_pair_index ON public.element_seen USING btre
 
 
 --
+-- Name: element_value_occurance_phi_scan_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX element_value_occurance_phi_scan_id_idx ON public.element_value_occurance USING btree (phi_scan_instance_id);
+
+
+--
+-- Name: element_value_occurrance_series_scan_instance_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX element_value_occurrance_series_scan_instance_id_idx ON public.element_value_occurance USING btree (series_scan_instance_id);
+
+
+--
+-- Name: nifti_tag_seen_and_nifti_value_seen_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX nifti_tag_seen_and_nifti_value_seen_index ON public.nifti_tag_value_occurrence USING btree (nifti_tag_seen_id, nifti_value_seen_id);
+
+
+--
+-- Name: phi_scan_instance_pk; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX phi_scan_instance_pk ON public.phi_scan_instance USING btree (phi_scan_instance_id);
+
+
+--
+-- Name: series_scan_instance_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX series_scan_instance_idx ON public.series_scan_instance USING btree (series_instance_uid, series_scan_instance_id, scan_instance_id);
+
+
+--
+-- Name: series_scan_instance_pk; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX series_scan_instance_pk ON public.series_scan_instance USING btree (series_scan_instance_id);
+
+
+--
+-- Name: sr_path_seen_and_value_seen_index; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX sr_path_seen_and_value_seen_index ON public.sr_path_value_occurance USING btree (sr_path_seen_id, value_seen_id);
+
+
+--
+-- Name: value_seen_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX value_seen_idx ON public.value_seen USING btree (value_seen_id);
+
+
+--
 -- PostgreSQL database dump complete
 --
+
+\unrestrict VwfH1pgJZuccdWzYxwyXrZnRXU5cS0GMYdwMo8Sm72Imt5Iyah5hZWMrvqxUFXP
 
