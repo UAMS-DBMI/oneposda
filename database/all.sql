@@ -50055,7 +50055,7 @@ refresh materialized view public.files_without_type;
 -- PostgreSQL database dump
 --
 
-\restrict mXLLFe9VQdnRVcbqUGQGNvOrpyYjGZPBrx7wU6bUSKFKrHbItPVl7xmPSkfgwZo
+\restrict mSgwALpYGku8jHAyVF4SFoL8l2nVlooKhvfKbo9ZpEsHlnSJhYKbIF0IVngs7OH
 
 -- Dumped from database version 18.4
 -- Dumped by pg_dump version 18.4 (Homebrew)
@@ -50814,7 +50814,6 @@ curator	Status	30
 COPY dbif_config.spreadsheet_operation (operation_name, command_line, operation_type, input_line_format, tags, can_chain, outdated, worker_priority) FROM stdin;
 AnnotateTimeline	InsertListOfAnnotatedFiles.pl <?bkgrnd_id?> "<comment>" <notify>	background_process	<file_id>&<file_name>&<mime_type>&<description>	{activity_timepoints,send_series_via_dicom,bills_test}	\N	f	0
 FindWhichSubprocessesCreatedTimepointByUser	FindWhichSubprocessesCreatedTimepointByUser.pl <?bkgrnd_id?> <activity_id> <user> <notify>	background_process	\N	{temp}	\N	f	0
-Path_Patient_Mapping	PathologyCreatePatientMapping.py <?bkgrnd_id?> <activity_id> <notify> <collection_name> <site_name>	background_process	<patient_id>&<original_file_name>	{pathology,patient_mapping}	\N	f	0
 ConsolidateTimepoints	ConsolidateActivityTimepoints.py <?bkgrnd_id?> <activity_id> <notify>	background_process	<activity_timepoint_id>	{activity_timepoints}	\N	f	0
 SRPhiScanOp	SRPhiScan.pl <?bkgrnd_id?> <activity_id> <notify>	background_process		{"PHI report"}	\N	f	0
 AddFilesToTimepoint	AddFilesToTimepoint.pl <?bkgrnd_id?> <activity_id> "<comment>" <notify>	background_process	<file_id>	{activity}	\N	f	0
@@ -50825,7 +50824,6 @@ ApplyMasks	ApplyMasks.py <?bkgrnd_id?> <activity_id> <visual_review_instance_id>
 ImportDownloadableDirectory	ImportDownloadableDirectory.pl <?bkgrnd_id?> <activity_id> "<comment>" "<sub_dir>" <notify>	background_process		{VA,dispositions}	\N	f	0
 MakeUIDMap	create-hashed-uid-mapping.py <?bkgrnd_id?> <notify> <timepoint_id>	background_process		{}	\N	f	0
 BackgroundEditTp	BackgroundEditorTp.pl <?bkgrnd_id?> <activity_id> "<edit_description>" <notify>	background_process	<series_instance_uid>&<op>&<tag>&<val1>&<val2>	{activity_timepoints}	\N	f	1
-BackgroundPrivateDispositionsTp	BackgroundPrivateDispositionsTp.pl <?bkgrnd_id?> <activity_id> "<uid_root>" "<offset>" "<notify>" "<skip_dispositions>" "<upd_nbia>" "<dir>"	background_process		{activity_timepoints}	\N	f	1
 BackgroundPrivateDispositionsTpBaseline	BackgroundPrivateDispositionsTpBaseline.pl <?bkgrnd_id?> <activity_id>  "<notify>" "<skip_dispositions>" "<upd_nbia>" "<dir>"	background_process		{activity_timepoints}	\N	f	1
 SR_phiscanOp	SR_phiscan.pl <?bkgrnd_id?> <activity_id> <notify>	background_process		{"PHI report"}	\N	f	0
 MakeDownloadableNonDicomTp	MakeDownloadableNonDicomTp.pl <?bkgrnd_id?> <activity_id> <sub_dir> <notify>	background_process		{send_series}	\N	f	0
@@ -50836,7 +50834,6 @@ BackgroundSwapDicomPixelsData	BackgroundByteSwapDicomFilesInTimepoint.pl <?bkgrn
 BackgroundFixRtstructTp	BackgroundFixStructLinkagesTp.pl <?bkgrnd_id?> <activity_id> "<comment>" <notify>	background_process	<img_series>&<struct_file_id>	{activity_timepoints}	\N	f	0
 NiftiScheduleVisualReview	NiftiScheduleVisualReview.py <?bkgrnd_id?> <activity_id> <notify>	background_process		{visual_review}	\N	f	0
 PopulateFileNiftiTp	PopulateFileNiftiTp.py <?bkgrnd_id?> <activity_id> <update_existing> <notify>	background_subprocess		{nifti}	\N	f	1
-ProposeUIDchangeEdits	ProposeUIDchangeEdits.pl <?bkgrnd_id?> <activity_id> <include_series_instance_uid> <include_study_instance_uid> <include_sop> <notify> <description>	background_process		{}	\N	f	0
 PhiVaPublicScanDD	PhiVaPublicScanDD.pl <?bkgrnd_id?> <activity_id> <rel_dir> <max_rows> <notify>	background_process		{simple_phi,va}	\N	f	1
 SRProposeEditsTp	SRProposeEditsTp.pl <?bkgrnd_id?> <activity_id> <scan_id> <notify> "<sep_char>"	background_process	<element><sep_char><q_value><sep_char><path_sig_pattern><sep_char><p_op><sep_char><q_arg1><sep_char><q_arg2>	{simple_phi,activity_timepoints}	\N	f	0
 CopyPriorTimepoint	CopyPriorTimepoint.py <?bkgrnd_id?> <activity_id> <old_tp_id> <notify>	background_process		{backup}	\N	f	1
@@ -50849,7 +50846,8 @@ NewFirstPassPhi	NewFirstPassPhiScan.pl <?bkgrnd_id?> "<description>" <notify>	ba
 FileAndDismissNotifications	FileAndDismissNotification.pl <?bkgrnd_id?> <activity_id> "<description>" <notify>	background_process	<id>	{activity_support}	\N	f	0
 PhiReviewFromTimepoint	SchedulePhiReviewFromActivityTimepoint.pl <?bkgrnd_id?> <activity_id> <notify>	background_process	\N	{visual_review}	\N	f	1
 DispositionNeededWorksheet	DispositionsNeededWorksheet.pl <?bkgrnd_id?> <notify>	background_process	\N	{phi_maint}	\N	f	1
-VisualReviewFromTimepoint	ScheduleVisualReviewFromActivityTimepoint.pl <?bkgrnd_id?> <activity_id> <notify>	background_process	\N	{visual_review}	\N	f	0
+BackgroundPrivateDispositionsTp	BackgroundPrivateDispositionsTp.pl <?bkgrnd_id?> <activity_id> "<uid_root>" "<offset>" "<notify>" "<skip_dispositions>" "<upd_nbia>" "<dir>" "<override_site_name>"	background_process		{activity_timepoints}	\N	f	1
+VisualReviewFromTimepoint	ScheduleVisualReviewFromActivityTimepoint.pl <?bkgrnd_id?> <activity_id> <notify> "<skip_rendering>"	background_process		{visual_review}	\N	f	0
 AnalyzeSeriesDuplicatesForTimepoint	AnalyzeTpSeriesDuplicates.pl <?bkgrnd_id?> <activity_id> <notify>	background_process	\N	{activity_timepoint_support}	\N	f	0
 BackgroundUpdatePrivateDisposition	BackgroundUpdatePrivateDispositions.pl <?bkgrnd_id?> "<why>" <notify>	background_process	<id>&<disp>	{phi_maint}	\N	f	0
 RejectEditsTp	RejectEditsTp.pl <?bkgrnd_id?> <activity_id> <subprocess_invoc_id> <notify>	background_process	\N	{find_patients}	\N	f	0
@@ -50870,7 +50868,6 @@ SimplePhiScan	PhiSimpleScan.pl "<description>" <file_query_name> <notify>	legacy
 MakeWeeklyFilesReport	MakeWeeklyLoadReport.pl <?bkgrnd_id?> <notify> <from> <to>	background_process	\N	{downloads_by_date}	\N	f	1
 CreateActivityTimepointFromSeriesList	CreateActivityTimepointFromSeriesList.pl <?bkgrnd_id?> <activity_id> "<comment>" <notify>	background_process	<series_instance_uid>	{activity_timepoints}	\N	t	0
 RetryFailedProjections	RetryFailedProjections.pl <?bkgrnd_id?> <notify>	background_process	<image_equivalence_class_id>&<processing_status>&<review_status>	{visual_review_status}	\N	f	0
-ChangeReviewStatus	ChangeReviewStatus.pl <?bkgrnd_id?> <review_status> <processing_status> <notify>	background_process	<image_equivalence_class_id>&<processing_status>&<review_status>	{visual_review_status}	\N	f	0
 DeleteSeriesFromActivityTimepoint	DeleteSeriesFromActivityTimepoint.pl <?bkgrnd_id?> <activity_id> "<comment>" <notify>	background_process	<series_instance_uid>	{activity_timepoints}	\N	f	0
 AddSeriesToActivityTimepoint	AddSeriesToActivityTimepoint.pl <?bkgrnd_id?> <activity_id> "<comment>" <notify>	background_process	<series_instance_uid>	{activity_timepoint_support}	\N	f	0
 CompareSopsInTpToPublic	CompareSopsInTpToPublic.pl <?bkgrnd_id?> <activity_id> <notify>	background_process	\N	{activity_timepoints_support}	\N	f	0
@@ -51110,6 +51107,30 @@ TempMprPopulateInitialAxialVolume	TempMprPopulateInitialAxialVolume.pl <?bkgrnd_
 TempMprRotateTransposedConronalToSagittal	TempMprRotateTransposedConronalToSagittal.pl <?bkgrnd_id?> <activity_id> <notify>	background_process	<key>,<value>,<x>,<y>,<z>,<gray_file_id>,<jpeg_file_id>	{temp_mpr}	\N	t	0
 TempMprTransposeVolume	TempMprTransposeVolume.pl <?bkgrnd_id?> <activity_id> <temp_mpr_volume_id> <notify>	background_process		{temp_mpr}	\N	t	0
 BackgroundSingleRtLinkageDetailReports	BackgroundSingleRtLinkageDetailReports.pl <?bkgrnd_id?> <activity_id> <file_path> <notify>	background_process		{StuctLinkages}	\N	t	0
+ExportPrivateTagData	ExportPrivateTagData.py <?bkgrnd_id?> <activity_id> <notify>	background_process		{export}	\N	f	0
+BackgroundPrivateDispositionsTpDual	BackgroundPrivateDispositionsTpDual.pl <?bkgrnd_id?> <activity_id>  "<notify>" "<skip_dispositions>" "<upd_nbia>" "<dir>"	background_process		{activity_timepoints}	\N	f	0
+ImportFromFaspex	ImportFromFaspex.py <?bkgrnd_id?> <activity_id> "<package_dir>" <notify>	background_process		{activity_timepoints}	\N	f	0
+NewApplyMasks	NewApplyMasks.py <?bkgrnd_id?> <activity_id> <notify> <visual_review_instance_id> "<process_masks>" "<process_sliceremove>" "<process_blackout>" 	background_process		{export}	\N	f	0
+ProduceInitialAnonCmdsFromDeidRecipeTP	ProduceInitialAnonCmdsFromDeidRecipeTP.py <?bkgrnd_id?> <collection> <site> <recipe_file_id> <activity_id> <notify>	background_process		{initial_anonymization,patient_mapping}	\N	f	0
+VolumeGeometryReport	VolumeGeometryReport.py <?bkgrnd_id?> <activity_id> <notify>	background_process		{timepoint_buttons}	\N	f	0
+FlagVRForMasking	FlagVRForMasking.py <?bkgrnd_id?> <activity_id> <visual_review_instance_id> <notify>	background_process		{visual_review}	\N	f	0
+CheckSegLinkages	CheckSegLinkages.py <?bkgrnd_id?> <activity_id> <notify>	background_process		{timepoint_buttons}	\N	f	0
+PathologyCreateActivityAndTP	PathologyNewTPfromImport.py <?bkgrnd_id?> "<activity_name>" <import_id> <file_type> <notify>	background_process		{pathology}	\N	f	0
+PathologyImageAnalysis	PathologyImageAnalysis.py <?bkgrnd_id?> <activity_id> <notify>	background_process		{pathology}	\N	f	0
+PopulateSegBitmaps	PopulateSegBitmaps.pl <?bkgrnd_id?> <notify>	background_process		{}	\N	f	0
+ChangeMaskingStatus	ChangeMaskingStatus.py <?bkgrnd_id?> <activity_id> <masking_status> <notify>	background_process	<image_equivalence_class_id>	{masking_status}	\N	f	0
+CompareDupSeries	CompareDupSeries.py <?bkgrnd_id?> <activity_id> <notify>	background_process		{}	\N	f	0
+CheckLinkages	CheckLinkages.py <?bkgrnd_id?> <activity_id> <notify>	background_process		{timepoint_buttons}	\N	f	0
+CopyPriorTimepointExcludingSeries	CopyPriorTimepointExcludingSeries.py <?bkgrnd_id?> <activity_id> <old_tp_id> <notify>	background_process	<series_instance_uid>	{activity_timepoints}	\N	f	0
+CopySeriesFromOtherTimepoint	CopySeriesFromOtherTimepoint.py <?bkgrnd_id?> <activity_id> <other_tp_id> <notify>	background_process	<series_instance_uid>	{activity_timepoints}	\N	f	0
+ImportPatientMappingWithIds	ImportPatientMappingWithIds.pl <?bkgrnd_id?> <notify>	background_process	<from_patient_id>&<to_patient_id>&<to_patient_name>&<collection_name>&<site_name>&<batch_number>&<date_shift>&<diagnosis_date>&<baseline_date>&<uid_root>&<upload_id>	{mapping_tables,patient_mapping}	\N	f	0
+ImportInPlaceFromPublic	ImportInPlaceFromPublic.py <?bkgrnd_id?> <activity_id> <notify> "<collection_name>" "<visibility>" "<site_name>"	background_process		{import}	\N	f	0
+Path_Export_parse	PathologyExporter.py <?bkgrnd_id?> <activity_id> <notify>	\N	<root>&<path>&<collectionname>&<studyid>&<clinicaltrialsubjectid>&<imageid>&<fileid>	{pathology,patient_mapping,export}	\N	f	0
+CheckRtLinkages	CheckRtLinkages.py <?bkgrnd_id?> <activity_id> <notify>	background_process		{timepoint_buttons}	\N	f	0
+ImportPrivateElementSeen	ImportPrivateElementSeen.py <?bkgrnd_id?> <activity_id> <notify>	background_process	<element_sig_pattern>|<tag_name>|<vr>|<private_disposition>	{import}	\N	f	0
+ProposeUIDchangeEdits	ProposeUIDchangeEdits.pl <?bkgrnd_id?> <activity_id> <include_series_instance_uid> <include_study_instance_uid> <include_sop> <notify> <description>	background_process		{}	\N	f	0
+ChangeReviewStatus	ChangeReviewStatus.pl <?bkgrnd_id?> <activity_id> <review_status> <processing_status> <notify>	background_process	<image_equivalence_class_id>&<processing_status>&<review_status>	{visual_review_status}	\N	f	0
+Path_Patient_Mapping	PathologyCreatePatientMapping.py <?bkgrnd_id?> <activity_id> <notify>	background_process	<patient_id>&<original_file_name>&<collection_name>&<site_name>&<study_name>&<image_id>&<clinical_trial_subject_id>&<shift_date>&<base_date>&<reg_date>	{pathology,patient_mapping}	\N	f	0
 \.
 
 
@@ -51159,7 +51180,7 @@ SELECT pg_catalog.setval('dbif_config.popup_buttons_popup_button_id_seq1', 75, t
 -- PostgreSQL database dump complete
 --
 
-\unrestrict mXLLFe9VQdnRVcbqUGQGNvOrpyYjGZPBrx7wU6bUSKFKrHbItPVl7xmPSkfgwZo
+\unrestrict mSgwALpYGku8jHAyVF4SFoL8l2nVlooKhvfKbo9ZpEsHlnSJhYKbIF0IVngs7OH
 
 set search_path to public, dbif_config;
 truncate table queries;
