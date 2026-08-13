@@ -1,34 +1,53 @@
 """Port of ``FastFileProcessDaemon.pl`` and the worker run loops.
 
-The daemon does two jobs: refill the Redis ``files`` list from the database
-whenever it drains, and supervise the worker processes. Both worker loops
-live here too since they are a handful of lines each and share the same
-shutdown convention.
+The pipeline runs as three independently scaled tiers, one process per
+container:
 
-The replenish query, batch size and poll intervals are kept as they are in
-the Perl -- 1000 rows per refill, a 1s tick, and a 10s pause when the
-database has nothing to offer.
+- ``daemon`` -- refills the Redis ``files`` list from the database whenever
+  it drains. Exactly one of these should run; a second would queue the same
+  rows twice.
+- ``file-worker`` -- parses a file into the database, then forwards it to the
+  pixel queue.
+- ``pixel-worker`` -- the second pass that records where the pixel data lives.
+
+Nothing here spawns children: under Kubernetes each tier is its own
+Deployment and the replica count is the concurrency knob, so a worker process
+is a pod and the scheduler decides how many there are. The Perl daemon forked
+five of each on startup, which is the behaviour this replaces.
+
+The replenish query and batch size are kept as they are in the Perl -- 1000
+rows per refill, a 1s tick, and a 10s pause when the database has nothing to
+offer -- but each interval can be tuned per deployment from the environment.
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
-import multiprocessing
-import signal
+import os
 import sys
-import time
 
 from posda.ingest import pixel_worker, queue, worker
 from posda.ingest.db import Database
+from posda.ingest.lifecycle import ShutdownFlag
 from posda.ingest.worker import FileJob
 
 log = logging.getLogger(__name__)
 
-WORKER_COUNT = 5
-BATCH_SIZE = 1000
-IDLE_SLEEP = 10
-TICK = 1
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    return default if raw is None else int(raw)
+
+
+#: Rows per refill. Larger batches mean fewer queries but a longer window in
+#: which the daemon cannot notice SIGTERM.
+BATCH_SIZE = _env_int("POSDA_INGEST_BATCH_SIZE", 1000)
+#: Pause after a refill that found nothing, so an idle pipeline stops
+#: hammering the database.
+IDLE_SLEEP = _env_int("POSDA_INGEST_IDLE_SLEEP", 10)
+#: Delay between queue-depth checks.
+TICK = _env_int("POSDA_INGEST_TICK", 1)
 
 REPLENISH_SQL = """
     select file_id, root_path || '/' || rel_path as path
@@ -54,31 +73,14 @@ def replenish(db: Database, client) -> int:
     return count
 
 
-def run_daemon(spawn_workers: bool = True) -> None:
+def run_daemon() -> None:
+    shutdown = ShutdownFlag().install()
     db = Database("posda_files")
     client = queue.connect()
 
     log.info("FFPD: FastFileProcessDaemon starting up...")
-    # Clear any stale shutdown flag so the workers we are about to start do
-    # not immediately exit.
-    queue.clear_shutdown(client)
 
-    children: list[multiprocessing.Process] = []
-    if spawn_workers:
-        children = _start_workers()
-
-    def shut_down(*_args: object) -> None:
-        log.info("FFPD: Shutdown signal received, exiting now. Goodbye!")
-        queue.request_shutdown(client)
-        for child in children:
-            child.join(timeout=30)
-        db.close()
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, shut_down)
-    signal.signal(signal.SIGTERM, shut_down)
-
-    while True:
+    while not shutdown.requested:
         if not db.ping():
             raise RuntimeError("Lost connection to database")
 
@@ -87,78 +89,76 @@ def run_daemon(spawn_workers: bool = True) -> None:
             if count:
                 log.info("FFPD: Added %d files to the queue.", count)
             else:
-                time.sleep(IDLE_SLEEP)
+                shutdown.sleep(IDLE_SLEEP)
 
-        if queue.should_quit(client):
-            shut_down()
+        shutdown.sleep(TICK)
 
-        time.sleep(TICK)
-
-
-def _start_workers() -> list[multiprocessing.Process]:
-    children = []
-    for _ in range(WORKER_COUNT):
-        child = multiprocessing.Process(target=run_file_worker, daemon=True)
-        child.start()
-        children.append(child)
-    for _ in range(WORKER_COUNT):
-        child = multiprocessing.Process(target=run_pixel_worker, daemon=True)
-        child.start()
-        children.append(child)
-    return children
+    log.info("FFPD: Shut down completed. Goodbye!")
+    db.close()
 
 
 def run_file_worker() -> None:
     """Port of the FastFileProcessWorker.pl main loop."""
+    shutdown = ShutdownFlag().install()
     db = Database("posda_files")
     client = queue.connect()
     log.info("FFPW: FastFileProcessWorker starting up...")
 
-    while True:
+    while not shutdown.requested:
         if not db.ping():
             raise RuntimeError("Lost connection to database")
 
         popped = client.brpop(queue.FILE_QUEUE, timeout=queue.POP_TIMEOUT)
-        if popped is not None:
-            _, payload = popped
-            job = FileJob.from_json(payload)
-            log.info("FFPW: Processing %s, %s", job.file_id, job.path)
-            worker.process_file(db, job)
-            # Hand the same payload to the pixel pass.
-            client.rpush(queue.PIXEL_QUEUE, payload)
+        if popped is None:
+            continue
 
-        if queue.should_quit(client):
-            log.info("FFPW: Worker stopping.")
-            db.close()
-            return
+        _, payload = popped
+        job = FileJob.from_json(payload)
+        log.info("FFPW: Processing %s, %s", job.file_id, job.path)
+        try:
+            worker.process_file(db, job)
+        except Exception:  # noqa: BLE001 - one bad file must not kill the pod
+            # The Perl worker dies here and its supervisor restarts it. As a
+            # Deployment that is a crash loop instead: the file stays
+            # is_dicom_file null, the daemon re-queues it, and the
+            # replacement pod dies on the same file. Log and move on.
+            log.exception("FFPW: ERROR failed to process %s", job.file_id)
+        # Hand the same payload to the pixel pass. A file that failed above
+        # is still forwarded, as it is in the Perl, because the two passes
+        # read the file independently.
+        client.rpush(queue.PIXEL_QUEUE, payload)
+
+    log.info("FFPW: Worker stopping.")
+    db.close()
 
 
 def run_pixel_worker() -> None:
     """Port of the FastPixelInfoWorker.pl main loop."""
+    shutdown = ShutdownFlag().install()
     db = Database("posda_files")
     client = queue.connect()
     log.info("FPIW: FastPixelInfoWorker starting up...")
 
-    while True:
+    while not shutdown.requested:
         if not db.ping():
             raise RuntimeError("Lost connection to database")
 
         popped = client.brpop(queue.PIXEL_QUEUE, timeout=queue.POP_TIMEOUT)
-        if popped is not None:
-            _, payload = popped
-            job = FileJob.from_json(payload)
-            log.info("FPIW: Processing %s, %s", job.file_id, job.path)
-            try:
-                pixel_worker.populate_pixel_info(db, job)
-            except Exception as exc:  # noqa: BLE001 - matches the Perl's eval
-                # The Perl wraps this call in eval and logs the failure so a
-                # single unreadable file cannot stop the worker.
-                log.error("FPIW: ERROR failed to process %s: %s", job.file_id, exc)
+        if popped is None:
+            continue
 
-        if queue.should_quit(client):
-            log.info("FPIW: Worker stopping.")
-            db.close()
-            return
+        _, payload = popped
+        job = FileJob.from_json(payload)
+        log.info("FPIW: Processing %s, %s", job.file_id, job.path)
+        try:
+            pixel_worker.populate_pixel_info(db, job)
+        except Exception:  # noqa: BLE001 - matches the Perl's eval
+            # The Perl wraps this call in eval and logs the failure so a
+            # single unreadable file cannot stop the worker.
+            log.exception("FPIW: ERROR failed to process %s", job.file_id)
+
+    log.info("FPIW: Worker stopping.")
+    db.close()
 
 
 ROLES = {
@@ -171,24 +171,16 @@ ROLES = {
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("role", choices=sorted(ROLES), default="daemon", nargs="?")
-    parser.add_argument(
-        "--no-workers",
-        action="store_true",
-        help="run the daemon without spawning workers (they are separate "
-        "processes or containers)",
-    )
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args(argv)
 
     logging.basicConfig(
         level=args.log_level.upper(),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        stream=sys.stdout,
     )
 
-    if args.role == "daemon":
-        run_daemon(spawn_workers=not args.no_workers)
-    else:
-        ROLES[args.role]()
+    ROLES[args.role]()
     return 0
 
 

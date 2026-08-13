@@ -1,0 +1,63 @@
+---
+# Shared configuration for the three ingest tiers. The container reads
+# libpq's standard environment for the database and POSDA_REDIS_HOST for the
+# queue, so nothing here is ingest-specific beyond the tuning knobs.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: posda-ingest-config
+  labels:
+    app.kubernetes.io/part-of: posda-ingest
+data:
+  PGHOST: posda-db
+  PGUSER: postgres
+  POSDA_REDIS_HOST: posda-redis
+
+  TZ: America/Chicago
+  POSDA_ROOT: /home/posda/posdatools
+  POSDA_CACHE_ROOT: /home/posda/cache
+  POSDA_DATABASE_CONFIG: /home/posda/posdatools/Config/databases.json
+
+  # Rows the daemon queues per refill. The daemon cannot notice SIGTERM
+  # while a batch is in flight, so a very large value slows pod shutdown.
+  POSDA_INGEST_BATCH_SIZE: "1000"
+  # Pause after a refill that found nothing.
+  POSDA_INGEST_IDLE_SLEEP: "10"
+  # Delay between queue-depth checks.
+  POSDA_INGEST_TICK: "1"
+
+  # Defect fixes, off by default. Read once at startup, so changing one here
+  # needs a rollout restart of the workers to take effect. See
+  # docs/programming/Ingest-Fixes.md before turning any of them on -- five
+  # change row counts in tables that analyst queries read.
+  # POSDA_INGEST_FIX_LOOKUP_UPSERT: "1"
+---
+# Replace with a real secret, or drop this and point the Deployments at
+# whatever already holds the database password in your cluster.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: posda-ingest-db
+  labels:
+    app.kubernetes.io/part-of: posda-ingest
+type: Opaque
+stringData:
+  PGPASSWORD: example
+---
+# Every tier reads the DICOM files from this volume by the path recorded in
+# file_storage_root, so all three must mount the same storage and it has to
+# be ReadWriteMany -- the workers are spread across nodes. Set storageClassName
+# to whichever RWX class your cluster provides (NFS, CephFS, Filestore, EFS).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: posda-cache
+  labels:
+    app.kubernetes.io/part-of: posda-ingest
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Ti
+  # storageClassName: nfs-client

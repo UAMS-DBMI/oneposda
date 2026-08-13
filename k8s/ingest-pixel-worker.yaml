@@ -1,0 +1,60 @@
+---
+# Second pass over each imported file, recording where the pixel data lives.
+#
+# Scale this independently of the file workers: it parses with no element
+# size limit, so it reads the pixel bytes and is the memory-hungry tier,
+# while doing far less database work per file.
+#
+# Note that a job lost from the "pixel_location" list is lost for good --
+# unlike the file queue, nothing re-derives it from the database. Keep
+# terminationGracePeriodSeconds generous enough that pods are not SIGKILLed
+# mid-file. See README.md.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: posda-ingest-pixel-worker
+  labels:
+    app.kubernetes.io/name: posda-ingest-pixel-worker
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/part-of: posda-ingest
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: posda-ingest-pixel-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: posda-ingest-pixel-worker
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/part-of: posda-ingest
+    spec:
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 2123
+        fsGroup: 2123
+      containers:
+        - name: pixel-worker
+          image: registry.dbmi.cloud/posda:1.1.6
+          args: ["pixel-worker-py"]
+          envFrom:
+            - configMapRef:
+                name: posda-ingest-config
+            - secretRef:
+                name: posda-ingest-db
+          volumeMounts:
+            - name: cache
+              mountPath: /home/posda/cache
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              # Whole pixel elements are loaded to digest them, so this has
+              # to cover your largest single instance with headroom.
+              memory: 4Gi
+      volumes:
+        - name: cache
+          persistentVolumeClaim:
+            claimName: posda-cache

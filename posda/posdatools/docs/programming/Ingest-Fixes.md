@@ -27,13 +27,21 @@ Each is an environment variable on the worker, named
 `POSDA_INGEST_FIX_<NAME>`, accepting `1`, `true`, `yes` or `on`
 (case-insensitive). Anything else, including unset, is off.
 
+Set it on the **workers**, not on `posda-fast-file-process` — that role only
+fills the queue and never parses a file. `LOAD_LARGE_VALUES` is the one
+exception worth calling out: it affects both `file-worker` and
+`pixel-worker`, and the pixel worker already parses without a size limit.
+
 ```yaml
 # config/docker-compose.yaml
-posda-fast-file-process:
-    command: file-process-py
+posda-file-worker:
+    command: file-worker-py
     environment:
         - POSDA_INGEST_FIX_XFR_STX=1
 ```
+
+Under Kubernetes the flags live in the `posda-ingest-config` ConfigMap,
+which all three Deployments read; see `k8s/README.md`.
 
 Flags are read once at import, so a worker must be restarted to pick up a
 change. `posda.ingest.fixes.ACTIVE.enabled_names()` reports what is on.
@@ -73,6 +81,9 @@ row or count.
 production five workers race: two can miss the same row and both insert it.
 In the dev database `slope_intercept` held 4 rows of which 1 was distinct,
 and `window_level` 5 of which 3 were.
+
+The race scales with worker count, so this is the flag to plan for first if
+you intend to run `posda-file-worker` above five replicas.
 
 It needs the unique indexes from
 `Posda/sql/migrations/ingest_lookup_unique.sql`, which deduplicates the

@@ -173,10 +173,12 @@ services:
         deploy:
             replicas: 1
 
-    ## Service which performs DICOM file parsing and importing to the db
+    ## Fills the Redis import queue from the database.
+    ## Run exactly one of these -- a second replica queues the same rows twice.
     posda-fast-file-process:
         image: tcia/posda:1.0.4
-        command: file-process
+        # command: file-process   # the Perl daemon, which forks its own workers
+        command: file-process-py
         restart: always
         depends_on:
             - db
@@ -190,6 +192,52 @@ services:
             - database.env
             - common.env
             - posda.env
+        deploy:
+            replicas: 1
+
+    ## Parses DICOM files and imports them to the db.
+    ## Increase the replicas to increase concurrent processes.
+    posda-file-worker:
+        image: tcia/posda:1.0.4
+        command: file-worker-py
+        restart: always
+        stop_grace_period: 60s
+        depends_on:
+            - db
+            - redis
+        volumes:
+            - posda_cache_alpine:/home/posda/cache
+            - ./posda/posdatools:/home/posda/posdatools
+            - /mnt:/mnt
+            - /nas:/nas
+        env_file:
+            - database.env
+            - common.env
+            - posda.env
+        deploy:
+            replicas: 5
+
+    ## Second pass over each imported file, recording where the pixel data is.
+    ## Increase the replicas to increase concurrent processes.
+    posda-pixel-worker:
+        image: tcia/posda:1.0.4
+        command: pixel-worker-py
+        restart: always
+        stop_grace_period: 60s
+        depends_on:
+            - db
+            - redis
+        volumes:
+            - posda_cache_alpine:/home/posda/cache
+            - ./posda/posdatools:/home/posda/posdatools
+            - /mnt:/mnt
+            - /nas:/nas
+        env_file:
+            - database.env
+            - common.env
+            - posda.env
+        deploy:
+            replicas: 5
 
     ## Main API server
     posda-api:
