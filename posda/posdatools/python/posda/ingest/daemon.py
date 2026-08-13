@@ -29,7 +29,6 @@ WORKER_COUNT = 5
 BATCH_SIZE = 1000
 IDLE_SLEEP = 10
 TICK = 1
-POP_TIMEOUT = 5
 
 REPLENISH_SQL = """
     select file_id, root_path || '/' || rel_path as path
@@ -119,7 +118,7 @@ def run_file_worker() -> None:
         if not db.ping():
             raise RuntimeError("Lost connection to database")
 
-        popped = client.brpop(queue.FILE_QUEUE, timeout=POP_TIMEOUT)
+        popped = client.brpop(queue.FILE_QUEUE, timeout=queue.POP_TIMEOUT)
         if popped is not None:
             _, payload = popped
             job = FileJob.from_json(payload)
@@ -144,7 +143,7 @@ def run_pixel_worker() -> None:
         if not db.ping():
             raise RuntimeError("Lost connection to database")
 
-        popped = client.brpop(queue.PIXEL_QUEUE, timeout=POP_TIMEOUT)
+        popped = client.brpop(queue.PIXEL_QUEUE, timeout=queue.POP_TIMEOUT)
         if popped is not None:
             _, payload = popped
             job = FileJob.from_json(payload)

@@ -123,7 +123,10 @@ def submit_file(file):
 def main():
     print("exodus, starting up...")
 
-    redis_db = redis.StrictRedis(host=REDIS_HOST, db=0)
+    # socket_timeout must exceed the brpop block time below, or every
+    # empty poll times out at the socket layer (redis-py >= 8 defaults
+    # socket_timeout to 5s)
+    redis_db = redis.StrictRedis(host=REDIS_HOST, db=0, socket_timeout=10)
     print("connected to redis")
 
     psql_db_conn = psycopg2.connect(dbname=PSQL_DB_NAME)

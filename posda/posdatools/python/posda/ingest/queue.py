@@ -26,11 +26,25 @@ QUIT_KEY = "quit"
 
 DEFAULT_PORT = 6379
 
+# How long the workers ask BRPOP to block for.
+POP_TIMEOUT = 5
+
+# redis-py 8 changed socket_timeout from None to 5s, so a BRPOP that blocks
+# for its full POP_TIMEOUT -- i.e. every poll of an empty queue -- loses the
+# race with the socket read deadline and raises TimeoutError. The read
+# timeout has to stay comfortably above POP_TIMEOUT.
+SOCKET_TIMEOUT = POP_TIMEOUT * 2
+
 
 def connect(host: str | None = None, port: int = DEFAULT_PORT) -> redis.Redis:
     """Connect using POSDA_REDIS_HOST, as Config('redis_host') does."""
     host = host or os.environ.get("POSDA_REDIS_HOST", "redis")
-    return redis.Redis(host=host, port=port, decode_responses=True)
+    return redis.Redis(
+        host=host,
+        port=port,
+        decode_responses=True,
+        socket_timeout=SOCKET_TIMEOUT,
+    )
 
 
 def should_quit(client: redis.Redis) -> bool:
