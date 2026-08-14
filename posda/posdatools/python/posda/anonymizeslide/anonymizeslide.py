@@ -662,7 +662,7 @@ def anonymizeDesc(filepaths,edit_type,shift):
     for filename in filepaths:
         editImageDesc(filename,shift)
 
-def anonymize(filepaths,edit_type,edit_details):
+def anonymize(filepaths,edit_type,edit_details='None'):
     #print("removing slide")
     for filename in filepaths:
         try:
