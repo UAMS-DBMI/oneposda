@@ -82,7 +82,7 @@ def get_root_and_rel_path(file_id):
         res = call_api(str, 0)
         return res[0]['root_path'],res[0]['rel_path']
 
-def editSlide(filepath,edit_type,edit_details):
+def editSlide(filepath,edit_type,edit_details='None'):
     files = [filepath]
     if edit_type == '1' or edit_type == '2':
         anonymizeslide.anonymize(files,edit_type)

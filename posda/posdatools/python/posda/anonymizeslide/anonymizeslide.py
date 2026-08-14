@@ -443,13 +443,17 @@ def editImageDesc(filename,details):
                 desc_dict[tag] = '0'
                 changes += 1
 
-            elif normalized == 'date':
+            elif normalized == 'date' and details != 'None':
                 old_date = desc_dict[tag]
                 new_date = changeDate(old_date,details)
 
                 if new_date != old_date:
                     desc_dict[tag] = new_date
                     changes += 1
+                    print(
+                        f"Date Shifted old={old_date} "
+                        f"new={new_date} "
+                    )
 
         if changes == 0:
             continue
@@ -477,6 +481,7 @@ def editImageDesc(filename,details):
         print(
             f"{changes} ImageDescription fields modified"
         )
+
 def changeDate(originalDate, details):
     split_details = details.split(':')
     action = split_details[0].lower()
