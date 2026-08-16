@@ -1,4 +1,4 @@
-VERSION := 1.1.5
+VERSION := 1.1.9
 REGISTRY := registry.dbmi.cloud
 GIT_TAG := $(shell git rev-parse --short HEAD)
 
