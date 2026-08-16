@@ -1,11 +1,19 @@
-fastapi
+## These are pinned (possibly only httpx or requests) because something changed
+## that caused FastAPI to no longer treat requests without a Content-Type
+## header as JSON. 
+## WARNING: In order to allow these to ugprade, the perl code must be fixed!
+## There is at least one place (Posda::Api) where REST::Client is used but
+## no Content-Type header is set. That (and all other instances of it) will
+## break. They must be fixed along with any unpinning of these!
+fastapi==0.115.6
+aiofiles==24.1.0
+httpx==0.28.0
+pytest==8.3.4
+requests==2.32.3
+uvicorn==0.32.1
+
 asyncpg
-pytest
-requests
-httpx
-aiofiles
 numpy
-uvicorn
 jinja2
 zipstream
 python-multipart
