@@ -42,7 +42,7 @@ spec:
           resources:
             requests:
               cpu: "1"
-              memory: 512Mi
+              memory: 4Gi
             limits:
               memory: 4Gi
           volumeMounts:
@@ -161,7 +161,7 @@ spec:
           resources:
             requests:
               cpu: "1"
-              memory: 512Mi
+              memory: 4Gi
             limits:
               memory: 4Gi
           volumeMounts:

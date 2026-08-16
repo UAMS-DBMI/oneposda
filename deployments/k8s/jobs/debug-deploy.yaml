@@ -22,8 +22,21 @@ spec:
     runAsGroup: 1000
   containers:
     - name: shell
-      image: alpine/git:2.54.0
+      # image: alpine/git:2.54.0
+      # image: tcia/posda:1.1.0
+      image: registry.dbmi.cloud/posda:1.1.9
       command: ["sleep", "infinity"]
+      envFrom:
+        - secretRef:
+            # this comes from kustomize but we aren't using it
+            # you'll probably have to update it if it breaks (or ever changes)
+            name: database-env-c9fb5c85d8
+        # - secretRef:
+        #     name: common-env
+        # - configMapRef:
+        #     name: nbia-env
+        # - configMapRef:
+        #     name: posda-env
       env:
         - name: HOME
           value: /tmp

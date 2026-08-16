@@ -16,7 +16,11 @@ sync:
 debug:
 	$(KUBECTL) apply -f jobs/debug-deploy.yaml
 	$(KUBECTL) wait --for=condition=Ready --timeout=2m pod/debug-deploy
-	@$(KUBECTL) exec -it debug-deploy -- sh || true
+	@$(KUBECTL) exec -it debug-deploy -- bash || true
 
 debug-clean:
 	$(KUBECTL) delete pod debug-deploy --ignore-not-found
+
+shell:
+	# $(KUBECTL) exec -it deploy/posda -- bash
+	$(KUBECTL) exec -it deploy/posda -- bash -c "cd posdatools; ./posda_shell"

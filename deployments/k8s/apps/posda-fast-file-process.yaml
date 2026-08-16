@@ -25,9 +25,9 @@ spec:
           resources:
             requests:
               cpu: "4"
-              memory: 2Gi
+              memory: 4Gi
             limits:
-              memory: 5Gi
+              memory: 6Gi
           envFrom:
             - secretRef:
                 name: database-env

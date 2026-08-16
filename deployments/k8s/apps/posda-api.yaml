@@ -23,7 +23,7 @@ spec:
           args: ["api"]
           resources:
             requests:
-              cpu: 250m
+              cpu: 2
               memory: 512Mi
             limits:
               memory: 4Gi
