@@ -6,4 +6,4 @@ RUN pip install --break-system-packages -r /requirements.txt
 
 COPY ./push.py /
 
-CMD "/push.py"
+CMD ["/push.py"]

@@ -13,7 +13,7 @@ import logging
 import signal
 import time
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 
 FS_BASE = pathlib.Path(
     os.environ.get('NBIA_STORAGE_ROOT',
