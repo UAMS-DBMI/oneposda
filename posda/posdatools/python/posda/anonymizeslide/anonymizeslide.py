@@ -524,7 +524,7 @@ def formatDate(str_date):
     print(f"WARNING: Could not parse date '{str_date}'")
     return None
 
-def shiftDate(originalDate, shift_days=2000):
+def shiftDate(originalDate, shift_days):
     #originalDate = originalDate.strip()
     shifted = originalDate - timedelta(days=abs(int(shift_days)))
     return shifted.strftime("%m/%d/%y")
