@@ -12,6 +12,11 @@ Combines the scan/report/import workflows into a single command:
 
 A "plist" is a text file with one JSON object per line, each holding the
 filename, size and ctime of a file found during a scan.
+
+Files that fail to import are written to a plist of their own (failed.plist
+by default), each entry carrying an extra "failure_reason". That file is a
+valid plist, so it can be fed straight back to `posda-import import` once
+whatever caused the failures has been dealt with.
 """
 
 from __future__ import annotations
@@ -37,6 +42,7 @@ from typing import Any, TextIO
 RAW_TRANSFER_SYNTAXES = frozenset({"1.2.840.10008.1.2.1", "1.2.840.10008.1.2"})
 
 DEFAULT_PLIST = "files.plist"
+DEFAULT_FAILURE_PLIST = "failed.plist"
 DEFAULT_BASE_URL = "http://localhost"
 
 DEFAULT_RETRIES = 5
@@ -538,7 +544,11 @@ def get_transfer_syntax(filename: str) -> str | None:
         return None
 
 
-def decompress_if_needed(filename: str) -> tuple[str | None, str]:
+class DecompressionError(Exception):
+    """gdcmconv could not convert a file to a raw transfer syntax."""
+
+
+def decompress_if_needed(filename: str) -> tuple[str, str]:
     """Convert the transfer syntax of a file to raw, if needed.
 
     The converted file is stored in a temporary location.
@@ -547,8 +557,9 @@ def decompress_if_needed(filename: str) -> tuple[str | None, str]:
     filename is the temporary file, and original_filename is the original
     name prefixed with "decompressed;" -- Posda uses that prefix to record
     that the stored bytes differ from the ones on disk. If no conversion was
-    needed, both values are the original filename. If conversion failed,
-    filename is None.
+    needed, both values are the original filename.
+
+    Raises DecompressionError if gdcmconv produced nothing.
     """
     syntax = get_transfer_syntax(filename)
     if syntax is None or syntax in RAW_TRANSFER_SYNTAXES:
@@ -558,8 +569,9 @@ def decompress_if_needed(filename: str) -> tuple[str | None, str]:
     subprocess.run(["gdcmconv", "-w", "-i", filename, "-o", converted], check=False)
 
     if not os.path.exists(converted):
-        printe(f"Decompression failed for {filename} ({syntax})")
-        return None, filename
+        raise DecompressionError(
+            f"gdcmconv produced no output for transfer syntax {syntax}"
+        )
 
     return converted, f"decompressed;{filename}"
 
@@ -570,6 +582,51 @@ class ImportOutcome(enum.Enum):
     CREATED = "created"  # Posda stored a new file record
     EXISTING = "existing"  # Posda already had this file
     FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class ImportResult:
+    """What happened to one file, and why, if it went wrong."""
+
+    outcome: ImportOutcome
+    reason: str | None = None  # only set when the outcome is FAILED
+
+    @classmethod
+    def failure(cls, reason: str) -> ImportResult:
+        return cls(ImportOutcome.FAILED, reason)
+
+
+def describe_response(status: int, body: Any, limit: int = 500) -> str:
+    """Describe a rejected response, without pasting a whole error page."""
+    text = body.decode(errors="replace") if isinstance(body, bytes) else str(body)
+    if len(text) > limit:
+        text = text[:limit] + "..."
+    return f"HTTP {status}: {text}"
+
+
+class FailureLog:
+    """Writes the entries that failed to import into a plist of their own.
+
+    Each line is the original plist entry plus a "failure_reason", so the
+    file can be handed straight back to `posda-import import` after the
+    cause has been dealt with.
+    """
+
+    def __init__(self, filename: str) -> None:
+        self.filename = filename
+        self.count = 0
+        self.outfile = open(filename, "w")
+
+    def record(self, entry: dict[str, Any], reason: str | None) -> None:
+        failed_entry = {**entry, "failure_reason": reason or "unknown"}
+        self.outfile.write(json.dumps(failed_entry) + "\n")
+        # Flushed per failure: a run that is killed part way through still
+        # leaves behind a usable list of what had failed by then.
+        self.outfile.flush()
+        self.count += 1
+
+    def close(self) -> None:
+        self.outfile.close()
 
 
 @dataclass
@@ -610,7 +667,7 @@ def import_one_file(
     in_place: bool,
     decompress: bool,
     print_ids: bool = False,
-) -> ImportOutcome:
+) -> ImportResult:
     """Import a single plist entry and report what happened to it."""
     import requests
 
@@ -623,32 +680,42 @@ def import_one_file(
             original_file = filename
             if decompress:
                 filename, original_file = decompress_if_needed(filename)
-                if filename is None:
-                    return ImportOutcome.FAILED
             try:
                 code, result = api.add_file(filename, import_event_id, original_file)
             finally:
                 if original_file.startswith("decompressed;"):
                     os.unlink(filename)
+    except DecompressionError as err:
+        printe(f"Decompression failed for {filename}: {err}")
+        return ImportResult.failure(f"decompression failed: {err}")
     except requests.RequestException as err:
         # Every retry errored out. Give up on this file, not the whole run.
         printe(f"Giving up on {filename}: {err}")
-        return ImportOutcome.FAILED
+        attempts = api.policy.retries + 1
+        return ImportResult.failure(
+            f"request failed after {attempts} attempt(s): "
+            f"{type(err).__name__}: {err}"
+        )
     except OSError as err:
         printe(f"Could not read {filename}: {err}")
-        return ImportOutcome.FAILED
+        return ImportResult.failure(f"could not read file: {err}")
 
     if code != 200:
-        printe(f"{filename}: HTTP {code}: {result}")
-        return ImportOutcome.FAILED
+        description = describe_response(code, result)
+        printe(f"{filename}: {description}")
+        return ImportResult.failure(description)
 
     if print_ids:
         printo(f"{'C' if result['created'] else ' '}|{result['file_id']}")
 
-    return ImportOutcome.CREATED if result["created"] else ImportOutcome.EXISTING
+    return ImportResult(
+        ImportOutcome.CREATED if result["created"] else ImportOutcome.EXISTING
+    )
 
 
-def report_failures(failures: list[str], limit: int = 20) -> None:
+def report_failures(
+    failures: list[str], failure_plist: str | None, limit: int = 20
+) -> None:
     """Summarize the files that could not be imported."""
     if not failures:
         return
@@ -658,6 +725,8 @@ def report_failures(failures: list[str], limit: int = 20) -> None:
         printe(f"    {filename}")
     if len(failures) > limit:
         printe(f"    ... and {len(failures) - limit} more")
+    if failure_plist is not None:
+        printe(f"Failed entries and their reasons written to {failure_plist}")
 
 
 def import_plist(
@@ -667,10 +736,14 @@ def import_plist(
     in_place: bool,
     decompress: bool,
     policy: RetryPolicy,
+    failure_plist: str | None = DEFAULT_FAILURE_PLIST,
     print_ids: bool = False,
     show_progress: bool = True,
 ) -> int:
     """Import every file listed in a plist under a single import event.
+
+    Every failure is appended to failure_plist as the original entry plus a
+    "failure_reason"; pass None to keep no such record.
 
     Returns the number of files that failed.
     """
@@ -688,19 +761,24 @@ def import_plist(
     tally = ImportTally()
     progress = ProgressBar(total) if show_progress else None
     _active_progress = progress
+    failures = FailureLog(failure_plist) if failure_plist is not None else None
 
     try:
         for entry in read_plist(plist):
-            outcome = import_one_file(
+            result = import_one_file(
                 api, import_event_id, entry, in_place, decompress, print_ids
             )
-            tally.record(outcome, entry["filename"])
+            tally.record(result.outcome, entry["filename"])
+            if failures is not None and result.outcome is ImportOutcome.FAILED:
+                failures.record(entry, result.reason)
             if progress is not None:
                 progress.advance(tally.summary())
     finally:
         if progress is not None:
             progress.close()
         _active_progress = None
+        if failures is not None:
+            failures.close()
         api.close_event(import_event_id)
 
     printe(
@@ -708,7 +786,7 @@ def import_plist(
         f"{tally.created:,} new, {tally.existing:,} already existing, "
         f"{tally.failed:,} failed"
     )
-    report_failures(tally.failures)
+    report_failures(tally.failures, failure_plist)
     print(import_event_id)
 
     return tally.failed
@@ -759,6 +837,20 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="convert non-raw transfer syntaxes with gdcmconv before uploading",
     )
+    import_parser.add_argument(
+        "-f",
+        "--failures",
+        default=DEFAULT_FAILURE_PLIST,
+        help=(
+            "plist to write failed entries to, each with a failure_reason "
+            f"(default: {DEFAULT_FAILURE_PLIST})"
+        ),
+    )
+    import_parser.add_argument(
+        "--no-failures",
+        action="store_true",
+        help="don't write a plist of failed entries",
+    )
     import_parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     import_parser.add_argument("--comment", default="CLI API Import")
     import_parser.add_argument(
@@ -805,6 +897,15 @@ def main(argv: list[str] | None = None) -> int:
         if args.retries < 0:
             parser.error("--retries cannot be negative")
 
+        failure_plist = None if args.no_failures else args.failures
+        if failure_plist is not None and os.path.abspath(
+            failure_plist
+        ) == os.path.abspath(args.plist):
+            parser.error(
+                "--failures cannot be the plist being imported: it is truncated "
+                "when the import starts"
+            )
+
         failed = import_plist(
             args.plist,
             args.base_url,
@@ -812,6 +913,7 @@ def main(argv: list[str] | None = None) -> int:
             args.in_place,
             args.decompress,
             RetryPolicy(retries=args.retries, delay=args.retry_delay),
+            failure_plist=failure_plist,
             print_ids=args.print_ids,
             show_progress=not args.no_progress,
         )
