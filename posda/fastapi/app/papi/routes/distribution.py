@@ -5740,6 +5740,21 @@ async def split_qc_review(
                 "where qc_review_id = $1 order by modality nulls first, qc_unit_id",
                 review_id)
 
+            # A slice with no units is meaningless (it can never be worked or
+            # completed), so the allocator must never be asked for more slices
+            # than there are units.
+            if len(units) == 0:
+                api_error("VALIDATION_ERROR",
+                          "Review has no units to split",
+                          {"qc_review_id": review_id}, 422)
+            if n > len(units):
+                api_error("VALIDATION_ERROR",
+                          f"Cannot split {len(units)} unit(s) across {n} slices; "
+                          f"at most {len(units)} slices are possible",
+                          {"qc_review_id": review_id,
+                           "unit_count": len(units),
+                           "requested_slices": n}, 422)
+
             # Group units per modality (file units share the null-modality group),
             # preserving order so each slice gets a contiguous chunk.
             groups = {}
@@ -5778,6 +5793,13 @@ async def split_qc_review(
             await conn.execute(
                 "delete from qc_review_assignment where qc_review_id = $1 and assignment_id <> all($2::int[])",
                 review_id, new_ids)
+
+            # Slices are inserted as 'needs_qc', but a split only moves units --
+            # it never changes a decision. A slice that inherits already-decided
+            # units is complete on arrival, so re-derive each one's status rather
+            # than leaving it claiming work that is already done.
+            for aid in new_ids:
+                await qc_sync_assignment_status(conn, aid)
 
             result = await conn.fetch(
                 """
