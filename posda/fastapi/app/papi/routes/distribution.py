@@ -5454,7 +5454,22 @@ async def list_qc_reviews(
 @router.get("/qc/reviews/{review_id}")
 # QC review detail: review + assignments (counts) + status/modality breakdown (+ stale breakdown)
 async def get_qc_review(review_id: int, db: Database = Depends()):
-    review = await db.fetch_one("select * from qc_review where qc_review_id = $1", [review_id])
+    # Carries the ownership chain (draft -> recordset -> dataset) so the review
+    # page can render a full breadcrumb trail without extra round trips. Mirrors
+    # the join the assignments list already does.
+    review = await db.fetch_one(
+        """
+        select r.*,
+            d.draft_name,
+            rs.recordset_id, rs.recordset_name,
+            ds.dataset_id, ds.dataset_name
+        from qc_review r
+        join recordset_draft d on d.recordset_draft_id = r.recordset_draft_id
+        join recordset rs on rs.recordset_id = d.recordset_id
+        join dataset ds on ds.dataset_id = rs.dataset_id
+        where r.qc_review_id = $1
+        """,
+        [review_id])
     if not review:
         api_error("NOT_FOUND", "QC review not found", {"qc_review_id": review_id}, 404)
 
