@@ -124,9 +124,12 @@ class RecordsetDraftFileRemove(BaseModel):
     recordset_draft_file_ids: list[int]
 
 class RecordsetReleaseInsert(BaseModel):
-    release_number: int
-    release_date: datetime
-    release_notes: str
+    # All optional: release_number auto-assigns to the next unused number for
+    # the recordset and release_date defaults to now(), matching
+    # create_dataset_release. Supply either to override.
+    release_number: Optional[int] = None
+    release_date: Optional[datetime] = None
+    release_notes: Optional[str] = None
     release_doi: Optional[str] = None
 
 class DatasetReleaseTransferUpdate(BaseModel):
@@ -799,9 +802,19 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
         where r.recordset_id in (select recordset_id from rs)
         order by r.recordset_id, r.release_number desc
     ),
+    qc_draft as (
+        select distinct on (d.recordset_id)
+            d.recordset_id,
+            d.recordset_draft_id
+        from recordset_draft d
+        where d.recordset_id in (select recordset_id from rs)
+          and d.draft_status <> 'deleted'
+        order by d.recordset_id, d.recordset_draft_id desc
+    ),
     qc as (
         select
             od.recordset_id,
+            od.recordset_draft_id as qc_draft_id,
             count(*)::int as reviews_total,
             count(*) filter (where v.review_status = 'open')::int as reviews_open,
             count(*) filter (where v.review_status = 'stale')::int as reviews_stale,
@@ -809,7 +822,7 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
             coalesce(sum(s.total), 0)::int as series_total,
             coalesce(sum(s.pending), 0)::int as series_pending,
             coalesce(sum(s.approved), 0)::int as series_approved
-        from open_draft od
+        from qc_draft od
         join qc_review v on v.recordset_draft_id = od.recordset_draft_id
         left join (
             select qc_review_id,
@@ -819,7 +832,7 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
             from qc_unit group by qc_review_id
         ) s on s.qc_review_id = v.qc_review_id
         where v.review_status <> 'cancelled'
-        group by od.recordset_id
+        group by od.recordset_id, od.recordset_draft_id
     ),
     bundled as (
         select drr.recordset_release_id
@@ -869,6 +882,7 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
         lr.recordset_release_id,
         lr.release_number,
         lr.release_date,
+        q.qc_draft_id,
         coalesce(q.reviews_total, 0) as reviews_total,
         coalesce(q.reviews_open, 0) as reviews_open,
         coalesce(q.reviews_stale, 0) as reviews_stale,
@@ -911,6 +925,10 @@ def build_cycle_recordset(row):
             "has_dicom": row["has_dicom"],
             "has_non_dicom": row["has_non_dicom"],
         } if row["recordset_draft_id"] is not None else None,
+        # The draft the QC rollup was computed from -- the open draft while one
+        # exists, otherwise the published draft it became. Lets a frozen
+        # recordset's reviews stay reachable after open_draft goes null.
+        "qc_draft_id": row["qc_draft_id"],
         "qc": {
             "reviews_total": row["reviews_total"],
             "open": row["reviews_open"],
@@ -985,7 +1003,7 @@ async def get_dataset_cycle(dataset_id: int, db: Database = Depends()):
 
     release_q = f"""\
         select dr.dataset_release_id, dr.release_number, dr.release_date,
-               dr.release_doi, dr.release_status
+               dr.release_doi, dr.release_status, dr.when_created
         from dataset_release dr
         where dr.dataset_id = $1
           and dr.{NOT_RETRACTED}
@@ -1069,6 +1087,9 @@ async def get_dataset_cycle(dataset_id: int, db: Database = Depends()):
             "release_date": latest_release["release_date"],
             "release_doi": latest_release["release_doi"],
             "release_status": latest_release["release_status"],
+            # When the cycle started. release_date is null while draft, so this
+            # is the only marker of "work done during this cycle".
+            "when_created": latest_release["when_created"],
             "transfers": [dict(t) for t in transfer_rows],
         } if latest_release else None,
     })
@@ -1362,12 +1383,31 @@ async def add_recordset_release_to_dataset_release(
     payload: DatasetReleaseRecordsetRequest,
     db: Database = Depends()):
 
+    # One version per recordset per dataset release. The PK is on
+    # (dataset_release_id, recordset_release_id), so nothing at the storage
+    # layer stops v1 and v2 of the same recordset both being bundled -- and the
+    # Bundle stage's version picker is exactly a swap. So adding a release
+    # first evicts any other release of the same recordset, making "include
+    # this version" a single idempotent call.
+    replace_query = """
+            delete from dataset_release_recordset drr
+            using recordset_release existing, recordset_release incoming
+            where drr.dataset_release_id = $1
+              and existing.recordset_release_id = drr.recordset_release_id
+              and incoming.recordset_release_id = any($2::int[])
+              and existing.recordset_id = incoming.recordset_id
+              and drr.recordset_release_id <> incoming.recordset_release_id
+            returning drr.recordset_release_id
+        """
+
     insert_query = """
             insert into dataset_release_recordset
             (dataset_release_id, recordset_release_id)
-            values ($1, $2)
+            select $1, id from unnest($2::int[]) as id
+            on conflict do nothing
             returning recordset_release_id
         """
+
     count_query = """
             select count(*) as current_count
             from dataset_release_recordset
@@ -1384,15 +1424,14 @@ async def add_recordset_release_to_dataset_release(
             422,
         )
 
-    added_recordset_release_ids = []
-
     try:
-        for recordset_release_id in recordset_release_ids:
-            record = await db.fetch(insert_query, [release_id, recordset_release_id])
-            if record:
-                added_recordset_release_ids.append(record[0]["recordset_release_id"])
-
-        count_record = await db.fetch(count_query, [release_id])
+        # One transaction: a partial add used to be possible (the insert ran
+        # per id outside any transaction), and a re-add raised a PK violation
+        # that surfaced as a 500.
+        async with db.transaction() as conn:
+            replaced = await conn.fetch(replace_query, release_id, recordset_release_ids)
+            added = await conn.fetch(insert_query, release_id, recordset_release_ids)
+            count_record = await conn.fetch(count_query, release_id)
     except Exception as e:
         db_error(
             e,
@@ -1403,7 +1442,8 @@ async def add_recordset_release_to_dataset_release(
     return item_response(
         {
             "dataset_release_id": release_id,
-            "added_recordset_release_ids": added_recordset_release_ids,
+            "added_recordset_release_ids": [r["recordset_release_id"] for r in added],
+            "replaced_recordset_release_ids": [r["recordset_release_id"] for r in replaced],
             "current_count": count_record[0]["current_count"] if count_record else 0,
         }
     )
@@ -3885,7 +3925,7 @@ async def create_recordset_release(
     db: Database = Depends()):
 
     q_get_recordset = """
-        select recordset_id
+        select recordset_id, draft_status
         from recordset_draft
         where recordset_draft_id = $1;
     """
@@ -3902,7 +3942,15 @@ async def create_recordset_release(
             when_updated,
             who_updated
         )
-        values ($1, $2, $3, $4, $5, now(), $6, now(), $6)
+        values (
+            $1,
+            coalesce($2::int, (
+                select coalesce(max(release_number), 0) + 1
+                from recordset_release where recordset_id = $1
+            )),
+            coalesce($3::timestamptz, now()),
+            $4, $5, now(), $6, now(), $6
+        )
         returning recordset_release_id;
     """
 
@@ -3932,6 +3980,17 @@ async def create_recordset_release(
 
             recordset_id = draft_row["recordset_id"]
 
+            # Publishing consumes the draft. Without this, a second call would
+            # cut another release from an already-published draft -- reachable
+            # by a double submit or a second caller (the Bundle stage).
+            if draft_row["draft_status"] in ("published", "deleted"):
+                api_error(
+                    "VALIDATION_ERROR",
+                    f"Draft is already {draft_row['draft_status']} and cannot be published",
+                    {"draft_id": draft_id, "draft_status": draft_row["draft_status"]},
+                    422,
+                )
+
             # 2. Create release
             release_rows = await conn.fetch(
                 q_insert_release,
@@ -3955,6 +4014,10 @@ async def create_recordset_release(
             # 4. Mark draft as published
             await conn.execute(q_mark_draft_published, draft_id, current_user.user_id)
 
+    except HTTPException:
+        # Let the 404 / 422 above through; without this they are swallowed by
+        # the generic handler below and re-raised as a 500.
+        raise
     except Exception as e:
         db_error(
             e,
