@@ -109,7 +109,20 @@ sub LR_line_reader{
       return;
     }
     my $count = sysread($fh, $txt, 100, length($txt));
-    if((!defined($count)) || $count <= 0){
+    my $at_eof = ((!defined($count)) || $count <= 0) ? 1 : 0;
+
+    # Dispatch complete lines BEFORE any teardown. This loop used to run after
+    # the EOF branch below, which deletes {lh} -- so any line still buffered at
+    # EOF was handed to an undefined code ref ("Not a CODE reference") and took
+    # the whole process down with it.
+    while(ref($this->{lh}) eq "CODE" && $txt =~ /^([^\n]*)\n(.*)/s){
+      my $line = $1;
+      $txt = $2;
+      &{$this->{lh}}($line);
+      $this->{lines_read} += 1;
+    }
+
+    if($at_eof){
       if(exists $this->{Writer}){
         print STDERR 
           "######################\n" .
@@ -129,12 +142,7 @@ sub LR_line_reader{
       my $eh = $this->{eh};
       delete $this->{eh};
       &$eh();
-    }
-    while($txt =~ /^([^\n]*)\n(.*)/s){
-      my $line = $1;
-      $txt = $2;
-      &{$this->{lh}}($line);
-      $this->{lines_read} += 1;
+      return;
     }
   };
   return $clos;
