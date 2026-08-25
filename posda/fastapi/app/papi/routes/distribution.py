@@ -4605,9 +4605,85 @@ async def generate_idc_dataset_manifest(transfer_id: int, db: Database = Depends
 
 @router.post("/transfers/{transfer_id}/idc/imaging-manifest/generate")
 async def generate_idc_imaging_manifest(transfer_id: int, db: Database = Depends()):
+    # The hash chain (series -> study -> patient -> dataset) is computed over the
+    # same rows the CSV is built from, so a DICOM file silently dropped by a
+    # missing index row does not merely go missing from the manifest -- it
+    # changes the dataset-level hash for the whole submission, and the result
+    # still looks internally consistent to IDC. Validate completeness up front
+    # and refuse, rather than ship hashes that describe a partial set.
+    incomplete_predicate = """
+                   fp.file_id is null
+                or fst.file_id is null
+                or fse.file_id is null
+                or fsc.file_id is null
+                or coalesce(btrim(fp.patient_id), '') = ''
+    """
+
+    preflight_query = f"""
+        select
+            count(*)                                        as dicom_total,
+            count(*) filter (where fp.file_id is null)      as missing_patient_row,
+            count(*) filter (where fst.file_id is null)     as missing_study_row,
+            count(*) filter (where fse.file_id is null)     as missing_series_row,
+            count(*) filter (where fsc.file_id is null)     as missing_sop_row,
+            count(*) filter (
+                where fp.file_id is not null
+                  and coalesce(btrim(fp.patient_id), '') = ''
+            )                                               as blank_patient_id,
+            count(*) filter (where {incomplete_predicate})  as incomplete_total,
+            (array_agg(distinct rrf.file_id)
+                filter (where {incomplete_predicate}))[1:20] as sample_file_ids
+        from transfer_recordset tr
+        join recordset_release rr       using (recordset_release_id)
+        join recordset r                using (recordset_id)
+        join recordset_type rt          using (recordset_type_id)
+        join recordset_release_file rrf using (recordset_release_id)
+        join file f                     using (file_id)
+        left join file_patient    fp  on fp.file_id  = f.file_id
+        left join file_study      fst on fst.file_id = f.file_id
+        left join file_series     fse on fse.file_id = f.file_id
+        left join file_sop_common fsc on fsc.file_id = f.file_id
+        where tr.dataset_release_transfer_id = $1
+          and rt.recordset_type_name = 'Radiology Images'
+          and f.is_dicom_file = true
+    """
+
+    try:
+        preflight = await db.fetch_one(preflight_query, [transfer_id])
+    except HTTPException:
+        raise
+    except Exception as e:
+        db_error(
+            e,
+            operation="validating files for IDC imaging manifest",
+            context={"transfer_id": transfer_id},
+        )
+
+    if preflight and preflight["incomplete_total"]:
+        api_error(
+            "MANIFEST_INCOMPLETE",
+            f"{preflight['incomplete_total']} of {preflight['dicom_total']} DICOM files are "
+            "missing index data required for the imaging manifest",
+            {
+                "dicom_file_count":      preflight["dicom_total"],
+                "incomplete_file_count": preflight["incomplete_total"],
+                "missing_patient_row":   preflight["missing_patient_row"],
+                "missing_study_row":     preflight["missing_study_row"],
+                "missing_series_row":    preflight["missing_series_row"],
+                "missing_sop_row":       preflight["missing_sop_row"],
+                "blank_patient_id":      preflight["blank_patient_id"],
+                "sample_file_ids":       list(preflight["sample_file_ids"] or []),
+            },
+            422,
+        )
+
+    # DISTINCT: the same file_id can appear in two Radiology Images recordset
+    # releases in one transfer (overlapping recordsets are legal), which would
+    # emit duplicate SOP instance rows and feed the digest into string_agg twice,
+    # corrupting series_hash and everything above it.
     query = """
         WITH files AS (
-            SELECT
+            SELECT DISTINCT
                 rrf.file_id,
                 f.digest,
                 fp.patient_id,
