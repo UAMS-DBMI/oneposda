@@ -13,6 +13,14 @@ use Digest::MD5;
 use Posda::PrivateDispositions;
 use Debug;
 my $dbg = sub { print STDERR @_ };
+# Per-file diagnostics are off unless POSDA_DEBUG is set, matching the existing
+# convention in Dispatch::Select. Eight of these run concurrently under
+# BackgroundEditorTp.pl and all inherit the worker's stderr capture file;
+# dumping the whole edit struct for every DICOM file made that file big enough
+# to slow the upload right down and widen the window in which a straggler could
+# still be writing to it. Genuine errors and warnings below stay unconditional.
+my $debug_on = $ENV{POSDA_DEBUG} ? 1 : 0;
+sub dbg_print { if($debug_on){ print STDERR @_ } }
 use Storable qw( store_fd fd_retrieve );
 my $help = <<EOF;
  Anonymizer meant to run as a sub-process
@@ -147,10 +155,12 @@ my $buff;
 #print STDERR "read $count bytes\n";
 #exit;
 my $edits = fd_retrieve(\*STDIN);
-print STDERR "\n#######################\n";
-print STDERR "Edits: ";
-Debug::GenPrint($dbg, $edits, 1);
-print STDERR "\n#######################\n";
+if($debug_on){
+  print STDERR "\n#######################\n";
+  print STDERR "Edits: ";
+  Debug::GenPrint($dbg, $edits, 1);
+  print STDERR "\n#######################\n";
+}
 unless(exists $edits->{from_file}){ Error("No from_file in edits") }
 unless(-f $edits->{from_file}){ Error("file not found: $edits->{from_file}") }
 $results->{from_file} = $edits->{from_file};
@@ -214,7 +224,7 @@ if(exists $edits->{uid_substitutions}){
   }
 } 
 if(exists $edits->{uid_root_transform}){
-print STDERR "Found uid_root_transform\n";
+dbg_print("Found uid_root_transform\n");
   $ds->MapPvt($transform_uids);
 } 
 
@@ -236,7 +246,7 @@ for my $edit(@{$edits->{edits}}){
       for my $m (@$list){
         my $tag_inst = $ds->DefaultSubstitute($tag, $m);
         push(@effective_edits, [$tag_inst, $op, $arg1, $arg2]);
-print STDERR "pushing [$tag_inst, $op, $arg1, $arg2] to effective edits\n";
+dbg_print("pushing [$tag_inst, $op, $arg1, $arg2] to effective edits\n");
       }
     }
   }elsif($tag_mode eq "leaf"){
@@ -250,7 +260,7 @@ print STDERR "pushing [$tag_inst, $op, $arg1, $arg2] to effective edits\n";
       die "tag_mode of group_pattern with op $op";
     }
     unless($tag eq "60xx" || $tag eq "50xx"){
-      print STDERR "delete matching group: $tag\n";
+      dbg_print("delete matching group: $tag\n");
     }
     push(@effective_edits, [$tag, $op, $arg1, $arg2]);
   }elsif($tag_mode eq "private_group"){
@@ -430,7 +440,7 @@ for my $e (@effective_edits){
 #        "\"$pix_desc->{ele_len_in_file}\" " .
         "\"$rows\" \"$cols\" \"$bits_allocated\" \"$bits_stored\" \"$high_bit\" " .
         "\"$photometric_interpretation\" \"$pixel_representation\" '$earg1'";
-print STDERR "###################\nCommand:\n$cmd\n###############\n";
+dbg_print("###################\nCommand:\n$cmd\n###############\n");
       my $pix = do {
         local $/;
         open my $fh, "$cmd|" or die "Can't open pipe from ($cmd): $!";
@@ -442,14 +452,14 @@ print STDERR "###################\nCommand:\n$cmd\n###############\n";
     my $seq = $ds->Get($etag);
     if(defined $seq){
       my $seq_ref = ref($seq);
-      print STDERR "Got a seq of ref($seq_ref)\n";
+      dbg_print("Got a seq of ref($seq_ref)\n");
       my $count = @$seq;
-      print STDERR "has $count elements\n";
+      dbg_print("has $count elements\n");
       for my $n (0 .. $#{$seq}){
         my $iref = ref($seq->[$n]);
         my $item = $seq->[$n];
         $item->Insert($earg1, $earg2);
-        print STDERR "item->Insert($earg1, $earg2)\n";
+        dbg_print("item->Insert($earg1, $earg2)\n");
       }
     }
   }else{
@@ -459,7 +469,7 @@ print STDERR "unknown eop: $eop\n";
 }
 my $xfr_stx = $try->{xfr_stx};
 if($xfr_stx eq "1.2.840.10008.1.2.2"){
-  print STDERR "converting file from big to little endian transfer syntax\n";
+  dbg_print("converting file from big to little endian transfer syntax\n");
   $xfr_stx = "1.2.840.10008.1.2.1";
 }
 eval {
