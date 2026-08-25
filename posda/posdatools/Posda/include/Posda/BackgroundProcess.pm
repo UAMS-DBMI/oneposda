@@ -249,6 +249,17 @@ sub WriteToEmail {
 
 sub Finish {
   my($self,$mess) = @_;
+
+  unless (defined $mess) {
+    $mess = "Complete - no status specified";
+  }
+
+  # Close the activity task status FIRST. Everything below -- importing the
+  # report files, building downloadable files, sending the inbox mail -- can
+  # die, and when it did the row was left with end_time NULL, so the UI kept
+  # showing the task as running forever even though the work had completed.
+  $self->CloseActivityTaskStatus($mess);
+
   unless ($self->{cl_mode}) {
     # log completion time
     $self->{add_comp_time_query}->RunQuery(
@@ -260,6 +271,48 @@ sub Finish {
   $self->WriteToEmail("Background process ended at: $end_time\n");
   $self->WriteToEmail("Total time elapsed: " .
     ($self->{script_end_time} - $self->{script_start_time}) . "\n");
+
+  eval { $self->_finish_reports };
+  if ($@) {
+    my $err = $@;
+    print STDERR "Error finishing reports: $err\n";
+    $err =~ s/\s+/ /g;
+    if (length($err) > 200) { $err = substr($err, 0, 200) . "..." }
+    # end_time is already recorded; just amend the text so this is visible.
+    $self->SetActivityStatus("$mess (report generation failed: $err)");
+  }
+
+  $self->{finished} = 1;
+}
+
+# Sets end_time on the activity_task_status row. Split out of Finish so it can
+# run before the fallible report work, and so a script's END block can use it
+# as a backstop. Idempotent.
+sub CloseActivityTaskStatus {
+  my ($self, $mess) = @_;
+
+  unless ($self->{activity_id}) { return }
+  if ($self->{cl_mode}) { return }
+  if ($self->{activity_status_closed}) { return }
+  $self->{activity_status_closed} = 1;
+
+  unless (defined $mess) {
+    $mess = "Complete - no status specified";
+  }
+
+  # This comparison used to run before the defined() guard, so an undef $mess
+  # warned under -w on every call.
+  if ($mess eq "Schedule Complete - Manual Process Follows") {
+    $self->SetActivityManualUpdate($mess);
+    return;
+  }
+
+  Query('FinishActivityTaskStatus')->RunQuery(sub{}, sub {},
+    $mess, $self->{activity_id}, $self->{invoc_id});
+}
+
+sub _finish_reports {
+  my ($self) = @_;
 
   for my $h (sort keys %{$self->{reports}}) {
     if ($h ne 'Email') {
@@ -323,17 +376,6 @@ sub Finish {
     unlink $rpt->{temp_filename};
   }
 
-  if($self->{activity_id} && not $self->{cl_mode}){
-    if($mess eq "Schedule Complete - Manual Process Follows"){
-      $self->SetActivityManualUpdate($mess);
-      return;
-    }
-    unless(defined $mess){
-      $mess = "Complete - no status specified";
-    }
-    Query('FinishActivityTaskStatus')->RunQuery(sub{}, sub {},
-      $mess, $self->{activity_id}, $self->{invoc_id});
-  }
 }
 
 sub LogError {
