@@ -553,6 +553,10 @@ sub look_for_private{
 #
 #
 
+# How many unparsable lines from StreamingEditCompare.pl we tolerate before
+# giving up. It used to be zero -- the first one called exit.
+my $MaxBadCompareLines = 10;
+
 my $num_sops = keys %SopsToEdit;
 if($num_sops <= 0){
   print "No sops found to edit\n";
@@ -627,6 +631,7 @@ $ins->RunQuery(sub {}, sub{}, $invoc_id, $BackgroundPid, $DestDir);
       sop_hash => $hash,
       sops_in_process => {},
       pids_in_process => {},
+      bad_compare_lines => 0,
       sops_completed => {},
       compare_requests => {},
       comparing => {},
@@ -873,17 +878,22 @@ $ins->RunQuery(sub {}, sub{}, $invoc_id, $BackgroundPid, $DestDir);
 #        $background->WriteToEmail("Compare failed:\n\tsop:$sop\n" .
 #          "\tmessage: $mess\n");
       } else {
-#        print STDERR
-#          "!!!!!!!!!!!!!!!!!!!!!!!!!!!!  Auuuuugh!!   !!!!!!!!!!!!!!!!!\n" .
-#          "!!!!!!!  You idiot!  !!!!!!!!!!!!" .
-#          "Bad line: \"$line\"\n" .
-#          "!!!!!!!!! Always have default case !!!!!!!!";
+        # StreamingEditCompare.pl runs with 2>/dev/null, so whatever provoked
+        # this line is already gone. Record it and carry on rather than
+        # abandoning a run that may have hours of edits behind it.
+        $this->{bad_compare_lines} += 1;
+        my $m = $line;
+        $m =~ s/"/""/g;
+        $rpt_pipe_err->print("\"<compare protocol>\",\"Unparsable line " .
+          "from StreamingEditCompare.pl: $m\"\r\n");
         $background->WriteToEmail(
-          "!!!!!!!!!!!!!!!!!!!!!!!!!!!!  Auuuuugh!!!!!!!!!!!!!!!!!!!\n" .
-          "!!!!!!!  You idiot !!!!!!!!!!!!" .
-          "Bad line: \"$line\"\n" .
-          "!!!!!!!!! Always have default case !!!!!!!!\n");
-        exit;
+          "Warning: unparsable line from StreamingEditCompare.pl " .
+          "($this->{bad_compare_lines} so far): \"$line\"\n");
+        if($this->{bad_compare_lines} >= $MaxBadCompareLines){
+          $this->Shutdown("Aborted: $this->{bad_compare_lines} unparsable " .
+            "lines from StreamingEditCompare.pl", 1);
+        }
+        return;
       }
       # here is where we check from being done
       my $num_in_process = keys %{$this->{sops_in_process}};
