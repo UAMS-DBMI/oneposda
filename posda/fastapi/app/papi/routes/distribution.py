@@ -1505,7 +1505,44 @@ async def remove_recordset_release_from_dataset_release(
 @router.get("/datasets/releases/{release_id}/transfers")
 # List transfers for a dataset release
 async def get_transfers_for_dataset_release(release_id: int, db: Database = Depends()):
+    # A transfer's membership is snapshotted into transfer_recordset when it
+    # is created, but what it *should* carry can move afterwards: a recordset
+    # gains or loses this destination in Setup, or -- the case that matters
+    # most -- Bundle's version picker swaps which recordset_release the
+    # dataset release carries, leaving the transfer pointed at the superseded
+    # release. Nothing surfaced that, so a stale transfer would ship the wrong
+    # version to an external destination silently. Compared here rather than
+    # making the UI fetch both sets per row.
+    #
+    # Counts alone are not enough -- one added plus one removed leaves the
+    # count unchanged -- so the actual and expected id sets are compared.
     query = """\
+        with actual as (
+            select
+                tr.dataset_release_transfer_id as tid,
+                array_agg(distinct tr.recordset_release_id
+                          order by tr.recordset_release_id) as ids
+            from transfer_recordset tr
+            join dataset_release_transfer drt using (dataset_release_transfer_id)
+            where drt.dataset_release_id = $1
+            group by 1
+        ),
+        expected as (
+            select
+                drt.dataset_release_transfer_id as tid,
+                array_agg(distinct drr.recordset_release_id
+                          order by drr.recordset_release_id) as ids
+            from dataset_release_transfer drt
+            join dataset_release_recordset drr
+                on drr.dataset_release_id = drt.dataset_release_id
+            join recordset_release rr
+                on rr.recordset_release_id = drr.recordset_release_id
+            join recordset_destination rd
+                on rd.recordset_id = rr.recordset_id
+               and rd.destination_id = drt.destination_id
+            where drt.dataset_release_id = $1
+            group by 1
+        )
         select
             drt.dataset_release_transfer_id,
             drt.destination_id,
@@ -1515,10 +1552,16 @@ async def get_transfers_for_dataset_release(release_id: int, db: Database = Depe
             drt.transfer_mode_id,
             tm.transfer_mode_name,
             drt.transfer_status,
-            drt.transfer_notes
+            drt.transfer_notes,
+            coalesce(cardinality(a.ids), 0) as recordset_count,
+            coalesce(cardinality(e.ids), 0) as expected_recordset_count,
+            coalesce(a.ids, '{}'::int[])
+                is distinct from coalesce(e.ids, '{}'::int[]) as membership_drifted
         from dataset_release_transfer drt
         join transfer_destination td using (destination_id)
         join transfer_mode tm using (transfer_mode_id)
+        left join actual a   on a.tid = drt.dataset_release_transfer_id
+        left join expected e on e.tid = drt.dataset_release_transfer_id
         where drt.dataset_release_id = $1;
         """
     try:
@@ -1577,6 +1620,24 @@ async def create_transfer_for_dataset_release(
             "VALIDATION_ERROR",
             "Required transfer fields must be non-empty",
             {"required": ["destination_id", "transfer_name", "transfer_mode_id"]},
+            422,
+        )
+
+    # A draft release is still being composed -- its membership can change under
+    # a transfer that has already snapshotted it. The cycle's Transfer stage
+    # hides its controls while the release is a draft, but that was UI-only
+    # (TECH_DEBT #5); enforce it here so the API cannot be used around it.
+    release_row = await db.fetch_one(
+        "select release_status from dataset_release where dataset_release_id = $1",
+        [release_id],
+    )
+    if not release_row:
+        api_error("NOT_FOUND", "Dataset release not found", {"release_id": release_id}, 404)
+    if release_row["release_status"] == "draft":
+        api_error(
+            "VALIDATION_ERROR",
+            "Cannot create a transfer for a draft release -- finalize it first",
+            {"release_id": release_id, "release_status": "draft"},
             422,
         )
 
@@ -4281,6 +4342,49 @@ async def get_dataset_release_transfer_by_id(transfer_id: int,  db: Database = D
 async def update_dataset_release_transfer(
     transfer_id: int, payload: DatasetReleaseTransferUpdate, current_user: User = logged_in_user, db: Database = Depends()):
 
+    # Queueing is the one-way door: it fires notify_transfer_queued() and starts
+    # real uploads, with no route back through transfer_status. Refuse it while
+    # the parent release is still a draft (TECH_DEBT #5) -- the contents are not
+    # settled yet, and the upload cannot be recalled once it begins.
+    if payload.transfer_status == "queued":
+        parent = await db.fetch_one(
+            """select dr.release_status
+               from dataset_release_transfer drt
+               join dataset_release dr using (dataset_release_id)
+               where drt.dataset_release_transfer_id = $1""",
+            [transfer_id],
+        )
+        if not parent:
+            api_error(
+                "NOT_FOUND",
+                "Dataset release transfer not found",
+                {"transfer_id": transfer_id},
+                404,
+            )
+        if parent["release_status"] == "draft":
+            api_error(
+                "VALIDATION_ERROR",
+                "Cannot queue a transfer for a draft release -- finalize it first",
+                {"transfer_id": transfer_id, "release_status": "draft"},
+                422,
+            )
+
+        # IDC reads a submission from its manifests, so queueing without them
+        # ships a package it cannot interpret -- and the upload cannot be
+        # recalled. This also enforces the WordPress ordering transitively: the
+        # clinical manifest cannot be generated until the WordPress transfer has
+        # refreshed Collection Manager (see _wp_precedence_block), so an IDC
+        # transfer carrying clinical files cannot be queued before that happens.
+        manifests = await _idc_manifest_state(transfer_id, db)
+        if manifests and manifests["missing_manifests"]:
+            api_error(
+                "MANIFESTS_REQUIRED",
+                "Generate this transfer's manifests before queueing it: "
+                + ", ".join(manifests["missing_manifests"]),
+                {"transfer_id": transfer_id, **manifests},
+                422,
+            )
+
     updates = []
     values = []
     idx = 1
@@ -4385,7 +4489,14 @@ async def get_transfer_idc(transfer_id: int, db: Database = Depends()):
             context={"transfer_id": transfer_id},
         )
 
-    return item_response(record[0] if record else None)
+    # Carry which manifests this transfer needs and which are still missing, so
+    # the UI can disable Queue rather than let the user discover the 422. Note a
+    # transfer with no transfer_idc row yet still reports its requirements.
+    manifests = await _idc_manifest_state(transfer_id, db) or {}
+    data = {**dict(record[0]), **manifests} if record else {
+        "dataset_release_transfer_id": transfer_id, **manifests
+    }
+    return item_response(data)
 
 
 @router.put("/transfers/{transfer_id}/idc")
@@ -4836,11 +4947,354 @@ async def generate_idc_imaging_manifest(transfer_id: int, db: Database = Depends
     })
 
 
+async def _idc_manifest_state(transfer_id: int, db: Database):
+    """Which IDC manifests this transfer needs, and which are missing.
+
+    Required is derived from what the transfer actually carries, not a fixed
+    list: the dataset manifest always (it identifies the submission), the
+    imaging manifest when it carries Radiology Images DICOM, the clinical
+    manifest when it carries non-DICOM files. A transfer with no clinical
+    content does not need a clinical manifest -- absence is the signal that
+    nothing clinical changed.
+
+    Returns None for a non-IDC transfer, which has no transfer-level manifests.
+    """
+    destination = await db.fetch_one(
+        """
+        select td.destination_abbr
+        from dataset_release_transfer drt
+        join transfer_destination td using (destination_id)
+        where drt.dataset_release_transfer_id = $1
+        """,
+        [transfer_id],
+    )
+    if not destination or destination["destination_abbr"] != "idc":
+        return None
+
+    content = await db.fetch_one(
+        """
+        select
+            count(*) filter (
+                where f.is_dicom_file
+                  and rt.recordset_type_name = 'Radiology Images'
+            ) as imaging_files,
+            count(*) filter (where f.is_dicom_file is not true) as clinical_files
+        from transfer_recordset tr
+        join recordset_release rr       using (recordset_release_id)
+        join recordset rs               using (recordset_id)
+        join recordset_type rt          using (recordset_type_id)
+        join recordset_release_file rrf using (recordset_release_id)
+        join file f                     using (file_id)
+        where tr.dataset_release_transfer_id = $1
+        """,
+        [transfer_id],
+    )
+
+    required = ["dataset"]
+    if content and content["imaging_files"]:
+        required.append("imaging")
+    if content and content["clinical_files"]:
+        required.append("clinical")
+
+    existing = await db.fetch_one(
+        """
+        select dataset_manifest_file_id, imaging_manifest_file_id,
+               clinical_manifest_file_id
+        from transfer_idc
+        where dataset_release_transfer_id = $1
+        """,
+        [transfer_id],
+    )
+
+    missing = [
+        name
+        for name in required
+        if not existing or existing[f"{name}_manifest_file_id"] is None
+    ]
+    return {"required_manifests": required, "missing_manifests": missing}
+
+
+async def _wp_precedence_block(transfer_id: int, db: Database):
+    """Why an IDC transfer must wait for the WordPress transfer, or None.
+
+    Clinical files reach IDC as *links into Collection Manager*, not as copies:
+    the manifest's `download_url` points at CM. So if Posda's clinical file is an
+    update of what CM currently holds and IDC pulls first, the manifest resolves
+    to the **previous** file while looking entirely valid -- nothing downstream
+    can tell. Checking that CM merely has a file attached is not enough for the
+    same reason: the stale one is attached too.
+
+    So the gate is the WordPress transfer for this same dataset release having
+    delivered. WordPress is the `default_display` destination for these
+    recordsets -- it takes precedence, and IDC follows it.
+
+    Only applies to clinical content whose primary destination is WordPress; an
+    IDC transfer carrying no such files has no dependency and is not gated.
+
+    Scoped to IDC transfers. Other destinations carry their own copy of the file
+    rather than linking to CM, so they have no such ordering -- and without this
+    guard the WordPress transfer would block on itself, making the gate
+    impossible to ever satisfy.
+    """
+    destination = await db.fetch_one(
+        """
+        select td.destination_abbr
+        from dataset_release_transfer drt
+        join transfer_destination td using (destination_id)
+        where drt.dataset_release_transfer_id = $1
+        """,
+        [transfer_id],
+    )
+    if not destination or destination["destination_abbr"] != "idc":
+        return None
+
+    blocking_recordsets = await db.fetch(
+        """
+        select distinct rs.recordset_id, rs.recordset_name
+        from transfer_recordset tr
+        join recordset_release rr       using (recordset_release_id)
+        join recordset rs               using (recordset_id)
+        join recordset_release_file rrf using (recordset_release_id)
+        join file f                     using (file_id)
+        join recordset_destination rd   on rd.recordset_id = rs.recordset_id
+        join transfer_destination td    on td.destination_id = rd.destination_id
+        where tr.dataset_release_transfer_id = $1
+          and f.is_dicom_file is not true
+          and rd.default_display
+          and td.destination_abbr = 'wp'
+        order by rs.recordset_name
+        """,
+        [transfer_id],
+    )
+    if not blocking_recordsets:
+        return None
+
+    wp_transfer = await db.fetch_one(
+        """
+        select wp.transfer_status
+        from dataset_release_transfer drt
+        join dataset_release_transfer wp
+             on wp.dataset_release_id = drt.dataset_release_id
+        join transfer_destination td
+             on td.destination_id = wp.destination_id
+        where drt.dataset_release_transfer_id = $1
+          and td.destination_abbr = 'wp'
+        """,
+        [transfer_id],
+    )
+
+    status = wp_transfer["transfer_status"] if wp_transfer else None
+    if status == "success":
+        return None
+
+    return {
+        "wp_transfer_status": status,
+        "recordsets": [r["recordset_name"] for r in blocking_recordsets],
+    }
+
+
+def _cm_value(item: dict, key: str) -> str:
+    """One Collection Manager field as a CSV cell. Some (download_type) come back
+    as lists; flatten rather than emitting a Python repr."""
+    value = item.get(key)
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return "; ".join(str(v) for v in value)
+    return str(value)
+
+
 @router.post("/transfers/{transfer_id}/idc/clinical-manifest/generate")
 async def generate_idc_clinical_manifest(transfer_id: int, db: Database = Depends()):
-    # TODO: build clinical IDC manifest (JSON format TBD)
-    # Should populate transfer_idc.clinical_manifest_file_id
-    api_error("NOT_IMPLEMENTED", "IDC clinical manifest generation is not yet implemented", {}, 501)
+    # "Clinical" here means the non-DICOM tabular supporting data this transfer
+    # carries. Sourced from Posda, not a live Collection Manager read: by the
+    # time a transfer runs the files have already been pulled into Posda and
+    # QC'd, so the recordsets are the record of both what ships and where.
+    #
+    # `is_dicom_file is not true` rather than `= false` -- the column is
+    # nullable, and `= false` would silently skip an unprocessed file. Nothing
+    # filters on file.file_type: Posda stores a libmagic description there
+    # ("ASCII text, with CRLF line terminators"), which cannot tell CSV from
+    # anything else. Per-recordset destination assignment is the selection
+    # mechanism, so everything non-DICOM in the transfer is listed.
+    files_query = """
+        select
+            rs.recordset_id,
+            rs.recordset_name,
+            rrf.file_name,
+            f.file_id,
+            f.digest,
+            f.size
+        from transfer_recordset tr
+        join recordset_release rr       using (recordset_release_id)
+        join recordset rs               using (recordset_id)
+        join recordset_release_file rrf using (recordset_release_id)
+        join file f                     using (file_id)
+        where tr.dataset_release_transfer_id = $1
+          and f.is_dicom_file is not true
+        order by rs.recordset_name, rrf.file_name
+        """
+
+    try:
+        rows = await db.fetch(files_query, [transfer_id])
+    except Exception as e:
+        db_error(
+            e,
+            operation="querying files for IDC clinical manifest",
+            context={"transfer_id": transfer_id},
+        )
+
+    # An absent manifest means "nothing clinical in this release" -- a real
+    # state, not something to paper over with an empty CSV.
+    if not rows:
+        api_error(
+            "NOT_FOUND",
+            "No clinical (non-DICOM) files found for this transfer",
+            {"transfer_id": transfer_id},
+            404,
+        )
+
+    blocked = await _wp_precedence_block(transfer_id, db)
+    if blocked:
+        api_error(
+            "WP_TRANSFER_REQUIRED",
+            "The WordPress transfer for this release has not delivered yet, so "
+            "Collection Manager may still hold the previous version of these "
+            "clinical files. Ship to WordPress first.",
+            {"transfer_id": transfer_id, **blocked},
+            422,
+        )
+
+    # wp_object_map is unique both ways, so a recordset maps to at most one CM
+    # download -- fetch each once rather than per file. Best effort: CM may not
+    # be live when a transfer is prepared, and every CM column is optional, so a
+    # failed lookup leaves those cells blank. Failures are reported in the
+    # response rather than swallowed.
+    recordset_ids = sorted({r["recordset_id"] for r in rows})
+    link_rows = await db.fetch(
+        """
+        select posda_object_id as recordset_id, wp_object_id
+        from wp_object_map
+        where posda_object_type = 'recordset'
+          and wp_object_type = 'download'
+          and posda_object_id = any($1::int[])
+        """,
+        [recordset_ids],
+    )
+
+    wp_by_recordset = {}
+    wp_lookup_failures = []
+    for link in link_rows:
+        try:
+            item = await wp_get(f"{wp_url('Download')}/{link['wp_object_id']}")
+        except Exception:
+            item = None
+        if item:
+            wp_by_recordset[link["recordset_id"]] = item
+        else:
+            wp_lookup_failures.append(link["wp_object_id"])
+
+    fieldnames = [
+        "download_slug", "download_id", "date_updated", "download_title",
+        "file_type", "file_name", "download_size", "download_size_unit",
+        "download_url", "download_type", "file_hash", "relative_file_url",
+        "posda_file_id",
+    ]
+
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for r in rows:
+        wp = wp_by_recordset.get(r["recordset_id"]) or {}
+        name = r["file_name"] or str(r["file_id"])
+        extension = name.rsplit(".", 1)[-1].upper() if "." in name else ""
+        writer.writerow({
+            "download_slug":      _cm_value(wp, "slug"),
+            "download_id":        _cm_value(wp, "id"),
+            "date_updated":       _cm_value(wp, "date_updated"),
+            "download_title":     _cm_value(wp, "download_title"),
+            # CM keeps its own file_type list; Posda's file.file_type is a
+            # libmagic string, so the extension is the closest honest answer.
+            "file_type":          extension,
+            "file_name":          name,
+            "download_size":      "" if r["size"] is None else r["size"],
+            "download_size_unit": "" if r["size"] is None else "B",
+            "download_url":       _cm_value(wp, "download_url"),
+            "download_type":      _cm_value(wp, "download_type"),
+            "file_hash":          r["digest"] or "",
+            # Same relative scheme as the imaging manifest: clinical files land
+            # in the version folder's clinical/ subfolder.
+            "relative_file_url":  f"./clinical/{name}",
+            "posda_file_id":      r["file_id"],
+        })
+    csv_bytes = buf.getvalue().encode("utf-8")
+
+    digest = hashlib.md5(csv_bytes).hexdigest()
+    size   = len(csv_bytes)
+    rel_path = os.path.join(digest[:2], digest[2:4], digest[4:6], digest)
+    os.makedirs(os.path.join(FILE_STORAGE_PATH, digest[:2], digest[2:4], digest[4:6]), exist_ok=True)
+    with open(os.path.join(FILE_STORAGE_PATH, rel_path), "wb") as fh:
+        fh.write(csv_bytes)
+
+    security_hash = secrets.token_hex(16)
+
+    try:
+        async with db.transaction() as conn:
+            file_rows = await conn.fetch(
+                """
+                insert into file (digest, size, processing_priority)
+                values ($1, $2, 1)
+                on conflict (digest) do update set digest = excluded.digest
+                returning file_id
+                """,
+                digest, size,
+            )
+            file_id = file_rows[0]["file_id"]
+
+            await conn.execute(
+                """
+                insert into file_location (file_id, file_storage_root_id, rel_path)
+                values ($1, $2, $3)
+                on conflict do nothing
+                """,
+                file_id, FILE_STORAGE_ROOT, rel_path,
+            )
+
+            df_rows = await conn.fetch(
+                "select downloadable_file_id, security_hash from downloadable_file where file_id = $1 limit 1",
+                file_id,
+            )
+            if not df_rows:
+                df_rows = await conn.fetch(
+                    """
+                    insert into downloadable_file (file_id, security_hash, mime_type)
+                    values ($1, $2, 'text/csv')
+                    returning downloadable_file_id, security_hash
+                    """,
+                    file_id, security_hash,
+                )
+
+            await conn.execute(
+                """
+                insert into transfer_idc (dataset_release_transfer_id, clinical_manifest_file_id)
+                values ($1, $2)
+                on conflict (dataset_release_transfer_id) do update
+                    set clinical_manifest_file_id = excluded.clinical_manifest_file_id
+                """,
+                transfer_id, file_id,
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        db_error(e, operation="storing IDC clinical manifest", context={"transfer_id": transfer_id})
+
+    return item_response({
+        "file_id":              file_id,
+        "downloadable_file_id": df_rows[0]["downloadable_file_id"],
+        "security_hash":        df_rows[0]["security_hash"],
+        "row_count":            len(rows),
+        "wp_lookup_failures":   wp_lookup_failures,
+    })
 
 
 @router.get("/transfers/{transfer_id}/gc")
