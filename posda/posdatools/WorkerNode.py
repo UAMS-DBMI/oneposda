@@ -16,7 +16,9 @@ Those settings are read from the environment variables:
     * POSDA_WORKER_NAME
 
 """
+import os
 import sys
+import time
 import redis
 import requests
 import subprocess
@@ -122,33 +124,53 @@ def process_work_item(work_id: int):
 
     command_line = subp['command_line'].replace(
         "<?bkgrnd_id?>", str(subp['subprocess_invocation_id']))
-    command_line = f"/usr/bin/time -v -o /tmp/{work_id}.time {command_line}"
+    timefile = f"/tmp/{work_id}.time"
+    command_line = f"/usr/bin/time -v -o {timefile} {command_line}"
     logging.debug(command_line)
 
-    stdout_fp = tempfile.TemporaryFile()
-    stderr_fp = tempfile.TemporaryFile()
+    stdout_wfd, stdout_fp = make_capture_file()
+    stderr_wfd, stderr_fp = make_capture_file()
 
     stdin_path = get_path_from_file_id(work_item['input_file_id'])
     stdin_fp = open(stdin_path)
 
-    return_code = subprocess.Popen(command_line,
-                                   shell=True,
-                                   stdin=stdin_fp,
-                                   stdout=stdout_fp,
-                                   stderr=stderr_fp).wait()
+    try:
+        proc = subprocess.Popen(command_line,
+                                shell=True,
+                                stdin=stdin_fp,
+                                stdout=stdout_wfd,
+                                stderr=stderr_wfd,
+                                start_new_session=True)
+        return_code = proc.wait()
+    finally:
+        os.close(stdout_wfd)
+        os.close(stderr_wfd)
+        stdin_fp.close()
 
     logging.info(f'Subprocess returned: {return_code}')
 
-    stdin_fp.close()
+    # Background scripts fork children that inherit these capture files and are
+    # not killed when their parent exits -- they reparent to init and keep
+    # running. Left alone they go on writing into the files we are about to
+    # hash, upload and close, so the upload sees a moving target and everything
+    # written after it is lost with the (unlinked, unnamed) inode. Reap the
+    # whole group before reading anything.
+    kill_process_group(proc.pid)
 
-    try: 
+    # Bind these before the try: an upload failure used to leave them unbound,
+    # so the reference below raised UnboundLocalError and buried the real
+    # error under it.
+    stdout_file_id = None
+    stderr_file_id = None
+
+    try:
         stdout_file_id = upload_file(stdout_fp)
         stderr_file_id = upload_file(stderr_fp)
 
         logging.info(f'stdout:{stdout_file_id} stderr:{stderr_file_id}')
     except Exception:
-        logging.error("Could not upload stdout or stderr! "
-                      "First 5 lines of each follow...")
+        logging.exception("Could not upload stdout or stderr! "
+                          "First 5 lines of each follow...")
         stderr_fp.seek(0)
         stdout_fp.seek(0)
 
@@ -161,12 +183,70 @@ def process_work_item(work_id: int):
         stdout_fp.close()
         stderr_fp.close()
 
-    metrics = parse_timefile(f"/tmp/{work_id}.time")
+    metrics = parse_timefile(timefile)
 
     if return_code != 0:
         set_status_errored(work_id, stderr_file_id, stdout_file_id, metrics)
     else:
         set_status_finished(work_id, stderr_file_id, stdout_file_id, metrics)
+
+
+def make_capture_file():
+    """Create a capture file for a child's stdout or stderr.
+
+    Returns (write_fd, read_fp) referring to the same unlinked inode through
+    two *separate* open file descriptions. That separation is the point:
+    tempfile.TemporaryFile() hands the same description to the child (Popen
+    dups it), so the child shares our file offset -- and seek(0) to hash and
+    upload would rewind it underneath any child still writing, which then
+    overwrote the head of the file. The child's fd is O_APPEND so its writes
+    always land at the end regardless of where we have seeked to.
+    """
+    fd, path = tempfile.mkstemp()
+    os.close(fd)
+    write_fd = None
+    try:
+        write_fd = os.open(path, os.O_WRONLY | os.O_APPEND)
+        read_fp = open(path, "rb")
+    except Exception:
+        if write_fd is not None:
+            os.close(write_fd)
+        os.unlink(path)
+        raise
+    # Unlink now so the inode cannot leak into ephemeral container storage if
+    # we die before closing; both descriptors keep it alive until then.
+    os.unlink(path)
+    return write_fd, read_fp
+
+
+def kill_process_group(pgid: int, grace_seconds: float = 5.0) -> None:
+    """Terminate anything left in the child's process group.
+
+    The child is started with start_new_session=True, which makes it a session
+    and process-group leader -- so its pid *is* the group id. Do not try to
+    look that up with getpgid(): by the time we are called the child itself has
+    been reaped, and the lookup fails with ProcessLookupError even though its
+    orphaned descendants are still running.
+
+    Scripts that deliberately detach (posda.background.fork calls setsid) land
+    in a session of their own and are intentionally left alone.
+    """
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pgid, sig)
+        except (ProcessLookupError, PermissionError):
+            return
+        logging.warning("sent %s to leftover process group %s",
+                        sig.name, pgid)
+        deadline = time.monotonic() + grace_seconds
+        while time.monotonic() < deadline:
+            time.sleep(0.1)
+            try:
+                os.killpg(pgid, 0)
+            except ProcessLookupError:
+                return
+
+    logging.error("process group %s survived SIGKILL", pgid)
 
 
 def set_status_finished(work_id: int,
@@ -340,6 +420,13 @@ def parse_timefile(filename):
             except: pass
     except:
         return None
+    finally:
+        # /tmp is the container's ephemeral layer and these accumulated for the
+        # life of the pod.
+        try:
+            os.unlink(filename)
+        except OSError:
+            pass
 
     return out_dict
 
