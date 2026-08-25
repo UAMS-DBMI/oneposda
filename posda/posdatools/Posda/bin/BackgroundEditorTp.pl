@@ -701,7 +701,7 @@ $ins->RunQuery(sub {}, sub{}, $invoc_id, $BackgroundPid, $DestDir);
         ref($this->{compares_complete}) eq "HASH"
       ){
         $num_compares_complete = keys %{$this->{compares_complete}};
-      } else { $num_comparing = 0 }
+      } else { $num_compares_complete = 0 }
       if(
         exists $this->{compares_failed} &&
         ref($this->{compares_failed}) eq "HASH"
@@ -950,6 +950,18 @@ $ins->RunQuery(sub {}, sub{}, $invoc_id, $BackgroundPid, $DestDir);
   }
   sub QueueCompareRequest{
     my($this, $key, $value) = @_;
+    # If the compare child has died, StartWriter silently does nothing --
+    # Dispatch::Select::Socket->Add just prints "No associated socket" -- so
+    # requests pile up, AtTheEnd never fires, WeAreDone is never set and the
+    # job spins on the 10s timer forever looking alive.
+    unless(
+      defined $this->{CompareSubprocess} &&
+      defined $this->{CompareSubprocess}->{fh}
+    ){
+      $this->Shutdown("Aborted: StreamingEditCompare.pl is gone; " .
+        "cannot compare $key", 1);
+      return;
+    }
     my $existing_request_count  = keys %{$this->{compare_requests}};
     $this->{compare_requests}->{$key} = $value;
     if($existing_request_count == 0){
