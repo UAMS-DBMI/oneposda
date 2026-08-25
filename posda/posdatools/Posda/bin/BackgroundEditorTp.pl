@@ -770,8 +770,10 @@ $ins->RunQuery(sub {}, sub{}, $invoc_id, $BackgroundPid, $DestDir);
 #$background->WriteToEmail("params: ");
 #Debug::GenPrint(make_debug_bg($background), $next_struct, 1);
 #$background->WriteToEmail("\n");
+      # NewSubprocessEditor.pl inherits this process's STDERR on purpose; its
+      # per-file debug output is gated by POSDA_DEBUG at the source rather than
+      # being thrown away wholesale with 2>/dev/null.
       my $pid = $this->SerializedSubProcess($next_struct,
-#        "NewSubprocessEditor.pl 2>/dev/null",
         "NewSubprocessEditor.pl",
         $this->WhenEditDone($next_sop, $next_struct));
       $this->{pids_in_process}->{$next_sop} = $pid;
