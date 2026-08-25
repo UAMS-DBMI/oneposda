@@ -1088,3 +1088,26 @@ sub MakeEditor{
     MakeEditor(\@sops, \%SopsToEdit, $invoc_id))->queue;
 }
 Dispatch::Select::Dispatch();
+
+# Backstop for anything that gets out of the dispatch loop without going
+# through Shutdown -- an uncaught die, a signal, an exit path nobody
+# anticipated. Nothing outside this process ever corrects activity_task_status,
+# so without this the row reads "Running" in the UI forever.
+#
+# The pid guard matters: the forked editor children normally exec (which
+# discards END blocks), but if that exec fails they die here instead, and they
+# must not close out the parent's row.
+END {
+  my $exit_status = $?;
+  if(
+    defined($BackgroundPid) && $$ == $BackgroundPid &&
+    defined($background) && !$background->{finished}
+  ){
+    eval {
+      $background->CloseActivityTaskStatus(
+        "Aborted: process exited (status $exit_status) without completing");
+    };
+    if($@) { print STDERR "END: could not close activity task status: $@\n" }
+  }
+  $? = $exit_status;
+}
