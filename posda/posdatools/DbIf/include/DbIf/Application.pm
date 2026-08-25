@@ -3029,6 +3029,11 @@ sub DrawActivityTaskStatus {
     $self->{Backgrounders} = \@backgrounders;
     for my $i (@backgrounders){
       $http->queue("<li>$i->[0]: $i->[1] - $i->[4]");
+      if(defined($i->[8]) && $i->[8] ne ""){
+        $http->queue(" <span class=\"text-danger\" title=\"Nothing has " .
+          "updated this task recently; the process probably exited without " .
+          "closing it out.\"><b>[stalled: $i->[8]]</b></span>");
+      }
       $self->NotSoSimpleButton($http, {
         op => "DismissActivityTaskStatus",
         caption => "dismiss",

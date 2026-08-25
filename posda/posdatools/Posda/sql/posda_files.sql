@@ -7743,6 +7743,20 @@ CREATE UNIQUE INDEX role_tabs_uidx ON dbif_config.role_tabs USING btree (role_na
 
 
 --
+-- Name: activity_task_status_key_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX activity_task_status_key_idx ON public.activity_task_status USING btree (activity_id, subprocess_invocation_id);
+
+
+--
+-- Name: activity_task_status_open_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX activity_task_status_open_idx ON public.activity_task_status USING btree (last_updated) WHERE (end_time IS NULL);
+
+
+--
 -- Name: activity_timpepoint_file_idx; Type: INDEX; Schema: public; Owner: -
 --
 
