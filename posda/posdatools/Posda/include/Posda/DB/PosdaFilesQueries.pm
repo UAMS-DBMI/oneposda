@@ -13,6 +13,10 @@ use Data::Dumper;
 
 my $db_handle;
 my $db_handle_cache = {};
+# Bumped every time a connection is (re)made, so statement handles prepared
+# against a previous connection can be spotted and re-prepared cheaply -- an
+# integer compare, no round trip.
+my $db_handle_generation = {};
 
 sub reset_db_handles {
   my ($self) = @_;
@@ -39,10 +43,40 @@ sub _get_handle_main {
   if (not defined $db_handle_cache->{$connect}) {
     $db_handle_cache->{$connect} = DBI->connect($connect)
       or die "Could not connect to DB with connect string: $connect";
+    $db_handle_generation->{$connect} =
+      ($db_handle_generation->{$connect} || 0) + 1;
     $self->_log_retrival($self->{name});
   }
 
   return $db_handle_cache->{$connect};
+}
+
+# Drop a connection that has gone away and make a fresh one. Handles cached
+# here are process-global and were previously never health-checked, so once a
+# connection died -- pg restart, idle reaper, network blip -- every query that
+# reused it silently returned undef for the life of the process.
+sub _reconnect_main {
+  my ($self) = @_;
+  my $connect = $self->{connect};
+  my $old = $db_handle_cache->{$connect};
+  if (defined $old) { eval { $old->disconnect } }
+  delete $db_handle_cache->{$connect};
+  delete $self->{handle};
+  return $self->_get_handle_main();
+}
+
+# Prepare if we have no statement handle, or if the one we have was prepared
+# against a connection that has since been replaced.
+sub _ensure_prepared {
+  my ($self, $dbh) = @_;
+  my $generation = $db_handle_generation->{$self->{connect}} || 0;
+  if (
+    not defined $self->{handle} or
+    ($self->{handle_generation} || 0) != $generation
+  ) {
+    $self->Prepare($dbh);
+    $self->{handle_generation} = $generation;
+  }
 }
 
 sub GetQueryInstance {
@@ -225,9 +259,7 @@ sub FetchOneHash {
 
   my $dbh = $self->_get_handle_main();
 
-  if (not defined $self->{handle}) {
-    $self->Prepare($dbh);
-  }
+  $self->_ensure_prepared($dbh);
 
   my $rows_affected = $self->Execute(@_);
 
@@ -242,9 +274,7 @@ sub FetchResults {
 
   my $dbh = $self->_get_handle_main();
 
-  if (not defined $self->{handle}) {
-    $self->Prepare($dbh);
-  }
+  $self->_ensure_prepared($dbh);
 
   my $rows_affected = $self->Execute(@_);
 
@@ -256,16 +286,56 @@ sub _RunQueryBlocking {
   my $row_callback = shift;
   my $end_callback = shift;
 
+  # The contract above promises an $err_callback, but this path used to accept
+  # and ignore it: a failed execute just returned undef, got handed to the row
+  # callback (almost always sub{}) and vanished. Only take it when it really is
+  # a coderef, so the (row, end, @binds) signature used everywhere else still
+  # works -- and so an undef bind variable can never be mistaken for it.
+  my $error_callback;
+  if (ref($_[0]) eq 'CODE') {
+    $error_callback = shift;
+  } else {
+    $error_callback = sub {
+      my $message = shift;
+      print STDERR "Error in query, but no error_callback passed!\n$message\n";
+    };
+  }
+
   my $dbh = $self->_get_handle_main();
 
-  if (not defined $self->{handle}) {
-    $self->Prepare($dbh);
-  }
+  $self->_ensure_prepared($dbh);
 
   ## Test adjusted to allow "-- select" to force select mode
   my $select = ($self->{query} =~ /^\s*-*\s*select/i)? 1:0;
 
   my $rows_affected = $self->Execute(@_);
+
+  # DBI is connected with RaiseError off, so a dead handle and a rejected
+  # statement both show up here as undef rather than as an exception.
+  # Distinguish them: a connection that has gone away is worth reconnecting and
+  # retrying once, because otherwise the cached handle stays broken for the
+  # life of the process and every later query quietly does nothing. A real SQL
+  # error is reported as-is.
+  unless (defined $rows_affected) {
+    my $errstr = $dbh->errstr;
+    unless (defined $errstr) { $errstr = "(no error string available)" }
+
+    unless ($dbh->ping) {
+      print STDERR "Query $self->{name}: connection lost ($errstr); " .
+        "reconnecting\n";
+      $dbh = $self->_reconnect_main();
+      $self->_ensure_prepared($dbh);
+      $rows_affected = $self->Execute(@_);
+    }
+
+    unless (defined $rows_affected) {
+      &$error_callback("Query $self->{name} failed to execute: $errstr");
+      if(ref($end_callback) eq "CODE"){
+        &$end_callback();
+      }
+      return;
+    }
+  }
 
   if ($select) {
     # return the results

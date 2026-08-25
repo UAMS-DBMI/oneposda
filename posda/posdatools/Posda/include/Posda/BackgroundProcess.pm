@@ -98,7 +98,6 @@ sub new {
     Query('InsertActivityTaskStatus')->RunQuery(
       sub {}, sub {}, $activity_id, $invoc_id
     );
-    $this->{UpdStatusQ} = Query("UpdateActivityTaskStatus");
   }
 
   # convert $notify to username if it is an email
@@ -136,20 +135,69 @@ sub SetActivityStatus{
     return;
   }
 
-  if(defined $time_remaining) {
-    Query('UpdateActivityTaskStatusAndCompletionTime')->RunQuery(
-      sub{}, sub{}, $status, $time_remaining,
-      $self->{activity_id}, $self->{invoc_id});
-  } else {
-    Query('UpdateActivityTaskStatus')->RunQuery(
-      sub{}, sub{}, $status,
-      $self->{activity_id}, $self->{invoc_id});
-  }
+  $self->_update_activity_status($status, $time_remaining);
 
   if($status eq "Schedule Complete - Manual Process Follows"){
     $self->SetActivityManualUpdate($status);
     return;
   }
+}
+
+# Run the heartbeat update, reporting rather than swallowing the two ways it
+# can quietly stop working. Reconnecting after a lost connection is handled a
+# layer down in PosdaDB::Queries; what is left here is making sure the outcome
+# is not silently discarded:
+#   - the query failed outright, which used to be invisible because DBI runs
+#     with RaiseError off and the row callback was sub{};
+#   - the update matched no rows, meaning the (activity_id,
+#     subprocess_invocation_id) key no longer identifies a row, which looks
+#     exactly like success to a caller that ignores the row count.
+sub _update_activity_status {
+  my ($self, $status, $time_remaining) = @_;
+
+  my $name = defined($time_remaining)
+    ? 'UpdateActivityTaskStatusAndCompletionTime'
+    : 'UpdateActivityTaskStatus';
+  my @args = defined($time_remaining)
+    ? ($status, $time_remaining, $self->{activity_id}, $self->{invoc_id})
+    : ($status, $self->{activity_id}, $self->{invoc_id});
+
+  my($rows, $err);
+  my $ok = eval {
+    $self->_status_query($name)->RunQuery(
+      sub { $rows = $_[0]->[0] },
+      sub {},
+      sub { $err = $_[0] },
+      @args);
+    1;
+  };
+  unless ($ok) { $err = $@ }
+
+  if (defined $err) {
+    print STDERR "SetActivityStatus: $name failed ($err); " .
+      "activity_task_status for activity $self->{activity_id} / " .
+      "invocation $self->{invoc_id} has stopped updating\n";
+    return 0;
+  }
+
+  if (defined($rows) && $rows == 0) {
+    print STDERR "SetActivityStatus: $name matched no rows for " .
+      "activity $self->{activity_id} / invocation $self->{invoc_id}; " .
+      "status is not being recorded\n";
+  }
+
+  return 1;
+}
+
+# Query objects cache a prepared statement handle, so hold onto them rather
+# than re-running _load_query (a select against the queries table) on every
+# single heartbeat.
+sub _status_query {
+  my ($self, $name) = @_;
+  unless (defined $self->{status_queries}->{$name}) {
+    $self->{status_queries}->{$name} = Query($name);
+  }
+  return $self->{status_queries}->{$name};
 }
 
 sub SetActivityManualUpdate {
