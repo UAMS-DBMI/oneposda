@@ -626,6 +626,7 @@ $ins->RunQuery(sub {}, sub{}, $invoc_id, $BackgroundPid, $DestDir);
      list_of_sops => $list,
       sop_hash => $hash,
       sops_in_process => {},
+      pids_in_process => {},
       sops_completed => {},
       compare_requests => {},
       comparing => {},
@@ -735,9 +736,8 @@ $ins->RunQuery(sub {}, sub{}, $invoc_id, $BackgroundPid, $DestDir);
         $background->WriteToEmail($report);
 #        print STDERR $report;
         if($this->{WeAreDone}) {
-         $background->Finish("Done $num_compares_complete changed," .
-           " $num_compares_failed failed in $elapsed seconds");
-         exit;
+         $this->Shutdown("Done $num_compares_complete changed," .
+           " $num_compares_failed failed in $elapsed seconds", 0);
         };
       }
       unless($this->{WeAreDone}){
@@ -765,10 +765,11 @@ $ins->RunQuery(sub {}, sub{}, $invoc_id, $BackgroundPid, $DestDir);
 #$background->WriteToEmail("params: ");
 #Debug::GenPrint(make_debug_bg($background), $next_struct, 1);
 #$background->WriteToEmail("\n");
-      $this->SerializedSubProcess($next_struct,
+      my $pid = $this->SerializedSubProcess($next_struct,
 #        "NewSubprocessEditor.pl 2>/dev/null",
         "NewSubprocessEditor.pl",
         $this->WhenEditDone($next_sop, $next_struct));
+      $this->{pids_in_process}->{$next_sop} = $pid;
       $num_in_process = keys %{$this->{sops_in_process}};
       $num_waiting = @{$this->{list_of_sops}};
     }
@@ -803,6 +804,7 @@ $ins->RunQuery(sub {}, sub{}, $invoc_id, $BackgroundPid, $DestDir);
         };
       }
       delete $this->{sops_in_process}->{$sop};
+      delete $this->{pids_in_process}->{$sop};
       $this->RestartProcessing;
     };
   }
@@ -812,6 +814,46 @@ $ins->RunQuery(sub {}, sub{}, $invoc_id, $BackgroundPid, $DestDir);
       $this->{process_pending} = 1;
       $this->InvokeAfterDelay("StartProcessing", 0);
     }
+  }
+
+  # The single exit point for this script once the dispatch loop is running.
+  #
+  # A bare "exit" from inside an event handler left up to $num_simul
+  # NewSubprocessEditor.pl children running -- they reparent to init and keep
+  # on editing -- never called Finish, and returned status 0. The worker
+  # therefore recorded the item as finished while activity_task_status stayed
+  # frozen at its last heartbeat with end_time NULL, and the stderr temp file
+  # it was about to upload was still being written to by the orphans.
+  sub Shutdown{
+    my($this, $mess, $exit_code) = @_;
+    unless(defined $exit_code) { $exit_code = 0 }
+    if($this->{ShuttingDown}) { return }
+    $this->{ShuttingDown} = 1;
+
+    if(defined $this->{CompareSubprocess}){
+      my $compare = $this->{CompareSubprocess};
+      delete $this->{CompareSubprocess};
+      eval { $compare->TearDown };
+      if($@) { print STDERR "Shutdown: tearing down compare failed: $@\n" }
+    }
+
+    for my $sop (keys %{$this->{pids_in_process}}){
+      my $pid = $this->{pids_in_process}->{$sop};
+      next unless $pid;
+      eval {
+        $this->KillProcessAndChildren($pid);
+        waitpid $pid, 0;
+      };
+      if($@) { print STDERR "Shutdown: reaping $pid failed: $@\n" }
+    }
+    $this->{pids_in_process} = {};
+
+    eval { $background->Finish($mess) };
+    if($@) {
+      print STDERR "Shutdown: Finish failed: $@\n";
+      eval { $background->CloseActivityTaskStatus($mess) };
+    }
+    exit $exit_code;
   }
 
   sub HandleInputFromCompare{

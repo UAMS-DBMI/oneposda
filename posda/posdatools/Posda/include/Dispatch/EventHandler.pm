@@ -298,6 +298,7 @@ sub SerializedSubProcess{
   my($fh, $pid) = $this->ReadWriteChild($command);
   Dispatch::Select::Socket->new($this->WriteSerializedData($serialized_args,
     $finished, $pid), $fh)->Add("writer");
+  return $pid;
 }
 
 # Parameters are normal, response will be a Serialized Response
