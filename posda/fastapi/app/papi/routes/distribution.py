@@ -5932,7 +5932,13 @@ async def upsert_transfer_wp(transfer_id: int, payload: TransferWpUpdate, db: Da
 @router.get("/transfers/{transfer_id}/recordsets")
 # List recordset releases included in a transfer
 async def get_recordset_releases_by_transfer(transfer_id: int, db: Database = Depends()):
-    query = """\
+    # The file counts come from the same predicates the manifests use, so the
+    # UI groups a recordset under the manifest it actually feeds rather than
+    # guessing from recordset_type -- which stopped being a usable proxy once
+    # DICOM could be a pathology slide. A recordset holding both DICOM and
+    # clinical files legitimately feeds two manifests, so these are counts, not
+    # a category.
+    query = f"""\
         select
           rr.recordset_release_id,
           r.recordset_id,
@@ -5941,13 +5947,28 @@ async def get_recordset_releases_by_transfer(transfer_id: int, db: Database = De
           tr.retriever_manifest_file_id,
           df.downloadable_file_id,
           df.security_hash,
-          rt.recordset_type_name
+          rt.recordset_type_name,
+          coalesce(fc.imaging_files, 0)    as imaging_files,
+          coalesce(fc.clinical_files, 0)   as clinical_files,
+          coalesce(fc.unlistable_files, 0) as unlistable_files
         from
             transfer_recordset tr
             join recordset_release rr on tr.recordset_release_id = rr.recordset_release_id
             join recordset r on rr.recordset_id = r.recordset_id
             join recordset_type rt on r.recordset_type_id = rt.recordset_type_id
             left join downloadable_file df on df.file_id = tr.retriever_manifest_file_id
+            left join lateral (
+                select
+                    count(*) filter (where {IDC_IMAGING_PREDICATE})  as imaging_files,
+                    count(*) filter (where {IDC_CLINICAL_PREDICATE}) as clinical_files,
+                    count(*) filter (
+                        where not ({IDC_IMAGING_PREDICATE})
+                          and not ({IDC_CLINICAL_PREDICATE})
+                    ) as unlistable_files
+                from recordset_release_file rrf
+                join file f on f.file_id = rrf.file_id
+                where rrf.recordset_release_id = rr.recordset_release_id
+            ) fc on true
         where
             tr.dataset_release_transfer_id = $1
         order by r.recordset_name, rr.release_number;
