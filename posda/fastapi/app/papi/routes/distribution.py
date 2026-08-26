@@ -838,6 +838,28 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
     -- Relies on publish keeping the draft (it sets draft_status='published'
     -- rather than deleting it). If published drafts are ever purged, this
     -- signal dies with them.
+    member as (
+        -- Which version of this recordset the release actually carries, draft
+        -- or released. `bundled` only answers whether a *finished* version is
+        -- in; this says which one and what state it is in, so Assemble can
+        -- distinguish "carrying forward v1" from "working toward the next
+        -- version" -- and show when a recordset is in no version at all.
+        --
+        -- distinct on: nothing at the storage layer stops two releases of one
+        -- recordset being in the same dataset release (the PK is on the pair),
+        -- and a second row here would duplicate the recordset in the payload.
+        select distinct on (rr.recordset_id)
+            rr.recordset_id,
+            rr.recordset_release_id as member_release_id,
+            rr.release_number       as member_release_number,
+            rr.release_status       as member_release_status
+        from dataset_release_recordset drr
+        join recordset_release rr using (recordset_release_id)
+        where drr.dataset_release_id = $2
+        order by rr.recordset_id,
+                 (rr.release_status = 'draft') desc,
+                 rr.release_number desc nulls last
+    ),
     worked as (
         select distinct rr.recordset_id
         from recordset_draft d
@@ -947,6 +969,9 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
          and lr.recordset_release_id in (select recordset_release_id from bundled))
             as in_dataset_release,
         (worked.recordset_id is not null) as worked_this_cycle,
+        member.member_release_id,
+        member.member_release_number,
+        member.member_release_status,
         lb.last_bundled_release_number,
         dest.destination_ids,
         dest.destination_abbrs,
@@ -959,6 +984,7 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
     left join latest_rel lr using (recordset_id)
     left join qc q using (recordset_id)
     left join worked using (recordset_id)
+    left join member using (recordset_id)
     left join last_bundled lb using (recordset_id)
     left join dest using (recordset_id)
     left join wp_download using (recordset_id)
@@ -1000,6 +1026,13 @@ def build_cycle_recordset(row):
         } if row["recordset_release_id"] is not None else None,
         "in_dataset_release": row["in_dataset_release"],
         "worked_this_cycle": row["worked_this_cycle"],
+        # The version this dataset release carries for the recordset -- null
+        # when the recordset is not part of the release at all.
+        "release_in_cycle": {
+            "recordset_release_id": row["member_release_id"],
+            "release_number": row["member_release_number"],
+            "release_status": row["member_release_status"],
+        } if row["member_release_id"] is not None else None,
         "last_bundled_dataset_release_number": row["last_bundled_release_number"],
         "destinations": [
             {"destination_id": dest_id, "destination_abbr": abbr, "default_display": is_default}
