@@ -863,8 +863,8 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
     ),
     last_bundled as (
         -- Highest dataset release that *any* of this recordset's releases
-        -- was ever bundled into -- distinct from in_latest_dataset_release,
-        -- which only checks the dataset's *current* latest release. A
+        -- was ever bundled into -- distinct from in_dataset_release,
+        -- which only checks the release this rollup describes. A
         -- recordset can sit at its own v3 while the dataset cuts newer
         -- releases around it (carry-forward), so this can be ahead of or
         -- behind the recordset's own latest_release.
@@ -914,7 +914,7 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
         coalesce(q.series_approved, 0) as series_approved,
         (lr.recordset_release_id is not null
          and lr.recordset_release_id in (select recordset_release_id from bundled))
-            as in_latest_dataset_release,
+            as in_dataset_release,
         lb.last_bundled_release_number,
         dest.destination_ids,
         dest.destination_abbrs,
@@ -965,7 +965,7 @@ def build_cycle_recordset(row):
             "release_number": row["release_number"],
             "release_date": row["release_date"],
         } if row["recordset_release_id"] is not None else None,
-        "in_latest_dataset_release": row["in_latest_dataset_release"],
+        "in_dataset_release": row["in_dataset_release"],
         "last_bundled_dataset_release_number": row["last_bundled_release_number"],
         "destinations": [
             {"destination_id": dest_id, "destination_abbr": abbr, "default_display": is_default}
@@ -1013,9 +1013,18 @@ async def count_orphaned_wp_downloads(wp_object_type: str, wp_object_id: int, at
 
 @router.get("/datasets/{dataset_id}/cycle")
 # Release-cycle rollup for a dataset: per-recordset pipeline position (draft ->
-# QC -> frozen), the latest dataset release those releases fan into, and its
-# transfers. Read-only; drives the cycle workspace and derived dashboard tasks.
-async def get_dataset_cycle(dataset_id: int, db: Database = Depends()):
+# QC -> frozen), one dataset release those releases fan into, and its transfers.
+# Read-only; drives the cycle workspace and derived dashboard tasks.
+#
+# `release_id` pins the rollup to a specific release; without it the latest is
+# used. Pinning is what keeps a shipping release reachable after the next cycle
+# starts -- otherwise its transfers become invisible the moment a newer draft
+# release exists. `latest_dataset_release_id` is always returned so the caller
+# can tell whether it is looking at the current cycle.
+async def get_dataset_cycle(
+    dataset_id: int,
+    release_id: Optional[int] = Query(default=None),
+    db: Database = Depends()):
     dataset_q = """\
         select d.dataset_id, d.dataset_name, dt.dataset_type_name
         from dataset d
@@ -1031,6 +1040,16 @@ async def get_dataset_cycle(dataset_id: int, db: Database = Depends()):
           and dr.{NOT_RETRACTED}
         order by dr.release_number desc
         limit 1;
+        """
+
+    # No NOT_RETRACTED filter here: asking for a release by id is explicit, and
+    # a retracted release still has history worth looking at. The dataset_id
+    # condition keeps one dataset's release from being read through another.
+    pinned_release_q = """\
+        select dr.dataset_release_id, dr.release_number, dr.release_date,
+               dr.release_doi, dr.release_status, dr.when_created
+        from dataset_release dr
+        where dr.dataset_id = $1 and dr.dataset_release_id = $2;
         """
 
     transfers_q = """\
@@ -1070,15 +1089,32 @@ async def get_dataset_cycle(dataset_id: int, db: Database = Depends()):
         latest_release = release_rows[0] if release_rows else None
         latest_release_id = latest_release["dataset_release_id"] if latest_release else None
 
+        if release_id is None:
+            release = latest_release
+        else:
+            pinned_rows = await db.fetch(pinned_release_q, [dataset_id, release_id])
+            if not pinned_rows:
+                api_error(
+                    "NOT_FOUND",
+                    "Release not found for this dataset",
+                    {"dataset_id": dataset_id, "release_id": release_id},
+                    404,
+                )
+            release = pinned_rows[0]
+
+        current_release_id = release["dataset_release_id"] if release else None
+
         recordset_rows = await db.fetch(
-            DATASET_CYCLE_RECORDSETS_SQL, [dataset_id, latest_release_id]
+            DATASET_CYCLE_RECORDSETS_SQL, [dataset_id, current_release_id]
         )
 
         transfer_rows = (
-            await db.fetch(transfers_q, [latest_release_id]) if latest_release_id else []
+            await db.fetch(transfers_q, [current_release_id]) if current_release_id else []
         )
 
         wp_collection_rows = await db.fetch(wp_collection_q, [dataset_id])
+    except HTTPException:
+        raise
     except Exception as e:
         db_error(e, operation="fetching dataset cycle", context={"dataset_id": dataset_id})
 
@@ -1103,17 +1139,21 @@ async def get_dataset_cycle(dataset_id: int, db: Database = Depends()):
         "recordsets": [build_cycle_recordset(r) for r in recordset_rows],
         "dataset_wp_linked": bool(wp_collection_rows),
         "orphaned_download_count": orphaned_download_count,
-        "latest_dataset_release": {
-            "dataset_release_id": latest_release["dataset_release_id"],
-            "release_number": latest_release["release_number"],
-            "release_date": latest_release["release_date"],
-            "release_doi": latest_release["release_doi"],
-            "release_status": latest_release["release_status"],
+        # The release this rollup describes -- pinned when release_id was given,
+        # otherwise the latest. Compare against latest_dataset_release_id to see
+        # whether this is the current cycle or an older one still being viewed.
+        "latest_dataset_release_id": latest_release_id,
+        "dataset_release": {
+            "dataset_release_id": release["dataset_release_id"],
+            "release_number": release["release_number"],
+            "release_date": release["release_date"],
+            "release_doi": release["release_doi"],
+            "release_status": release["release_status"],
             # When the cycle started. release_date is null while draft, so this
             # is the only marker of "work done during this cycle".
-            "when_created": latest_release["when_created"],
+            "when_created": release["when_created"],
             "transfers": [dict(t) for t in transfer_rows],
-        } if latest_release else None,
+        } if release else None,
     })
 
 
