@@ -19,6 +19,7 @@ from ..util.wp import wp_get, wp_url, wp_client
 
 FILE_STORAGE_PATH = os.getenv("FILE_STORAGE_PATH", "/home/posda/cache/created")
 FILE_STORAGE_ROOT = int(os.getenv("FILE_STORAGE_ROOT_ID", "3"))
+IDC_TRANSFER_BUCKET = os.getenv("IDC_TRANSFER_BUCKET", "posda_submit")
 
 router = APIRouter(
     tags=["Distribution"],
@@ -4385,6 +4386,23 @@ async def update_dataset_release_transfer(
                 422,
             )
 
+        # base_gcs_url is filled automatically when the dataset manifest is
+        # generated, but it stays editable so a package can be relocated -- and
+        # an edit can blank it. Every file path the daemon uploads is relative
+        # to it, so without it there is nowhere to write.
+        if manifests:
+            idc = await db.fetch_one(
+                "select base_gcs_url from transfer_idc where dataset_release_transfer_id = $1",
+                [transfer_id],
+            )
+            if not idc or not idc["base_gcs_url"]:
+                api_error(
+                    "BASE_URL_REQUIRED",
+                    "This transfer has no destination bucket path -- set it before queueing",
+                    {"transfer_id": transfer_id},
+                    422,
+                )
+
     updates = []
     values = []
     idx = 1
@@ -4650,6 +4668,13 @@ async def generate_idc_dataset_manifest(transfer_id: int, db: Database = Depends
         "citation":             citation,
     }
 
+    # The bucket path anchors every relative path in the imaging and clinical
+    # manifests, so derive it here rather than asking someone to type it: this
+    # is the one place holding both halves -- the WordPress slug and the release
+    # number.
+    slug = manifest_row["dataset_slug"]
+    base_gcs_url = f"gs://{IDC_TRANSFER_BUCKET}/{slug}/v{release_number}" if slug else None
+
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=list(manifest_row.keys()))
     writer.writeheader()
@@ -4703,12 +4728,18 @@ async def generate_idc_dataset_manifest(transfer_id: int, db: Database = Depends
 
             await conn.execute(
                 """
-                insert into transfer_idc (dataset_release_transfer_id, dataset_manifest_file_id)
-                values ($1, $2)
+                insert into transfer_idc (
+                    dataset_release_transfer_id, dataset_manifest_file_id, base_gcs_url
+                )
+                values ($1, $2, $3)
                 on conflict (dataset_release_transfer_id) do update
-                    set dataset_manifest_file_id = excluded.dataset_manifest_file_id
+                    set dataset_manifest_file_id = excluded.dataset_manifest_file_id,
+                        -- Existing value wins: a relocation edited in the Manage
+                        -- modal must survive a manifest regeneration. This only
+                        -- ever fills a null.
+                        base_gcs_url = coalesce(transfer_idc.base_gcs_url, excluded.base_gcs_url)
                 """,
-                transfer_id, file_id,
+                transfer_id, file_id, base_gcs_url,
             )
     except Exception as e:
         db_error(e, operation="generating IDC dataset manifest", context={"transfer_id": transfer_id})
