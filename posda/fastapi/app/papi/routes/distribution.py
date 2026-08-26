@@ -4538,7 +4538,8 @@ async def generate_idc_dataset_manifest(transfer_id: int, db: Database = Depends
     # Resolve transfer → dataset_release → dataset
     rows = await db.fetch(
         """
-        select drt.dataset_release_id, dr.dataset_id
+        select drt.dataset_release_id, dr.dataset_id,
+               dr.release_number, dr.release_date
         from dataset_release_transfer drt
         join dataset_release dr using (dataset_release_id)
         where drt.dataset_release_transfer_id = $1
@@ -4550,6 +4551,8 @@ async def generate_idc_dataset_manifest(transfer_id: int, db: Database = Depends
 
     dataset_release_id = rows[0]["dataset_release_id"]
     dataset_id         = rows[0]["dataset_id"]
+    release_number     = rows[0]["release_number"]
+    release_date       = rows[0]["release_date"]
 
     # Find the WP object mapped to this dataset
     wp_rows = await db.fetch(
@@ -4631,8 +4634,12 @@ async def generate_idc_dataset_manifest(transfer_id: int, db: Database = Depends
         "dataset_short_name":   short_name,
         "dataset_title":        title,
         "dataset_status":       status,
-        "dataset_version":      _str(wp_item.get("version_number")),
-        "dataset_version_date": _str(wp_item.get("date_updated")),
+        # Version and version date describe the release being shipped, so they
+        # come from Posda. WordPress isn't updated until dissemination (step 7),
+        # which runs after this manifest is generated -- the WP values are stale
+        # or absent by construction.
+        "dataset_version":      str(release_number),
+        "dataset_version_date": release_date.date().isoformat() if release_date else "",
         "dataset_url":          _str(wp_item.get("view_url")),
         "cancer_types":         _pipe(wp_item.get("cancer_types")),
         "supporting_data":      _pipe(wp_item.get("supporting_data")),
