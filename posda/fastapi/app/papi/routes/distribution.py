@@ -815,6 +815,10 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
         order by d.recordset_id, d.recordset_draft_id desc
     ),
     latest_rel as (
+        -- Released only. A draft release carries a null release_number, and
+        -- `order by release_number desc` puts nulls FIRST, so without this the
+        -- unpublished draft would be reported as the recordset's latest
+        -- release -- with a null number and date.
         select distinct on (r.recordset_id)
             r.recordset_id,
             r.recordset_release_id,
@@ -822,7 +826,27 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
             r.release_date
         from recordset_release r
         where r.recordset_id in (select recordset_id from rs)
+          and r.release_status = 'released'
         order by r.recordset_id, r.release_number desc
+    ),
+    -- Did this cycle work on this recordset? Structural, not temporal: a draft
+    -- was created for a release that is in *this* dataset release's membership.
+    -- Stays true after publish -- same draft, same release, same membership row
+    -- -- which is the point, since Verify would otherwise empty out the moment
+    -- its work completed.
+    --
+    -- Relies on publish keeping the draft (it sets draft_status='published'
+    -- rather than deleting it). If published drafts are ever purged, this
+    -- signal dies with them.
+    worked as (
+        select distinct rr.recordset_id
+        from recordset_draft d
+        join recordset_release rr
+            on rr.recordset_release_id = d.recordset_release_id
+        join dataset_release_recordset drr
+            on drr.recordset_release_id = d.recordset_release_id
+        where drr.dataset_release_id = $2
+          and d.draft_status <> 'deleted'
     ),
     qc_draft as (
         select distinct on (d.recordset_id)
@@ -922,6 +946,7 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
         (lr.recordset_release_id is not null
          and lr.recordset_release_id in (select recordset_release_id from bundled))
             as in_dataset_release,
+        (worked.recordset_id is not null) as worked_this_cycle,
         lb.last_bundled_release_number,
         dest.destination_ids,
         dest.destination_abbrs,
@@ -933,6 +958,7 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
     left join open_draft od using (recordset_id)
     left join latest_rel lr using (recordset_id)
     left join qc q using (recordset_id)
+    left join worked using (recordset_id)
     left join last_bundled lb using (recordset_id)
     left join dest using (recordset_id)
     left join wp_download using (recordset_id)
@@ -973,6 +999,7 @@ def build_cycle_recordset(row):
             "release_date": row["release_date"],
         } if row["recordset_release_id"] is not None else None,
         "in_dataset_release": row["in_dataset_release"],
+        "worked_this_cycle": row["worked_this_cycle"],
         "last_bundled_dataset_release_number": row["last_bundled_release_number"],
         "destinations": [
             {"destination_id": dest_id, "destination_abbr": abbr, "default_display": is_default}
@@ -2497,10 +2524,13 @@ async def create_recordset_draft(
         where recordset_id = $1 and draft_status not in ('published', 'deleted')
         limit 1
         """
+    # Released only: a draft release has a null release_number, and `desc`
+    # sorts nulls first -- so this would otherwise return the in-progress draft
+    # release and next_number would be null + 1.
     latest_release_q = """
         select recordset_release_id, release_number
         from recordset_release
-        where recordset_id = $1
+        where recordset_id = $1 and release_status = 'released'
         order by release_number desc
         limit 1
         """
@@ -2538,6 +2568,48 @@ async def create_recordset_draft(
         on conflict (recordset_draft_id, file_id, file_name) do nothing;
     """
     count_q = "select count(*)::int as file_count from recordset_draft_file where recordset_draft_id = $1"
+
+    # The release a draft is filling exists from the start, so the cycle can
+    # answer "what is this dataset release made of" during Assemble rather than
+    # only after Bundle. release_number and release_date stay null until
+    # publish, so abandoning a draft leaves no gap in the numbering.
+    insert_draft_release_q = """\
+        insert into recordset_release (
+            recordset_id, release_status, when_created, who_created, when_updated, who_updated
+        )
+        values ($1, 'draft', now(), $2, now(), $2)
+        returning recordset_release_id
+        """
+    link_draft_release_q = """\
+        update recordset_draft set recordset_release_id = $2 where recordset_draft_id = $1
+        """
+    # Membership is written now, not at Bundle, so the row never has to be
+    # rewritten: publishing mutates the release it points at. Only while a cycle
+    # is open -- a draft can also be started from the recordset page with no
+    # cycle running, and cycle start adopts those.
+    open_cycle_q = """\
+        select dr.dataset_release_id
+        from recordset rs
+        join dataset_release dr on dr.dataset_id = rs.dataset_id
+        where rs.recordset_id = $1 and dr.release_status = 'draft'
+        order by dr.release_number desc
+        limit 1
+        """
+    # One version per recordset per dataset release: swap out whatever this
+    # recordset was contributing (usually the carried-forward release).
+    evict_member_q = """\
+        delete from dataset_release_recordset drr
+        using recordset_release existing
+        where drr.dataset_release_id = $1
+          and existing.recordset_release_id = drr.recordset_release_id
+          and existing.recordset_id = $2
+          and drr.recordset_release_id <> $3
+        """
+    add_member_q = """\
+        insert into dataset_release_recordset (dataset_release_id, recordset_release_id)
+        values ($1, $2)
+        on conflict do nothing
+        """
 
     try:
         async with db.transaction() as conn:
@@ -2590,6 +2662,20 @@ async def create_recordset_draft(
             elif payload.cloned_from_release_id is not None:
                 await conn.execute(clone_from_release_q, draft_id, payload.cloned_from_release_id)
 
+            draft_release_rows = await conn.fetch(
+                insert_draft_release_q, recordset_id, current_user.user_id
+            )
+            draft_release_id = draft_release_rows[0]["recordset_release_id"]
+            await conn.execute(link_draft_release_q, draft_id, draft_release_id)
+
+            open_cycle = await conn.fetch(open_cycle_q, recordset_id)
+            if open_cycle:
+                cycle_release_id = open_cycle[0]["dataset_release_id"]
+                await conn.execute(
+                    evict_member_q, cycle_release_id, recordset_id, draft_release_id
+                )
+                await conn.execute(add_member_q, cycle_release_id, draft_release_id)
+
             counted = await conn.fetch(count_q, draft_id)
     except HTTPException:
         raise
@@ -2602,6 +2688,8 @@ async def create_recordset_draft(
 
     result = dict(record[0])
     result["file_count"] = counted[0]["file_count"] if counted else 0
+    # The insert returned the row as it was before the release was linked.
+    result["recordset_release_id"] = draft_release_id
     return item_response(result)
 
 
@@ -2717,10 +2805,32 @@ async def delete_recordset_draft(
     current_user: User = logged_in_user,
     db: Database = Depends()):
 
+    # A soft delete on the draft, but its draft release is a real row that has
+    # already displaced whatever this recordset was contributing to the open
+    # cycle. Left alone, the dataset release would keep shipping a version that
+    # is never going to be published.
+    q_draft_release = """\
+        select rd.recordset_id, rd.recordset_release_id, rr.release_status
+        from recordset_draft rd
+        left join recordset_release rr
+            on rr.recordset_release_id = rd.recordset_release_id
+        where rd.recordset_draft_id = $1
+        """
+    q_member_of = """\
+        select dataset_release_id from dataset_release_recordset
+        where recordset_release_id = $1
+        """
+    q_latest_released = """\
+        select recordset_release_id from recordset_release
+        where recordset_id = $1 and release_status = 'released'
+        order by release_number desc
+        limit 1
+        """
     delete_query = """\
         update recordset_draft
         set
             draft_status = 'deleted',
+            recordset_release_id = null,
             when_updated = now(),
             who_updated = $2
         where recordset_draft_id = $1
@@ -2728,16 +2838,55 @@ async def delete_recordset_draft(
     """
 
     try:
-        record = await db.fetch_one(delete_query, [draft_id, current_user.user_id])
+        async with db.transaction() as conn:
+            before = await conn.fetchrow(q_draft_release, draft_id)
+            if not before:
+                api_error("NOT_FOUND", "Draft not found", {"draft_id": draft_id}, 404)
+
+            record = await conn.fetchrow(delete_query, draft_id, current_user.user_id)
+
+            # Only an unpublished release is ours to remove. Once published it
+            # is an immutable version that other things may already reference.
+            if (
+                before["recordset_release_id"] is not None
+                and before["release_status"] == "draft"
+            ):
+                draft_release_id = before["recordset_release_id"]
+                member_rows = await conn.fetch(q_member_of, draft_release_id)
+
+                await conn.execute(
+                    "delete from dataset_release_recordset where recordset_release_id = $1",
+                    draft_release_id,
+                )
+
+                # Put back the version the draft displaced. Nothing records what
+                # was evicted, so this is the recordset's latest published
+                # release -- a reconstruction of the carry-forward state, not an
+                # undo. Dropping the recordset from the release outright would
+                # be the more surprising outcome.
+                carry_forward = await conn.fetchrow(q_latest_released, before["recordset_id"])
+                if carry_forward:
+                    for m in member_rows:
+                        await conn.execute(
+                            """insert into dataset_release_recordset
+                                   (dataset_release_id, recordset_release_id)
+                               values ($1, $2) on conflict do nothing""",
+                            m["dataset_release_id"],
+                            carry_forward["recordset_release_id"],
+                        )
+
+                await conn.execute(
+                    "delete from recordset_release where recordset_release_id = $1",
+                    draft_release_id,
+                )
+    except HTTPException:
+        raise
     except Exception as e:
         db_error(
             e,
             operation="deleting recordset draft",
             context={"draft_id": draft_id},
         )
-
-    if not record:
-        api_error("NOT_FOUND", "Draft not found", {"draft_id": draft_id}, 404)
 
     return item_response(record)
 
@@ -3934,7 +4083,7 @@ async def get_recordset_draft_diff(
                 """
                 select recordset_release_id
                 from recordset_release
-                where recordset_id = $1
+                where recordset_id = $1 and release_status = 'released'
                 order by release_number desc
                 limit 1
                 """,
@@ -4073,9 +4222,32 @@ async def create_recordset_release(
     db: Database = Depends()):
 
     q_get_recordset = """
-        select recordset_id, draft_status
+        select recordset_id, draft_status, recordset_release_id
         from recordset_draft
         where recordset_draft_id = $1;
+    """
+
+    # Publishing finalizes the release created alongside the draft rather than
+    # cutting a new one -- so the dataset release's membership row, written back
+    # at Assemble, already points at this release and never has to be rewritten.
+    #
+    # release_number is claimed here, not at creation: max() ignores the null on
+    # the row being updated, and an abandoned draft therefore leaves no gap.
+    q_finalize_release = """
+        update recordset_release
+        set release_number = coalesce($2::int, (
+                select coalesce(max(release_number), 0) + 1
+                from recordset_release
+                where recordset_id = $3 and release_status = 'released'
+            )),
+            release_date   = coalesce($4::timestamptz, now()),
+            release_notes  = coalesce($5, release_notes),
+            release_doi    = coalesce($6, release_doi),
+            release_status = 'released',
+            when_updated   = now(),
+            who_updated    = $7
+        where recordset_release_id = $1
+        returning recordset_release_id;
     """
 
     q_insert_release = """
@@ -4085,6 +4257,7 @@ async def create_recordset_release(
             release_date,
             release_notes,
             release_doi,
+            release_status,
             when_created,
             who_created,
             when_updated,
@@ -4094,10 +4267,15 @@ async def create_recordset_release(
             $1,
             coalesce($2::int, (
                 select coalesce(max(release_number), 0) + 1
-                from recordset_release where recordset_id = $1
+                from recordset_release
+                where recordset_id = $1 and release_status = 'released'
             )),
             coalesce($3::timestamptz, now()),
-            $4, $5, now(), $6, now(), $6
+            $4, $5,
+            -- Explicit: the column defaults to 'draft' now, and this path
+            -- publishes straight to a finished release.
+            'released',
+            now(), $6, now(), $6
         )
         returning recordset_release_id;
     """
@@ -4139,16 +4317,30 @@ async def create_recordset_release(
                     422,
                 )
 
-            # 2. Create release
-            release_rows = await conn.fetch(
-                q_insert_release,
-                recordset_id,
-                payload.release_number,
-                payload.release_date,
-                payload.release_notes,
-                payload.release_doi,
-                current_user.user_id,
-            )
+            # 2. Finalize the draft's release, or cut a new one for a draft
+            #    that predates the draft-release model (recordset_release_id
+            #    null). Keeping the old path means no backfill is needed.
+            if draft_row["recordset_release_id"] is not None:
+                release_rows = await conn.fetch(
+                    q_finalize_release,
+                    draft_row["recordset_release_id"],
+                    payload.release_number,
+                    recordset_id,
+                    payload.release_date,
+                    payload.release_notes,
+                    payload.release_doi,
+                    current_user.user_id,
+                )
+            else:
+                release_rows = await conn.fetch(
+                    q_insert_release,
+                    recordset_id,
+                    payload.release_number,
+                    payload.release_date,
+                    payload.release_notes,
+                    payload.release_doi,
+                    current_user.user_id,
+                )
 
             if not release_rows:
                 raise HTTPException(status_code=500, detail="Failed to create release")
