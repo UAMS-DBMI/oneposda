@@ -2017,7 +2017,16 @@ async def update_recordset(
         values.append(value)
         idx += 1
 
-    add_text_field("recordset_doi", payload.recordset_doi)
+    # recordset_doi is nullable and optional, so clearing it is a real edit --
+    # which add_text_field cannot express: None means "not provided" and is
+    # skipped, and "" is rejected as empty, so the DOI could never be removed
+    # once set. model_fields_set separates the two cases: absent from the body
+    # means leave it alone, present-but-blank means clear it.
+    if "recordset_doi" in payload.model_fields_set:
+        updates.append(f"recordset_doi = ${idx}")
+        values.append((payload.recordset_doi or "").strip() or None)
+        idx += 1
+
     add_text_field("recordset_name", payload.recordset_name)
 
     if payload.recordset_type_id is not None:
