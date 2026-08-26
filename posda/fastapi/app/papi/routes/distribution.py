@@ -857,9 +857,15 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
         group by od.recordset_id, od.recordset_draft_id
     ),
     bundled as (
+        -- Released only, so in_dataset_release keeps meaning "a finished
+        -- version of this recordset is part of that release". A draft release
+        -- sitting in the membership means the cycle is still working on it,
+        -- which is a different question -- see worked_this_cycle.
         select drr.recordset_release_id
         from dataset_release_recordset drr
+        join recordset_release rr using (recordset_release_id)
         where drr.dataset_release_id = $2
+          and rr.release_status = 'released'
     ),
     last_bundled as (
         -- Highest dataset release that *any* of this recordset's releases
@@ -873,6 +879,7 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
         join dataset_release_recordset drr on drr.recordset_release_id = rr.recordset_release_id
         join dataset_release dr on dr.dataset_release_id = drr.dataset_release_id
         where rr.recordset_id in (select recordset_id from rs)
+          and rr.release_status = 'released'
         group by rr.recordset_id
     ),
     dest as (
@@ -1412,6 +1419,7 @@ async def get_recordsets_for_dataset_release(
             join recordset_destination rd
                 on rs.recordset_id = rd.recordset_id and rd.destination_id = $2
             where dr.dataset_release_id = $1
+              and rr.release_status = 'released'
             """
         args = [release_id, destination_id]
     else:
@@ -1427,6 +1435,7 @@ async def get_recordsets_for_dataset_release(
             join recordset_release rr using (recordset_release_id)
             join recordset rs using (recordset_id)
             where dr.dataset_release_id = $1
+              and rr.release_status = 'released'
             """
         args = [release_id]
 
@@ -1603,6 +1612,7 @@ async def get_transfers_for_dataset_release(release_id: int, db: Database = Depe
                 on rd.recordset_id = rr.recordset_id
                and rd.destination_id = drt.destination_id
             where drt.dataset_release_id = $1
+              and rr.release_status = 'released'
             group by 1
         )
         select
@@ -1655,6 +1665,7 @@ async def get_destinations_for_dataset_release(release_id: int, db: Database = D
         join transfer_destination td using (destination_id)
         join transfer_mode tm using (transfer_mode_id)
         where drr.dataset_release_id = $1
+          and rr.release_status = 'released'
         order by td.destination_id, rd.default_display desc
         """
     try:
@@ -1741,10 +1752,15 @@ async def create_transfer_for_dataset_release(
         join transfer_mode tm using (transfer_mode_id)
         """
 
+    # Released only. A dataset release's membership includes draft recordset
+    # releases while the cycle is still assembling them, and shipping one would
+    # upload files that are not final -- an upload that cannot be recalled.
     get_release_recordsets_query = """\
-        select recordset_release_id
-        from dataset_release_recordset
-        where dataset_release_id = $1
+        select drr.recordset_release_id
+        from dataset_release_recordset drr
+        join recordset_release rr using (recordset_release_id)
+        where drr.dataset_release_id = $1
+          and rr.release_status = 'released'
         """
 
     insert_transfer_recordset_query = """\
