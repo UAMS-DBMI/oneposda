@@ -188,28 +188,31 @@ INSERT INTO public.recordset_destination (recordset_id, destination_id, default_
 -- Assumes public.file contains file_id values 1 through 26.
 -- -----------------------------------------------------------------------------
 
+-- release_status is explicit on every row: the column defaults to 'draft',
+-- so omitting it would seed these published releases as drafts.
 INSERT INTO public.recordset_release (
     recordset_release_id,
     recordset_id,
     release_number,
     release_date,
     release_notes,
+    release_status,
     when_created,
     who_created,
     when_updated,
     who_updated
 ) VALUES
-    (1, 1, 1, NOW(), 'Initial Release', NOW(), 0, NOW(), 0),
-    (2, 2, 1, NOW(), 'Initial Release', NOW(), 0, NOW(), 0),
-    (3, 3, 1, NOW(), 'Initial Release', NOW(), 0, NOW(), 0),
-    (4, 4, 1, NOW(), 'Initial Release', NOW(), 0, NOW(), 0),
-    (5, 5, 1, NOW(), 'Initial Release', NOW(), 0, NOW(), 0),
-    (6, 6, 1, NOW(), 'Initial Release', NOW(), 0, NOW(), 0),
+    (1, 1, 1, NOW(), 'Initial Release', 'released', NOW(), 0, NOW(), 0),
+    (2, 2, 1, NOW(), 'Initial Release', 'released', NOW(), 0, NOW(), 0),
+    (3, 3, 1, NOW(), 'Initial Release', 'released', NOW(), 0, NOW(), 0),
+    (4, 4, 1, NOW(), 'Initial Release', 'released', NOW(), 0, NOW(), 0),
+    (5, 5, 1, NOW(), 'Initial Release', 'released', NOW(), 0, NOW(), 0),
+    (6, 6, 1, NOW(), 'Initial Release', 'released', NOW(), 0, NOW(), 0),
     -- Recordset 3 v2: frozen but deliberately NOT added to dataset release 1,
     -- so the dataset has a recordset ready to bundle into a new release.
-    (7, 3, 2, NOW(), 'Second Release - awaiting dataset release', NOW(), 0, NOW(), 0),
+    (7, 3, 2, NOW(), 'Second Release - awaiting dataset release', 'released', NOW(), 0, NOW(), 0),
     -- Dataset 3's frozen recordset. Dataset 3 has no dataset_release at all.
-    (8, 8, 1, NOW(), 'Initial Release', NOW(), 0, NOW(), 0);
+    (8, 8, 1, NOW(), 'Initial Release', 'released', NOW(), 0, NOW(), 0);
 SELECT setval(pg_get_serial_sequence('public.recordset_release', 'recordset_release_id'), COALESCE(MAX(recordset_release_id), 0), true) FROM public.recordset_release;
 
 INSERT INTO public.recordset_release_file (recordset_release_id, file_id) VALUES
@@ -228,6 +231,10 @@ INSERT INTO public.recordset_release_file (recordset_release_id, file_id) VALUES
 -- Editable drafts cloned from current immutable releases
 -- -----------------------------------------------------------------------------
 
+-- recordset_release_id is the draft release a draft fills. Only draft 3 has
+-- one: it was published, so it points at the release it became. The open
+-- drafts predate the Assemble-creates-a-draft-release flow and carry null,
+-- which is what an untouched pre-existing draft looks like after the change.
 INSERT INTO public.recordset_draft (
     recordset_draft_id,
     recordset_id,
@@ -235,21 +242,22 @@ INSERT INTO public.recordset_draft (
     draft_status,
     draft_notes,
     cloned_from_release_id,
+    recordset_release_id,
     when_created,
     who_created,
     when_updated,
     who_updated
 ) VALUES
-    (1, 1, 'Version 2 Draft', 'open', null, 1, NOW(), 0, NOW(), 0),
-    (2, 2, 'Version 2 Draft', 'open', null, 2, NOW(), 0, NOW(), 0),
+    (1, 1, 'Version 2 Draft', 'open', null, 1, null, NOW(), 0, NOW(), 0),
+    (2, 2, 'Version 2 Draft', 'open', null, 2, null, NOW(), 0, NOW(), 0),
     -- Draft 3 was published as recordset release 7, so recordset 3 has no
     -- open draft: its cycle is parked at "frozen, awaiting dataset release".
-    (3, 3, 'Version 2 Draft', 'published', null, 3, NOW(), 0, NOW(), 0),
-    (4, 4, 'Version 2 Draft', 'open', null, 4, NOW(), 0, NOW(), 0),
-    (5, 5, 'Version 2 Draft', 'open', null, 5, NOW(), 0, NOW(), 0),
-    (6, 6, 'Version 2 Draft', 'open', null, 6, NOW(), 0, NOW(), 0),
+    (3, 3, 'Version 2 Draft', 'published', null, 3, 7, NOW(), 0, NOW(), 0),
+    (4, 4, 'Version 2 Draft', 'open', null, 4, null, NOW(), 0, NOW(), 0),
+    (5, 5, 'Version 2 Draft', 'open', null, 5, null, NOW(), 0, NOW(), 0),
+    (6, 6, 'Version 2 Draft', 'open', null, 6, null, NOW(), 0, NOW(), 0),
     -- First cycle: no cloned_from_release_id because nothing was ever frozen.
-    (7, 7, 'Initial Draft', 'open', 'First cycle - never released', null, NOW(), 0, NOW(), 0);
+    (7, 7, 'Initial Draft', 'open', 'First cycle - never released', null, null, NOW(), 0, NOW(), 0);
 SELECT setval(pg_get_serial_sequence('public.recordset_draft', 'recordset_draft_id'), COALESCE(MAX(recordset_draft_id), 0), true) FROM public.recordset_draft;
 
 INSERT INTO public.recordset_draft_file (recordset_draft_id, file_id) VALUES
