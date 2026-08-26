@@ -1263,6 +1263,60 @@ async def create_dataset_release(
         )
         returning dataset_release_id, dataset_id, release_number, release_date, release_notes, release_doi, release_status
     """
+    # A new cycle starts out shipping exactly what the last one shipped, so
+    # "carry forward" is the default and costs no action: recordsets nobody
+    # touches keep pointing at the release they were already on. Only the link
+    # rows are copied -- no recordset_release is created here, and they point at
+    # the same published releases the previous dataset release used.
+    copy_membership_q = f"""
+        insert into dataset_release_recordset (dataset_release_id, recordset_release_id)
+        select $1, drr.recordset_release_id
+        from dataset_release_recordset drr
+        join recordset_release rr using (recordset_release_id)
+        where drr.dataset_release_id = (
+                select dr.dataset_release_id
+                from dataset_release dr
+                where dr.dataset_id = $2
+                  and dr.dataset_release_id <> $1
+                  and dr.{NOT_RETRACTED}
+                order by dr.release_number desc
+                limit 1
+            )
+          and rr.release_status = 'released'
+        on conflict do nothing
+        """
+
+    # Drafts can be started from the recordset page with no cycle open, and
+    # their draft release then belongs to no dataset release. Opening a cycle
+    # adopts them: this is the work in progress for this dataset, so it is this
+    # cycle's work. Evict first -- the carried-forward version of the same
+    # recordset was just copied in above.
+    evict_for_adopted_q = """
+        delete from dataset_release_recordset drr
+        using recordset_release existing, recordset_release incoming,
+              recordset_draft d
+        where drr.dataset_release_id = $1
+          and existing.recordset_release_id = drr.recordset_release_id
+          and d.draft_status not in ('published', 'deleted')
+          and incoming.recordset_release_id = d.recordset_release_id
+          and incoming.release_status = 'draft'
+          and existing.recordset_id = incoming.recordset_id
+          and drr.recordset_release_id <> incoming.recordset_release_id
+        """
+    adopt_drafts_q = """
+        insert into dataset_release_recordset (dataset_release_id, recordset_release_id)
+        select $1, rr.recordset_release_id
+        from recordset rs
+        join recordset_draft d
+            on d.recordset_id = rs.recordset_id
+           and d.draft_status not in ('published', 'deleted')
+        join recordset_release rr
+            on rr.recordset_release_id = d.recordset_release_id
+           and rr.release_status = 'draft'
+        where rs.dataset_id = $2
+        on conflict do nothing
+        """
+
     values = [
         dataset_id,
         payload.release_number,
@@ -1293,6 +1347,14 @@ async def create_dataset_release(
                     )
 
             record = await conn.fetch(query, *values)
+
+            # Only for a cycle. A release created directly as 'released' is not
+            # a cycle opening and gets its membership chosen explicitly.
+            if release_status == "draft" and record:
+                new_release_id = record[0]["dataset_release_id"]
+                await conn.execute(copy_membership_q, new_release_id, dataset_id)
+                await conn.execute(evict_for_adopted_q, new_release_id)
+                await conn.execute(adopt_drafts_q, new_release_id, dataset_id)
     except HTTPException:
         raise
     except Exception as e:
