@@ -21,6 +21,27 @@ FILE_STORAGE_PATH = os.getenv("FILE_STORAGE_PATH", "/home/posda/cache/created")
 FILE_STORAGE_ROOT = int(os.getenv("FILE_STORAGE_ROOT_ID", "3"))
 IDC_TRANSFER_BUCKET = os.getenv("IDC_TRANSFER_BUCKET", "posda_submit")
 
+# What IDC can house, written as the file properties themselves rather than as a
+# proxy for them. IDC ingests DICOM whatever it depicts -- radiology, pathology
+# slides, SEG/RT annotations -- so keying imaging off recordset_type was only
+# ever standing in for "is it DICOM", which pathology DICOM breaks. "Clinical"
+# means the tabular data IDC parses, which is what the Clinical Data recordset
+# type denotes; deriving it from "not DICOM" swept in anything non-DICOM that is
+# not clinical at all (a histopathology bundle bound for Aspera, say).
+#
+# Both are null-safe (`is true` / `is not true`), so together they partition
+# every file in a transfer into exactly three groups: imaging, clinical, and
+# neither. A file in the third group is a routing mistake, not a category.
+#
+# Shared so the manifests, the queue gate and the transfer_file fan-out cannot
+# drift apart. A file listed in a manifest but never uploaded -- or uploaded
+# with no manifest row -- is the failure this whole scheme exists to prevent.
+# Every query using them needs `file f` and `recordset_type rt` in scope.
+IDC_IMAGING_PREDICATE  = "f.is_dicom_file is true"
+IDC_CLINICAL_PREDICATE = (
+    "f.is_dicom_file is not true and rt.recordset_type_name = 'Clinical Data'"
+)
+
 router = APIRouter(
     tags=["Distribution"],
     dependencies=[logged_in_user]
@@ -4447,7 +4468,12 @@ async def update_dataset_release_transfer(
     """
 
     try:
-        record = await db.fetch_one(query, values)
+        async with db.transaction() as conn:
+            record = await conn.fetchrow(query, *values)
+            if record and payload.transfer_status == "queued":
+                await _fan_out_transfer_files(transfer_id, conn)
+    except HTTPException:
+        raise
     except Exception as e:
         db_error(e, operation="updating dataset release transfer", context={"transfer_id": transfer_id})
         api_error("DB_ERROR", "Failed to update transfer", {}, 500)
@@ -4793,8 +4819,7 @@ async def generate_idc_imaging_manifest(transfer_id: int, db: Database = Depends
         left join file_series     fse on fse.file_id = f.file_id
         left join file_sop_common fsc on fsc.file_id = f.file_id
         where tr.dataset_release_transfer_id = $1
-          and rt.recordset_type_name = 'Radiology Images'
-          and f.is_dicom_file = true
+          and {IDC_IMAGING_PREDICATE}
     """
 
     try:
@@ -4826,11 +4851,11 @@ async def generate_idc_imaging_manifest(transfer_id: int, db: Database = Depends
             422,
         )
 
-    # DISTINCT: the same file_id can appear in two Radiology Images recordset
-    # releases in one transfer (overlapping recordsets are legal), which would
-    # emit duplicate SOP instance rows and feed the digest into string_agg twice,
-    # corrupting series_hash and everything above it.
-    query = """
+    # DISTINCT: the same file_id can appear in two DICOM recordset releases in
+    # one transfer (overlapping recordsets are legal), which would emit duplicate
+    # SOP instance rows and feed the digest into string_agg twice, corrupting
+    # series_hash and everything above it.
+    query = f"""
         WITH files AS (
             SELECT DISTINCT
                 rrf.file_id,
@@ -4850,8 +4875,7 @@ async def generate_idc_imaging_manifest(transfer_id: int, db: Database = Depends
             JOIN file_series fse        USING (file_id)
             JOIN file_sop_common fsc    USING (file_id)
             WHERE tr.dataset_release_transfer_id = $1
-              AND rt.recordset_type_name = 'Radiology Images'
-              AND f.is_dicom_file = true
+              AND {IDC_IMAGING_PREDICATE}
         ),
         series_hashes AS (
             SELECT series_instance_uid,
@@ -4903,7 +4927,7 @@ async def generate_idc_imaging_manifest(transfer_id: int, db: Database = Depends
         db_error(e, operation="querying files for IDC imaging manifest", context={"transfer_id": transfer_id})
 
     if not rows:
-        api_error("NOT_FOUND", "No radiology DICOM files found for this transfer", {}, 404)
+        api_error("NOT_FOUND", "No DICOM files found for this transfer", {}, 404)
 
     fieldnames = [
         "dataset_hash",
@@ -4985,15 +5009,73 @@ async def generate_idc_imaging_manifest(transfer_id: int, db: Database = Depends
     })
 
 
+async def _fan_out_transfer_files(transfer_id: int, conn) -> None:
+    """Materialize one transfer_file row per file the transfer will upload.
+
+    Called at the queue transition, in the same transaction as the status flip:
+    the daemon treats a queued transfer with no completed files as failed, so a
+    crash between the two would look like a real failure rather than a retry.
+
+    Paths are stored **relative** to transfer_idc.base_gcs_url, which the daemon
+    joins them to. That keeps relocating a package a single-field edit instead of
+    a rewrite of every row, and makes file_dest_url the same string the manifests
+    carry in relative_file_url, so the two cannot drift.
+
+    IDC only -- no other destination has a path scheme or a daemon yet. Files
+    matching neither predicate are skipped rather than uploaded: IDC cannot
+    interpret an object with no manifest row, and the upload cannot be recalled.
+    _idc_manifest_state reports them so they are skipped visibly, not silently.
+    """
+    await conn.execute(
+        f"""
+        insert into transfer_file (
+            dataset_release_transfer_id, file_id, file_dest_url, status
+        )
+        select distinct
+            $1,
+            rrf.file_id,
+            case when {IDC_IMAGING_PREDICATE}
+                 -- Content-addressed, which is what makes the daemon's
+                 -- HEAD-then-verify-MD5 re-runs idempotent.
+                 then 'imaging/'  || f.digest
+                 -- Same expression the clinical manifest uses for its file name,
+                 -- fallback included -- file_name is null for most rows.
+                 else 'clinical/' || coalesce(rrf.file_name, rrf.file_id::text)
+            end,
+            'pending'
+        from dataset_release_transfer drt
+        join transfer_destination td    using (destination_id)
+        join transfer_recordset tr      using (dataset_release_transfer_id)
+        join recordset_release rr       using (recordset_release_id)
+        join recordset rs               using (recordset_id)
+        join recordset_type rt          using (recordset_type_id)
+        join recordset_release_file rrf on rrf.recordset_release_id = tr.recordset_release_id
+        join file f                     on f.file_id = rrf.file_id
+        where drt.dataset_release_transfer_id = $1
+          and td.destination_abbr = 'idc'
+          and ({IDC_IMAGING_PREDICATE} or {IDC_CLINICAL_PREDICATE})
+        -- Re-runnable: a re-queue keeps the rows already there, so the daemon's
+        -- own failed -> pending reset decides what gets retried.
+        on conflict (dataset_release_transfer_id, file_id) do nothing
+        """,
+        transfer_id,
+    )
+
+
 async def _idc_manifest_state(transfer_id: int, db: Database):
     """Which IDC manifests this transfer needs, and which are missing.
 
     Required is derived from what the transfer actually carries, not a fixed
     list: the dataset manifest always (it identifies the submission), the
-    imaging manifest when it carries Radiology Images DICOM, the clinical
-    manifest when it carries non-DICOM files. A transfer with no clinical
+    imaging manifest when it carries DICOM, the clinical manifest when it
+    carries files from a Clinical Data recordset. A transfer with no clinical
     content does not need a clinical manifest -- absence is the signal that
     nothing clinical changed.
+
+    Also reports files matching neither predicate. Those are skipped by the
+    fan-out rather than uploaded, since IDC cannot interpret an object with no
+    manifest row and the upload cannot be recalled -- so they are surfaced here
+    for whoever is queueing to see.
 
     Returns None for a non-IDC transfer, which has no transfer-level manifests.
     """
@@ -5010,13 +5092,18 @@ async def _idc_manifest_state(transfer_id: int, db: Database):
         return None
 
     content = await db.fetch_one(
-        """
+        f"""
         select
+            count(*) filter (where {IDC_IMAGING_PREDICATE})  as imaging_files,
+            count(*) filter (where {IDC_CLINICAL_PREDICATE}) as clinical_files,
             count(*) filter (
-                where f.is_dicom_file
-                  and rt.recordset_type_name = 'Radiology Images'
-            ) as imaging_files,
-            count(*) filter (where f.is_dicom_file is not true) as clinical_files
+                where not ({IDC_IMAGING_PREDICATE})
+                  and not ({IDC_CLINICAL_PREDICATE})
+            ) as unlistable_files,
+            array_agg(distinct rs.recordset_name) filter (
+                where not ({IDC_IMAGING_PREDICATE})
+                  and not ({IDC_CLINICAL_PREDICATE})
+            ) as unlistable_recordsets
         from transfer_recordset tr
         join recordset_release rr       using (recordset_release_id)
         join recordset rs               using (recordset_id)
@@ -5049,7 +5136,14 @@ async def _idc_manifest_state(transfer_id: int, db: Database):
         for name in required
         if not existing or existing[f"{name}_manifest_file_id"] is None
     ]
-    return {"required_manifests": required, "missing_manifests": missing}
+    return {
+        "required_manifests": required,
+        "missing_manifests": missing,
+        "unlistable_files": (content["unlistable_files"] if content else 0) or 0,
+        "unlistable_recordsets": list(
+            (content["unlistable_recordsets"] if content else None) or []
+        ),
+    }
 
 
 async def _wp_precedence_block(transfer_id: int, db: Database):
@@ -5087,17 +5181,18 @@ async def _wp_precedence_block(transfer_id: int, db: Database):
         return None
 
     blocking_recordsets = await db.fetch(
-        """
+        f"""
         select distinct rs.recordset_id, rs.recordset_name
         from transfer_recordset tr
         join recordset_release rr       using (recordset_release_id)
         join recordset rs               using (recordset_id)
+        join recordset_type rt          using (recordset_type_id)
         join recordset_release_file rrf using (recordset_release_id)
         join file f                     using (file_id)
         join recordset_destination rd   on rd.recordset_id = rs.recordset_id
         join transfer_destination td    on td.destination_id = rd.destination_id
         where tr.dataset_release_transfer_id = $1
-          and f.is_dicom_file is not true
+          and {IDC_CLINICAL_PREDICATE}
           and rd.default_display
           and td.destination_abbr = 'wp'
         order by rs.recordset_name
@@ -5155,7 +5250,7 @@ async def generate_idc_clinical_manifest(transfer_id: int, db: Database = Depend
     # ("ASCII text, with CRLF line terminators"), which cannot tell CSV from
     # anything else. Per-recordset destination assignment is the selection
     # mechanism, so everything non-DICOM in the transfer is listed.
-    files_query = """
+    files_query = f"""
         select
             rs.recordset_id,
             rs.recordset_name,
@@ -5166,10 +5261,11 @@ async def generate_idc_clinical_manifest(transfer_id: int, db: Database = Depend
         from transfer_recordset tr
         join recordset_release rr       using (recordset_release_id)
         join recordset rs               using (recordset_id)
+        join recordset_type rt          using (recordset_type_id)
         join recordset_release_file rrf using (recordset_release_id)
         join file f                     using (file_id)
         where tr.dataset_release_transfer_id = $1
-          and f.is_dicom_file is not true
+          and {IDC_CLINICAL_PREDICATE}
         order by rs.recordset_name, rrf.file_name
         """
 
