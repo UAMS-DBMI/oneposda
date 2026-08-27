@@ -6545,6 +6545,33 @@ async def create_qc_review(
 
     try:
         async with db.transaction() as conn:
+            # A review samples the draft's file list, so it can only be drawn
+            # once that list is settled -- which is what 'ready' means. Sampling
+            # an open draft guarantees the churn the stale-review machinery
+            # exists to clean up after. The cycle's Verify stage disables the
+            # button, but the draft detail page reaches the same endpoint, so
+            # the rule belongs here (TECH_DEBT #5's reasoning).
+            #
+            # This also rules out 'invalid', and 'published'/'deleted' drafts,
+            # which are consumed and should not take new reviews.
+            draft_rows = await conn.fetch(
+                "select draft_status from recordset_draft where recordset_draft_id = $1",
+                draft_id,
+            )
+            if not draft_rows:
+                api_error("NOT_FOUND", "Draft not found", {"recordset_draft_id": draft_id}, 404)
+            if draft_rows[0]["draft_status"] != "ready":
+                api_error(
+                    "VALIDATION_ERROR",
+                    "Mark the draft ready before starting QC -- a review samples "
+                    "its files, and changes made after sampling make the review stale",
+                    {
+                        "recordset_draft_id": draft_id,
+                        "draft_status": draft_rows[0]["draft_status"],
+                    },
+                    422,
+                )
+
             cnt = await conn.fetch(pop_count_q, draft_id)
             if not cnt or cnt[0]["c"] == 0:
                 api_error("VALIDATION_ERROR", empty_msg, {"recordset_draft_id": draft_id}, 422)
