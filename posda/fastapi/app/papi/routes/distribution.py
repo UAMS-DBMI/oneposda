@@ -2459,6 +2459,28 @@ async def update_recordset_destination(
           and default_display = true
     """
 
+    has_default_query = """\
+        select 1
+        from recordset_destination
+        where recordset_id = $1 and default_display = true
+        limit 1
+    """
+
+    # Lowest destination_id, matching what the delete path promotes.
+    promote_query = """\
+        update recordset_destination
+        set default_display = true
+        where recordset_id = $1
+          and destination_id = (
+              select destination_id
+              from recordset_destination
+              where recordset_id = $1 and destination_id <> $2
+              order by destination_id
+              limit 1
+          )
+        returning destination_id
+    """
+
     insert_query = """\
         insert into recordset_destination (
             recordset_id,
@@ -2493,6 +2515,36 @@ async def update_recordset_destination(
                     destination_id,
                     *update_values,
                 )
+
+                # Insert already guarantees the first destination is the
+                # default, and delete promotes another when it removes one.
+                # Clearing the flag here was the remaining way to leave a
+                # recordset with destinations but no default -- which the
+                # WordPress precedence check and the manifests both read.
+                #
+                # Only when nothing is left marked default: clearing the flag on
+                # a row that was not the default changes nothing to repair.
+                if payload.default_display is False and not await conn.fetch(
+                    has_default_query, recordset_id
+                ):
+                    promoted = await conn.fetch(
+                        promote_query, recordset_id, destination_id
+                    )
+                    if not promoted:
+                        # Nothing to promote: this is the only destination.
+                        # Silently re-setting the flag would report success for
+                        # a request that changed nothing, so say so instead.
+                        api_error(
+                            "VALIDATION_ERROR",
+                            "A recordset's only destination has to be its default -- "
+                            "add another destination and make that one the default, "
+                            "or remove this destination entirely",
+                            {
+                                "recordset_id": recordset_id,
+                                "destination_id": destination_id,
+                            },
+                            422,
+                        )
             else:
                 if payload.default_display is None or payload.default_transfer_mode_id is None:
                     api_error(
