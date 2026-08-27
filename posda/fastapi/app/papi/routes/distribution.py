@@ -829,15 +829,6 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
           and r.release_status = 'released'
         order by r.recordset_id, r.release_number desc
     ),
-    -- Did this cycle work on this recordset? Structural, not temporal: a draft
-    -- was created for a release that is in *this* dataset release's membership.
-    -- Stays true after publish -- same draft, same release, same membership row
-    -- -- which is the point, since Verify would otherwise empty out the moment
-    -- its work completed.
-    --
-    -- Relies on publish keeping the draft (it sets draft_status='published'
-    -- rather than deleting it). If published drafts are ever purged, this
-    -- signal dies with them.
     member as (
         -- Which version of this recordset the release actually carries, draft
         -- or released. `bundled` only answers whether a *finished* version is
@@ -860,6 +851,15 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
                  (rr.release_status = 'draft') desc,
                  rr.release_number desc nulls last
     ),
+    -- Did this cycle work on this recordset? Structural, not temporal: a draft
+    -- was created for a release that is in *this* dataset release's membership.
+    -- Stays true after publish -- same draft, same release, same membership row
+    -- -- which is the point, since Verify would otherwise empty out the moment
+    -- its work completed.
+    --
+    -- Relies on publish keeping the draft (it sets draft_status='published'
+    -- rather than deleting it). If published drafts are ever purged, this
+    -- signal dies with them.
     worked as (
         select distinct rr.recordset_id
         from recordset_draft d
@@ -869,6 +869,33 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
             on drr.recordset_release_id = d.recordset_release_id
         where drr.dataset_release_id = $2
           and d.draft_status <> 'deleted'
+    ),
+    published_draft as (
+        -- The draft that produced this release's member, once it has been
+        -- published. open_draft deliberately excludes published drafts -- a lot
+        -- of logic reads `open_draft is null` as "nothing left to work on" --
+        -- but Assemble still wants to show what the cycle actually did, rather
+        -- than blanking the row the moment its work completes.
+        --
+        -- Scoped through the membership, so this is specifically the draft
+        -- behind *this* dataset release's version, not merely the recordset's
+        -- most recent published draft.
+        select distinct on (d.recordset_id)
+            d.recordset_id,
+            d.recordset_draft_id as published_draft_id,
+            d.draft_name         as published_draft_name,
+            d.draft_status       as published_draft_status,
+            (select count(*)::int
+               from recordset_draft_file f
+              where f.recordset_draft_id = d.recordset_draft_id)
+                                 as published_draft_file_count
+        from recordset_draft d
+        join dataset_release_recordset drr
+            on drr.recordset_release_id = d.recordset_release_id
+        where d.recordset_id in (select recordset_id from rs)
+          and drr.dataset_release_id = $2
+          and d.draft_status = 'published'
+        order by d.recordset_id, d.recordset_draft_id desc
     ),
     qc_draft as (
         select distinct on (d.recordset_id)
@@ -969,6 +996,10 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
          and lr.recordset_release_id in (select recordset_release_id from bundled))
             as in_dataset_release,
         (worked.recordset_id is not null) as worked_this_cycle,
+        published_draft.published_draft_id,
+        published_draft.published_draft_name,
+        published_draft.published_draft_status,
+        published_draft.published_draft_file_count,
         member.member_release_id,
         member.member_release_number,
         member.member_release_status,
@@ -985,6 +1016,7 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
     left join qc q using (recordset_id)
     left join worked using (recordset_id)
     left join member using (recordset_id)
+    left join published_draft using (recordset_id)
     left join last_bundled lb using (recordset_id)
     left join dest using (recordset_id)
     left join wp_download using (recordset_id)
@@ -1026,6 +1058,14 @@ def build_cycle_recordset(row):
         } if row["recordset_release_id"] is not None else None,
         "in_dataset_release": row["in_dataset_release"],
         "worked_this_cycle": row["worked_this_cycle"],
+        # The draft this cycle published into the release's version. Lets
+        # Assemble keep showing what was done after open_draft goes null.
+        "published_draft": {
+            "recordset_draft_id": row["published_draft_id"],
+            "draft_name": row["published_draft_name"],
+            "draft_status": row["published_draft_status"],
+            "file_count": row["published_draft_file_count"],
+        } if row["published_draft_id"] is not None else None,
         # The version this dataset release carries for the recordset -- null
         # when the recordset is not part of the release at all.
         "release_in_cycle": {
