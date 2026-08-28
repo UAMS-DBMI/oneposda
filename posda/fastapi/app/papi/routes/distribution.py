@@ -5175,9 +5175,17 @@ async def generate_idc_dataset_manifest(transfer_id: int, db: Database = Depends
 
             await conn.execute(
                 """
+                -- Not "on conflict do nothing": file_location has no unique
+                -- constraint, so that clause has nothing to conflict against and
+                -- is inert -- every regeneration appended another identical row.
                 insert into file_location (file_id, file_storage_root_id, rel_path)
-                values ($1, $2, $3)
-                on conflict do nothing
+                select $1, $2, $3
+                 where not exists (
+                       select 1 from file_location
+                        where file_id = $1
+                          and file_storage_root_id = $2
+                          and rel_path = $3
+                 )
                 """,
                 file_id, FILE_STORAGE_ROOT, rel_path,
             )
@@ -5411,9 +5419,17 @@ async def generate_idc_imaging_manifest(transfer_id: int, db: Database = Depends
 
             await conn.execute(
                 """
+                -- Not "on conflict do nothing": file_location has no unique
+                -- constraint, so that clause has nothing to conflict against and
+                -- is inert -- every regeneration appended another identical row.
                 insert into file_location (file_id, file_storage_root_id, rel_path)
-                values ($1, $2, $3)
-                on conflict do nothing
+                select $1, $2, $3
+                 where not exists (
+                       select 1 from file_location
+                        where file_id = $1
+                          and file_storage_root_id = $2
+                          and rel_path = $3
+                 )
                 """,
                 file_id, FILE_STORAGE_ROOT, rel_path,
             )
@@ -5831,9 +5847,17 @@ async def generate_idc_clinical_manifest(transfer_id: int, db: Database = Depend
 
             await conn.execute(
                 """
+                -- Not "on conflict do nothing": file_location has no unique
+                -- constraint, so that clause has nothing to conflict against and
+                -- is inert -- every regeneration appended another identical row.
                 insert into file_location (file_id, file_storage_root_id, rel_path)
-                values ($1, $2, $3)
-                on conflict do nothing
+                select $1, $2, $3
+                 where not exists (
+                       select 1 from file_location
+                        where file_id = $1
+                          and file_storage_root_id = $2
+                          and rel_path = $3
+                 )
                 """,
                 file_id, FILE_STORAGE_ROOT, rel_path,
             )
@@ -6136,9 +6160,17 @@ async def generate_transfer_recordset_manifest(
             # Register file location (no-op if already exists)
             await conn.execute(
                 """
+                -- Not "on conflict do nothing": file_location has no unique
+                -- constraint, so that clause has nothing to conflict against and
+                -- is inert -- every regeneration appended another identical row.
                 insert into file_location (file_id, file_storage_root_id, rel_path)
-                values ($1, $2, $3)
-                on conflict do nothing
+                select $1, $2, $3
+                 where not exists (
+                       select 1 from file_location
+                        where file_id = $1
+                          and file_storage_root_id = $2
+                          and rel_path = $3
+                 )
                 """,
                 file_id, FILE_STORAGE_ROOT, rel_path,
             )
