@@ -465,17 +465,17 @@ async def new_get_unreviewed_data(after, dicom_file_type, visual_review_instance
     logging.debug(f"new_get_unreviewed_data called with vr {visual_review_instance_id} "
                   f"and after: {after}")
 
-    params = [int(visual_review_instance_id), dicom_file_type, 'ReadyToReview', None, after]
+    params = [visual_review_instance_id, dicom_file_type, 'ReadyToReview', None, after]
     
 
     query = f"""
 with params as (
     select
-    $1 as vr,
+    $1::int as vr,
     $2 as dicom_file_type,
     $3 as processing_status,
     $4 as review_status,
-    $5 as after_iec
+    $5::int as after_iec
 ), one_file_per_iec as (
     select
         image_equivalence_class_id,
@@ -551,10 +551,11 @@ join file_patient on file_patient.file_id = input_file_id
 limit 1
     """
 
-    logging.debug(query, params)
+    logging.debug(query)
+    logging.debug(params)
 
     conn = await pool.acquire()
-    records = await conn.fetch(query, params)
+    records = await conn.fetch(query, *params)
     await pool.release(conn)
 
     return records
