@@ -371,91 +371,96 @@ async def new_get_reviewed_data(state, after, dicom_file_type, visual_review_ins
     logging.debug(f"new_get_reviewed_data called with vr {visual_review_instance_id} "
                   f"and after: {after}")
 
-    dicom_where = ""
-    if dicom_file_type is not None:
-        dicom_where = f"where dicom_file_type = '{dicom_file_type}'"
-    
+    params = [int(visual_review_instance_id), dicom_file_type, 'Reviewed', state, after]
 
     query = f"""
-with one_file_per_iec as (
-	/*
-		For each IEC in the given Visual Review, select
-		one input file.
-
-		"distinct on()" allows us to return only 1 row
-		from within the distinct set. It is not really defined
-		which file we get, but it doesn't matter for this query.
-	*/
-	select distinct on (image_equivalence_class_id)
-		image_equivalence_class_id,
-		file_id
-	from
-		image_equivalence_class_input_image
-		natural join image_equivalence_class
-	where
-		visual_review_instance_id = {visual_review_instance_id}
+with params as (
+    select
+    $1::int as vr,
+    $2 as dicom_file_type,
+    $3 as processing_status,
+    $4 as review_status,
+    $5::int as after_iec
+), one_file_per_iec as (
+    select
+        image_equivalence_class_id,
+        processing_status,
+        review_status,
+        (   /*
+            Don't change this. Especially don't replace it with anything
+            with distinct in it.
+            */
+            select file_id
+            from image_equivalence_class_input_image
+            where image_equivalence_class_input_image.image_equivalence_class_id
+                = image_equivalence_class.image_equivalence_class_id
+            limit 1
+        ) as file_id
+    from image_equivalence_class
+    where visual_review_instance_id = (select vr from params)
 ), iec_with_filetype as (
-	select
-		image_equivalence_class_id,
-		file_id
-	from
-		one_file_per_iec
-		natural join dicom_file
-        {dicom_where}
-), iec_with_project as (
-	select
-		image_equivalence_class_id,
-		project_name,
-		trial_name,
-		site_name,
-		site_id,
-		visibility,
-		file_id as input_file_id
-	from
-		iec_with_filetype
-		natural join ctp_file
+    select
+        image_equivalence_class_id,
+        processing_status,
+        review_status,
+        file_id as input_file_id
+    from
+        one_file_per_iec
+        natural join dicom_file
+    where (
+        /* handle possible null input (meaning don't filter) */
+        (select dicom_file_type from params) is null
+        or
+        dicom_file_type = (select dicom_file_type from params)
+    )
+), one_iec as (
+    select *
+    from iec_with_filetype
+    where processing_status = (select processing_status from params)
+      and (
+        (select review_status from params) is null
+        or
+        review_status = (select review_status from params)
+      )
+      and image_equivalence_class_id::int > (select after_iec from params)
+    order by image_equivalence_class_id
+    limit 1
 )
 
-select * from (
-select distinct on (image_equivalence_class_id)
-	image_equivalence_class_id,
-        image_equivalence_class_id::int as id2,
-	image_equivalence_class.series_instance_uid,
-	equivalence_class_number,
-	processing_status,
-	review_status,
-	projection_type,
-	image_equivalence_class_out_image.file_id,
-	root_path || '/' || rel_path as path,
-	(
-		select count(file_id)
-		from image_equivalence_class_input_image i
-		where i.image_equivalence_class_id =
-		image_equivalence_class.image_equivalence_class_id
-	) as file_count,
-	body_part_examined,
-	patient_id
+select
+    image_equivalence_class_id,
+    image_equivalence_class.series_instance_uid,
+    equivalence_class_number,
+    one_iec.processing_status,
+    one_iec.review_status,
+    projection_type,
+    image_equivalence_class_out_image.file_id,
+    root_path || '/' || rel_path as path,
+    (
+        select count(file_id)
+        from image_equivalence_class_input_image i
+        where i.image_equivalence_class_id =
+        image_equivalence_class.image_equivalence_class_id
+    ) as file_count,
+    body_part_examined,
+    patient_id
 
-from iec_with_project
-natural join image_equivalence_class
+from one_iec
+join image_equivalence_class using(image_equivalence_class_id)
 natural join image_equivalence_class_out_image
 natural join file_location
 natural join file_storage_root
 join file_series on file_series.file_id = input_file_id
 join file_patient on file_patient.file_id = input_file_id
-where not hidden  -- this hidden is the IEC-level hidden, NOT file-level
-  and processing_status = 'Reviewed'
-  and review_status = '{state}'
-order by image_equivalence_class_id
-) foo
-where id2 > $1
+
 limit 1
     """
 
     logging.debug(query)
+    logging.debug(params)
 
     conn = await pool.acquire()
-    records = await conn.fetch(query, after)
+    records = await conn.fetch(query, *params)
     await pool.release(conn)
 
     return records
