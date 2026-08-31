@@ -465,7 +465,7 @@ async def new_get_unreviewed_data(after, dicom_file_type, visual_review_instance
     logging.debug(f"new_get_unreviewed_data called with vr {visual_review_instance_id} "
                   f"and after: {after}")
 
-    params = [visual_review_instance_id, dicom_file_type, 'ReadyToReview', None, after]
+    params = [int(visual_review_instance_id), dicom_file_type, 'ReadyToReview', None, after]
     
 
     query = f"""
