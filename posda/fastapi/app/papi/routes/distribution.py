@@ -1776,6 +1776,19 @@ async def get_transfers_for_dataset_release(release_id: int, db: Database = Depe
             where drt.dataset_release_id = $1
               and rr.release_status = 'released'
             group by 1
+        ),
+        files as (
+            -- Per-file progress. transfer_file is materialized at the queue
+            -- transition, so a draft transfer has no rows and these are 0.
+            select
+                tf.dataset_release_transfer_id as tid,
+                count(*)                                       as total,
+                count(*) filter (where tf.status = 'completed') as completed,
+                count(*) filter (where tf.status = 'failed')    as failed
+            from transfer_file tf
+            join dataset_release_transfer drt using (dataset_release_transfer_id)
+            where drt.dataset_release_id = $1
+            group by 1
         )
         select
             drt.dataset_release_transfer_id,
@@ -1790,12 +1803,16 @@ async def get_transfers_for_dataset_release(release_id: int, db: Database = Depe
             coalesce(cardinality(a.ids), 0) as recordset_count,
             coalesce(cardinality(e.ids), 0) as expected_recordset_count,
             coalesce(a.ids, '{}'::int[])
-                is distinct from coalesce(e.ids, '{}'::int[]) as membership_drifted
+                is distinct from coalesce(e.ids, '{}'::int[]) as membership_drifted,
+            coalesce(f.total, 0)     as file_count,
+            coalesce(f.completed, 0) as completed_file_count,
+            coalesce(f.failed, 0)    as failed_file_count
         from dataset_release_transfer drt
         join transfer_destination td using (destination_id)
         join transfer_mode tm using (transfer_mode_id)
         left join actual a   on a.tid = drt.dataset_release_transfer_id
         left join expected e on e.tid = drt.dataset_release_transfer_id
+        left join files f    on f.tid = drt.dataset_release_transfer_id
         where drt.dataset_release_id = $1;
         """
     try:
@@ -5492,7 +5509,11 @@ async def _fan_out_transfer_files(transfer_id: int, conn) -> None:
             dataset_release_transfer_id, file_id, file_dest_url, status
         )
         select distinct
-            $1,
+            -- $1::int, not bare $1: DISTINCT resolves a sort operator for this
+            -- column before the INSERT target type is applied, so an untyped
+            -- parameter defaults to text while the WHERE clause below deduces
+            -- integer -- "inconsistent types deduced for parameter $1".
+            $1::int,
             rrf.file_id,
             case when {IDC_IMAGING_PREDICATE}
                  -- Content-addressed, which is what makes the daemon's
