@@ -1,0 +1,6 @@
+:operation_name: ApplyPrivateDispositions
+:command_line: ApplyPrivateDispositions.py <?bkgrnd_id?> <activity_id> <notify>
+:operation_type: background_process
+:input_line_format: 
+:tags: ['activity_timepoint']
+:can_chain: 
