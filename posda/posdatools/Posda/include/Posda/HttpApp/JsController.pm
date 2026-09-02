@@ -906,8 +906,12 @@ sub ServerCheck{
     $http->queue("0");
   }
   if ($this->{refresh_count} == 0) {
-    print STDERR "Refreshing API token: $this->{Token}\n";
-    Posda::Auth::api_refresh($this->{Token});
+    if (defined $this->{Token}) {
+        # TODO: figure out why we reach this point *without*
+        # a token defined!
+        print STDERR "Refreshing API token: $this->{Token}\n";
+        Posda::Auth::api_refresh($this->{Token});
+    }
     # Reset the counter, this just makes sure we only make an expenisve
     # call to the API once every 10 refreshes from the server
     $this->{refresh_count} = 10;
