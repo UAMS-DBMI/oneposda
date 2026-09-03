@@ -16,6 +16,7 @@ from .auth import logged_in_user, User
 from . import importer
 
 from ..util import Database
+from ..util.models import File, consistent
 from ..util.wp import (
     wp_get, wp_patch, wp_url, wp_client, wp_upload_media, wp_edit_url, WP_TYPE_MAP,
 )
@@ -7884,6 +7885,53 @@ async def assignment_series_summary(assignment_id: int, db: Database = Depends()
     })
 
 
+
+def instance_number_key(row):
+    """Sort key for a file with no usable geometry.
+
+    InstanceNumber is a DICOM string and is not always a clean integer, so this
+    takes the leading digits rather than casting. The previous query did
+    `instance_number::int` guarded only against null and '', which raised -- and
+    500'd the whole file list -- on anything else non-numeric.
+
+    Files with no parseable number sort last rather than colliding at 0 with a
+    real instance 0. sop_instance_uid breaks remaining ties so the order is
+    total: without it, equal keys come back in whatever order the plan yields
+    and can differ between identical calls."""
+    match = re.match(r"\s*(\d{1,9})", row["instance_number"] or "")
+    number = int(match.group(1)) if match else None
+    return (number is None, number or 0, row["sop_instance_uid"] or "")
+
+
+def sort_series_files(rows):
+    """Orders one series' files for display.
+
+    Geometry first: projecting ImagePositionPatient onto the slice normal is the
+    physical stacking order, and unlike InstanceNumber it cannot be wrong.
+    `consistent()` does exactly that projection (util/models.py, already used by
+    the IEC and masking frame endpoints) and reports whether it managed to sort.
+
+    It returns the list untouched when any slice is missing iop/ipp -- which
+    happens here: a good share of series carry no geometry at all. Those fall
+    back to InstanceNumber, which is what this endpoint used to use for
+    everything.
+
+    The boolean is used only to detect that fallback, not reported: whether a
+    series is volumetric is a different question from what order to list it in,
+    and masking.py has a standing TODO saying the flag is unreliable."""
+    files = [
+        File.from_raw(
+            r["file_id"], r["file_path"], None, r["num_of_frames"], r["iop"], r["ipp"]
+        )
+        for r in rows
+    ]
+    ordered_files, sorted_by_geometry = consistent(files)
+    if not sorted_by_geometry:
+        return sorted(rows, key=instance_number_key)
+    position = {f.file_id: i for i, f in enumerate(ordered_files)}
+    return sorted(rows, key=lambda r: position[r["file_id"]])
+
+
 @router.get("/qc/assignments/{assignment_id}/series/{series_instance_uid}/files")
 # Files for a single series in an assignment, ordered by instance number
 async def list_assignment_series_files(
@@ -7898,12 +7946,30 @@ async def list_assignment_series_files(
         api_error("NOT_FOUND", "Series not found in this assignment",
                   {"assignment_id": assignment_id, "series_instance_uid": series_instance_uid}, 404)
 
+    # "distinct on (file_id)", not a plain "distinct": file_location and
+    # file_image both lack a unique index on file_id, so either can multiply a
+    # file into several rows -- 15x has been observed for file_location. A plain
+    # DISTINCT only collapses those rows when every selected column matches,
+    # which is luck rather than a guarantee: with a second image_id that has no
+    # image_geometry row, iop/ipp differ and the duplicate survives. Verified by
+    # injecting exactly that -- plain DISTINCT still returned 108 rows for 107
+    # files. DISTINCT ON returns one row per file whatever the joins hold.
+    #
+    # The ORDER BY only picks which duplicate wins, deterministically. Display
+    # order is decided in Python below, which is what makes DISTINCT ON usable
+    # here at all -- it requires ORDER BY to lead with the distinct key.
+    #
+    # Still a workaround. The fix is to dedupe those tables and constrain them.
     rows = await db.fetch(
         """
-        select
+        select distinct on (rdf.file_id)
             rdf.file_id,
+            fl.file_storage_root_id || '/' || fl.rel_path     as file_path,
             coalesce(i.number_of_frames, 1) as num_of_frames,
-            fl.file_storage_root_id || '/' || fl.rel_path     as file_path
+            fsc.instance_number,
+            fsc.sop_instance_uid,
+            ig.iop,
+            ig.ipp
         from qc_unit qs
         join qc_review qr           on qr.qc_review_id    = qs.qc_review_id
         join recordset_draft_file rdf on rdf.recordset_draft_id = qr.recordset_draft_id
@@ -7912,17 +7978,30 @@ async def list_assignment_series_files(
         left join file_location fl      on fl.file_id             = rdf.file_id
         left join file_image fi         on fi.file_id             = rdf.file_id
         left join image i               on i.image_id             = fi.image_id
+        left join image_geometry ig     on ig.image_id            = fi.image_id
         left join file_sop_common fsc   on fsc.file_id            = rdf.file_id
         where qs.assignment_id = $1 and qs.series_instance_uid = $2
-        order by
-            case when fsc.instance_number is null or fsc.instance_number = ''
-                 then 0
-                 else fsc.instance_number::int
-            end
+        -- Prefer a row that actually carries geometry and a path. Picking the
+        -- lowest image_id blindly can keep a duplicate image that has no
+        -- image_geometry row, and consistent() gives up on the *whole series*
+        -- if any one slice lacks iop/ipp -- so one bad pick would silently
+        -- demote every file to instance_number ordering. false sorts before
+        -- true, so "is null" puts the populated row first.
+        order by rdf.file_id,
+                 (ig.ipp is null), (ig.iop is null), (fl.rel_path is null),
+                 fl.file_storage_root_id, fl.rel_path, fi.image_id
         """,
         [assignment_id, series_instance_uid])
 
-    data = [dict(r) for r in rows]
+    ordered = sort_series_files(rows)
+    data = [
+        {
+            "file_id": r["file_id"],
+            "num_of_frames": r["num_of_frames"],
+            "file_path": r["file_path"],
+        }
+        for r in ordered
+    ]
     return {
         "data": data,
         "meta": {
