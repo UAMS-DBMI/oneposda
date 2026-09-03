@@ -15,11 +15,9 @@ DROP TABLE IF EXISTS public.recordset CASCADE;
 DROP TABLE IF EXISTS public.dataset_release_transfer CASCADE;
 DROP TABLE IF EXISTS public.wp_object_map CASCADE;
 DROP TABLE IF EXISTS public.transfer_destination CASCADE;
-DROP TABLE IF EXISTS public.recordset_license CASCADE;
 DROP TABLE IF EXISTS public.dataset_release CASCADE;
 DROP TABLE IF EXISTS public.dataset_relation CASCADE;
 DROP TABLE IF EXISTS public.dataset CASCADE;
-DROP TABLE IF EXISTS public.transfer_mode CASCADE;
 DROP TABLE IF EXISTS public.recordset_type CASCADE;
 DROP TABLE IF EXISTS public.dataset_type CASCADE;
 DROP TABLE IF EXISTS public.dataset_relation_type CASCADE;
@@ -52,3 +50,11 @@ DROP FUNCTION IF EXISTS public.notify_transfer_queued() CASCADE;
 --DROP TABLE IF EXISTS "public".collection_release;
 --DROP TABLE IF EXISTS "public".collection_related;
 --DROP TABLE IF EXISTS "public".collection;
+
+-- Retired 2026-09-01: no longer created by 0047_add_dataset_module_tables.sql.
+-- Licensing is WordPress's to own, and transfer_mode was vestigial -- it was
+-- hidden from curators on 2026-07-24 because each destination always uses the
+-- same mode. Kept here, last, so this script still tears down a database
+-- created before they were removed.
+DROP TABLE IF EXISTS public.recordset_license CASCADE;
+DROP TABLE IF EXISTS public.transfer_mode CASCADE;
