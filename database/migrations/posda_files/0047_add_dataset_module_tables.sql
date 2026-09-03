@@ -90,7 +90,7 @@ CREATE  TABLE "public".wp_object_map (
 	CONSTRAINT idx_wp_object_map_wp_object UNIQUE ( wp_object_type, wp_object_id ) 
  ) ;
 
-COMMENT ON COLUMN "public".wp_object_map.posda_object_type IS 'dataset, dataset_release, recordset, recordset_release';
+COMMENT ON COLUMN "public".wp_object_map.posda_object_type IS 'dataset, dataset_release, recordset, recordset_release, file';
 
 COMMENT ON COLUMN "public".wp_object_map.wp_object_type IS 'collection, analysis_result, download, version, version_download';
 

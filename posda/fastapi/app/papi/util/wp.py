@@ -65,6 +65,24 @@ async def wp_post(path: str, data: dict):
         r.raise_for_status()
         return r.json()
 
+async def wp_upload_media(filename: str, content_type: str, data: bytes) -> dict:
+    """Uploads a file to the WP media library and returns the created attachment.
+
+    Not a wp_post variant: /wp/v2/media takes the raw bytes as the request body
+    with the filename carried in Content-Disposition -- not JSON, and not
+    multipart form data -- so it needs its own client call."""
+    async with wp_client() as client:
+        r = await client.post(
+            wp_url("Media"),
+            content=data,
+            headers={
+                "Content-Type": content_type,
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
+        )
+        r.raise_for_status()
+        return r.json()
+
 async def wp_patch(path: str, data: dict):
     async with wp_client() as client:
         r = await client.patch(path, json=data)
@@ -355,6 +373,11 @@ def format_program(item: dict) -> dict:
 # ----------------------------
 
 WP_TYPE_MAP: dict[str, tuple[str, callable]] = {
+    # "media" is not a curated content type like the rest -- it is here so an
+    # uploaded attachment can be mapped and looked up through the same
+    # wp_object_map machinery, which is what stops identical bytes being
+    # uploaded twice. See ensure_wp_media() in distribution.py.
+    "media":            ("Media",            format_media),
     "collection":       ("Collection",       format_collection),
     "analysis_result":  ("Analysis Result",  format_analysis_result),
     "download":         ("Download",         format_download),

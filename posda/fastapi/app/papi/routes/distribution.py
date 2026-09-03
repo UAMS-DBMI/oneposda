@@ -9,13 +9,16 @@ import hashlib
 import httpx
 import io
 import os
+import re
 import secrets
 import tempfile
 from .auth import logged_in_user, User
 from . import importer
 
 from ..util import Database
-from ..util.wp import wp_get, wp_url, wp_client
+from ..util.wp import (
+    wp_get, wp_patch, wp_url, wp_client, wp_upload_media, wp_edit_url, WP_TYPE_MAP,
+)
 
 FILE_STORAGE_PATH = os.getenv("FILE_STORAGE_PATH", "/home/posda/cache/created")
 FILE_STORAGE_ROOT = int(os.getenv("FILE_STORAGE_ROOT_ID", "3"))
@@ -924,7 +927,11 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
         group by rd.recordset_id
     ),
     wp_download as (
-        select posda_object_id as recordset_id, wp_object_id, wp_edit_url
+        -- map_id, not just wp_object_id: publishing a page goes through
+        -- PUT /manager/wp-objects/{map_id}/status, which is keyed on the
+        -- mapping rather than on the WP post.
+        select posda_object_id as recordset_id, map_id, wp_object_id,
+               wp_edit_url, wp_view_url
         from wp_object_map
         where posda_object_type = 'recordset' and wp_object_type = 'download'
     )
@@ -965,7 +972,9 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
         dest.destination_abbrs,
         dest.destination_defaults,
         (wp_download.recordset_id is not null) as wp_linked,
+        wp_download.map_id as wp_map_id,
         wp_download.wp_edit_url,
+        wp_download.wp_view_url,
         wp_download.wp_object_id as wp_download_object_id
     from rs
     left join open_draft od using (recordset_id)
@@ -1040,7 +1049,9 @@ def build_cycle_recordset(row):
             )
         ],
         "wp_linked": row["wp_linked"],
+        "wp_map_id": row["wp_map_id"],
         "wp_edit_url": row["wp_edit_url"],
+        "wp_view_url": row["wp_view_url"],
         "wp_download_object_id": row["wp_download_object_id"],
     }
 
@@ -1135,7 +1146,8 @@ async def get_dataset_cycle(
     # linked. Selecting the full row (not just `1`) lets the orphan check below
     # know which WP object to read the download list from.
     wp_collection_q = """\
-        select wp_object_type, wp_object_id from wp_object_map
+        select map_id, wp_object_type, wp_object_id, wp_edit_url, wp_view_url
+        from wp_object_map
         where posda_object_type = 'dataset' and posda_object_id = $1
         limit 1;
         """
@@ -1202,6 +1214,12 @@ async def get_dataset_cycle(
         "dataset_type_name": dataset["dataset_type_name"],
         "recordsets": [build_cycle_recordset(r) for r in recordset_rows],
         "dataset_wp_linked": bool(wp_collection_rows),
+        # The dataset's collection / analysis-result page, for
+        # Disseminate: it publishes this alongside each recordset's
+        # download page, and needs map_id to drive the status route.
+        "dataset_wp_map_id": wp_collection_rows[0]["map_id"] if wp_collection_rows else None,
+        "dataset_wp_edit_url": wp_collection_rows[0]["wp_edit_url"] if wp_collection_rows else None,
+        "dataset_wp_view_url": wp_collection_rows[0]["wp_view_url"] if wp_collection_rows else None,
         "orphaned_download_count": orphaned_download_count,
         # The release this rollup describes -- pinned when release_id was given,
         # otherwise the latest. Compare against latest_dataset_release_id to see
@@ -1514,6 +1532,226 @@ async def update_dataset_release(
         api_error("NOT_FOUND", "Dataset release not found", {"release_id": release_id}, 404)
 
     return item_response(record[0])
+
+
+# ------------------------------------GO LIVE (DISSEMINATE)-------------------------------------------
+
+async def publish_wp_page(db: Database, map_id: int, wp_object_type: str, wp_object_id: int) -> Optional[str]:
+    """Flips one mapped WordPress post to published. Returns an error message on
+    failure, None on success -- the caller publishes several pages and reports
+    which ones landed, so a WordPress hiccup on one must not raise past the rest.
+
+    Same PATCH manager.py's PUT /wp-objects/{map_id}/status performs. Not shared
+    with it: that one is a route returning the formatted post, this is a helper
+    returning a failure reason."""
+    entry = WP_TYPE_MAP.get(wp_object_type)
+    if not entry:
+        return f"Unsupported wp_object_type: {wp_object_type}"
+    endpoint_key, _formatter = entry
+    try:
+        await wp_patch(f"{wp_url(endpoint_key)}/{wp_object_id}", {"status": "publish"})
+    except httpx.HTTPStatusError as e:
+        return f"WordPress rejected the change: {e.response.text}"
+    except Exception as e:
+        return f"Could not reach WordPress: {type(e).__name__}: {e}"
+
+    await db.execute(
+        "update wp_object_map set when_synced = now() where map_id = $1", [map_id]
+    )
+    return None
+
+
+@router.post("/datasets/releases/{release_id}/publish")
+# Go live: publish the release's WordPress pages, then mark the release live.
+#
+# The pages are the ones Setup created and linked -- the dataset's collection /
+# analysis-result page and each member recordset's download page. Per-release
+# `version` / `version_download` pages are not handled yet; WordPress needs
+# versioning changes first.
+#
+# This is the only thing that sets release_status = 'live', which is what ends a
+# cycle: isCycleInProgress() reads draft and released as still in progress.
+async def publish_dataset_release(
+    release_id: int,
+    current_user: User = logged_in_user,
+    db: Database = Depends()):
+
+    release_q = """\
+        select dataset_release_id, dataset_id, release_number, release_status
+        from dataset_release
+        where dataset_release_id = $1;
+        """
+
+    # Every transfer must have landed. Publishing a download page whose bytes
+    # have not reached their destination points the public at nothing -- so the
+    # gate is delivery, not merely that the release was finalized.
+    transfers_q = """\
+        select
+            count(*)::int as total,
+            count(*) filter (where transfer_status = 'success')::int as delivered
+        from dataset_release_transfer
+        where dataset_release_id = $1;
+        """
+
+    # A member recordset with no download page cannot be published, and a
+    # half-published release is worse than an unpublished one -- so this is
+    # checked up front and refuses the whole call rather than skipping rows.
+    unlinked_q = """\
+        select distinct r.recordset_id, r.recordset_name
+        from dataset_release_recordset drr
+        join recordset_release rr using (recordset_release_id)
+        join recordset r on r.recordset_id = rr.recordset_id
+        left join wp_object_map m
+               on m.posda_object_type = 'recordset'
+              and m.posda_object_id = r.recordset_id
+              and m.wp_object_type = 'download'
+        where drr.dataset_release_id = $1
+          and m.map_id is null
+        order by r.recordset_name;
+        """
+
+    collection_q = """\
+        select m.map_id, m.wp_object_type, m.wp_object_id, d.dataset_name as label
+        from dataset d
+        join wp_object_map m
+          on m.posda_object_type = 'dataset' and m.posda_object_id = d.dataset_id
+        where d.dataset_id = $1;
+        """
+
+    # distinct on: nothing at the storage layer stops two releases of one
+    # recordset being in the same dataset release (the PK is on the pair), and a
+    # second row would publish the same page twice. Same guard the cycle
+    # rollup's `member` CTE uses.
+    downloads_q = """\
+        select distinct on (r.recordset_id)
+            m.map_id, m.wp_object_type, m.wp_object_id, r.recordset_name as label
+        from dataset_release_recordset drr
+        join recordset_release rr using (recordset_release_id)
+        join recordset r on r.recordset_id = rr.recordset_id
+        join wp_object_map m
+          on m.posda_object_type = 'recordset'
+         and m.posda_object_id = r.recordset_id
+         and m.wp_object_type = 'download'
+        where drr.dataset_release_id = $1
+        order by r.recordset_id, m.map_id;
+        """
+
+    try:
+        release_rows = await db.fetch(release_q, [release_id])
+    except Exception as e:
+        db_error(e, operation="publishing dataset release", context={"release_id": release_id})
+
+    if not release_rows:
+        api_error("NOT_FOUND", "Dataset release not found", {"release_id": release_id}, 404)
+
+    release = release_rows[0]
+    status = release["release_status"]
+    if status != "released":
+        api_error(
+            "CONFLICT",
+            {
+                "draft": "This release is still a draft -- finalize it in Bundle before going live.",
+                "live": "This release is already live.",
+                "retracted": "This release was retracted and cannot be published.",
+            }.get(status, f"A release must be 'released' to go live, not '{status}'."),
+            {"release_id": release_id, "release_status": status},
+            409,
+        )
+
+    try:
+        counts = (await db.fetch(transfers_q, [release_id]))[0]
+        unlinked_rows = await db.fetch(unlinked_q, [release_id])
+        collection_rows = await db.fetch(collection_q, [release["dataset_id"]])
+        download_rows = await db.fetch(downloads_q, [release_id])
+    except Exception as e:
+        db_error(e, operation="publishing dataset release", context={"release_id": release_id})
+
+    if counts["total"] == 0:
+        api_error(
+            "CONFLICT",
+            "This release has no transfers -- its data has not been sent anywhere.",
+            {"release_id": release_id},
+            409,
+        )
+    if counts["delivered"] < counts["total"]:
+        api_error(
+            "CONFLICT",
+            f"{counts['total'] - counts['delivered']} of {counts['total']} transfers "
+            "have not completed -- the data is not in place yet.",
+            {
+                "release_id": release_id,
+                "transfers_total": counts["total"],
+                "transfers_delivered": counts["delivered"],
+            },
+            409,
+        )
+
+    if not collection_rows:
+        api_error(
+            "VALIDATION_ERROR",
+            "The dataset has no WordPress page linked -- link it in Setup first.",
+            {"release_id": release_id, "dataset_id": release["dataset_id"]},
+            422,
+        )
+    if unlinked_rows:
+        names = ", ".join(r["recordset_name"] for r in unlinked_rows)
+        api_error(
+            "VALIDATION_ERROR",
+            f"These recordsets have no WordPress download page: {names}. "
+            "Link them in Setup before going live.",
+            {
+                "release_id": release_id,
+                "recordset_ids": [r["recordset_id"] for r in unlinked_rows],
+            },
+            422,
+        )
+
+    # Collection page first: the download pages are listed on it, so this is the
+    # order a reader would encounter them in.
+    pages = list(collection_rows) + list(download_rows)
+
+    # Sequential, not asyncio.gather: these are writes to WordPress, and the
+    # report below names which page failed. Half a dozen pages at most.
+    published, failed = [], []
+    for page in pages:
+        error = await publish_wp_page(
+            db, page["map_id"], page["wp_object_type"], page["wp_object_id"]
+        )
+        entry = {
+            "map_id": page["map_id"],
+            "wp_object_type": page["wp_object_type"],
+            "wp_object_id": page["wp_object_id"],
+            "label": page["label"],
+        }
+        if error:
+            failed.append({**entry, "error": error})
+        else:
+            published.append(entry)
+
+    # Only a clean sweep goes live. A release marked live with a page still in
+    # draft would report the cycle finished while part of it is invisible.
+    release_status = status
+    if not failed:
+        try:
+            await db.execute(
+                """
+                update dataset_release
+                set release_status = 'live', when_updated = now(), who_updated = $2
+                where dataset_release_id = $1
+                """,
+                [release_id, current_user.user_id],
+            )
+            release_status = "live"
+        except Exception as e:
+            db_error(e, operation="marking dataset release live", context={"release_id": release_id})
+
+    return item_response({
+        "dataset_release_id": release_id,
+        "release_number": release["release_number"],
+        "release_status": release_status,
+        "published": published,
+        "failed": failed,
+    })
 
 
 @router.get("/datasets/releases/{release_id}/recordsets")
@@ -6016,21 +6254,95 @@ async def get_recordset_releases_by_transfer(transfer_id: int, db: Database = De
         )
         return list_response([])
 
+
+# Each destination publishes its own manifest format, so the format is a
+# property of the transfer's destination -- which is what makes
+# transfer_recordset's (transfer, recordset_release) key load-bearing rather
+# than incidental: one recordset release shipped to two destinations really does
+# need two different files.
+#
+# Only NBIA's is specified. IDC and General Commons fall back to the general
+# format (a plain series-UID list) until theirs are pinned down -- and they may
+# not be ours to generate at all: a destination may hand us a manifest to host
+# instead, which would arrive as an upload rather than through here.
+#
+# WordPress is not in this table: a WordPress download links the media file the
+# transfer uploaded, and has no manifest.
+MANIFEST_FORMATS = {
+    "nbia": {"extension": "tcia", "mime_type": "text/plain"},
+    "idc":  {"extension": "csv",  "mime_type": "text/csv"},   # TODO: IDC's real format
+    "gc":   {"extension": "csv",  "mime_type": "text/csv"},   # TODO: GC's real format
+}
+GENERAL_MANIFEST_FORMAT = {"extension": "csv", "mime_type": "text/csv"}
+
+NBIA_DOWNLOAD_SERVER_URL = os.getenv(
+    "NBIA_DOWNLOAD_SERVER_URL",
+    "https://public.cancerimagingarchive.net/nbia-download/servlet/DownloadServlet",
+)
+
+
+def manifest_format(destination_abbr: str) -> dict:
+    return MANIFEST_FORMATS.get(destination_abbr, GENERAL_MANIFEST_FORMAT)
+
+
+def build_manifest(destination_abbr: str, series_uids: list, recordset_release_id: int) -> bytes:
+    """Builds the manifest bytes for one recordset release, in the destination's
+    format. Deterministic by design: identical series produce identical bytes,
+    so the content-addressed store gives back the same file_id and nothing is
+    re-uploaded to WordPress on a regeneration.
+
+    That is why databasketId below is derived from the recordset release rather
+    than being the epoch-millisecond timestamp real NBIA baskets carry -- a
+    timestamp would change the digest every time and defeat the dedup. The Data
+    Retriever does not read the field."""
+    if destination_abbr == "nbia":
+        header = [
+            f"downloadServerUrl={NBIA_DOWNLOAD_SERVER_URL}",
+            "includeAnnotation=true",
+            "noOfrRetry=4",
+            f"databasketId=manifest-{recordset_release_id}.tcia",
+            "manifestVersion=3.0",
+            "ListOfSeriesToDownload=",
+        ]
+        return ("\n".join(header + series_uids) + "\n").encode("utf-8")
+
+    # The general format, pending a real spec for this destination.
+    return ("\n".join(["series_instance_uid"] + series_uids) + "\n").encode("utf-8")
+
+
 @router.post("/transfers/{transfer_id}/recordsets/{recordset_release_id}/manifest/generate")
-# Generate (or replace) an IDC download manifest CSV for a transfer recordset
+# Generate (or replace) the retriever manifest for a transfer recordset,
+# in whatever format that transfer's destination expects.
 async def generate_transfer_recordset_manifest(
     transfer_id: int,
     recordset_release_id: int,
     db: Database = Depends(),
 ):
-    # Verify the transfer_recordset row exists
+    # The destination decides the format, so it is read here rather than
+    # assumed -- and its absence means the transfer_recordset row is missing.
     tr_row = await db.fetch(
-        "select 1 from transfer_recordset "
-        "where dataset_release_transfer_id = $1 and recordset_release_id = $2",
+        """
+        select td.destination_abbr
+        from transfer_recordset tr
+        join dataset_release_transfer drt using (dataset_release_transfer_id)
+        join transfer_destination td using (destination_id)
+        where tr.dataset_release_transfer_id = $1 and tr.recordset_release_id = $2
+        """,
         [transfer_id, recordset_release_id],
     )
     if not tr_row:
         api_error("NOT_FOUND", "Transfer recordset not found", {"transfer_id": transfer_id, "recordset_release_id": recordset_release_id}, 404)
+
+    destination_abbr = tr_row[0]["destination_abbr"]
+    if destination_abbr == "wp":
+        api_error(
+            "VALIDATION_ERROR",
+            "WordPress downloads have no manifest -- the download page links the "
+            "media file the transfer uploaded.",
+            {"transfer_id": transfer_id, "destination_abbr": destination_abbr},
+            422,
+        )
+    fmt = manifest_format(destination_abbr)
 
     # Get series_instance_uids for this recordset release
     series_rows = await db.fetch(
@@ -6044,9 +6356,11 @@ async def generate_transfer_recordset_manifest(
         [recordset_release_id],
     )
 
-    # Build CSV: header + one UID per line
-    lines = ["series_instance_uid"] + [r["series_instance_uid"] for r in series_rows]
-    csv_bytes = ("\n".join(lines) + "\n").encode("utf-8")
+    csv_bytes = build_manifest(
+        destination_abbr,
+        [r["series_instance_uid"] for r in series_rows],
+        recordset_release_id,
+    )
 
     # Content-addressed storage: md5 hex digest as filename
     digest = hashlib.md5(csv_bytes).hexdigest()
@@ -6101,10 +6415,10 @@ async def generate_transfer_recordset_manifest(
                 df_rows = await conn.fetch(
                     """
                     insert into downloadable_file (file_id, security_hash, mime_type)
-                    values ($1, $2, 'text/csv')
+                    values ($1, $2, $3)
                     returning downloadable_file_id, security_hash
                     """,
-                    file_id, security_hash,
+                    file_id, security_hash, fmt["mime_type"],
                 )
 
             # Link manifest back to transfer_recordset
@@ -6125,7 +6439,250 @@ async def generate_transfer_recordset_manifest(
         "downloadable_file_id": df_rows[0]["downloadable_file_id"],
         "security_hash": df_rows[0]["security_hash"],
         "series_count": len(series_rows),
+        "destination_abbr": destination_abbr,
+        "manifest_format": fmt["extension"],
     })
+
+# --------------------------------ATTACH A MANIFEST TO WORDPRESS--------------------------------------
+
+async def read_stored_file(db: Database, file_id: int) -> Optional[bytes]:
+    """Reads a stored file's bytes off disk. None when it has no location row.
+
+    Resolves the path through file_storage_root rather than FILE_STORAGE_PATH:
+    the file may predate this module or live under a different root, and
+    download.py already resolves it this way."""
+    rows = await db.fetch(
+        """
+        select root_path || '/' || rel_path as path
+        from file_location
+        join file_storage_root using (file_storage_root_id)
+        where file_id = $1
+        limit 1
+        """,
+        [file_id],
+    )
+    if not rows:
+        return None
+    try:
+        with open(rows[0]["path"], "rb") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+async def ensure_wp_media(db: Database, file_id: int, filename: str, content_type: str):
+    """Returns (media_id, uploaded) for a stored file, uploading it to the
+    WordPress media library only if those exact bytes are not there already.
+
+    Dedup is by file_id, and that is exact rather than approximate: file.digest
+    carries a UNIQUE index, so Posda's storage is content-addressed and one
+    file_id *is* one distinct sequence of bytes. Two releases whose manifests
+    list the same series produce the same file_id, so nothing is re-uploaded and
+    the download page keeps pointing at the attachment it already had.
+
+    The mapping is kept in wp_object_map as ('file', file_id) -> ('media', id).
+    Its two unique constraints make that one-to-one in both directions, which is
+    exactly true here.
+
+    Note the bytes are held in memory. Fine for a manifest CSV; a WordPress
+    transfer of real data files will need a streaming upload instead."""
+    map_rows = await db.fetch(
+        """
+        select map_id, wp_object_id from wp_object_map
+        where posda_object_type = 'file' and posda_object_id = $1
+          and wp_object_type = 'media'
+        limit 1
+        """,
+        [file_id],
+    )
+
+    if map_rows:
+        # Trust but verify: an attachment deleted in WordPress leaves the row
+        # pointing at nothing. Re-upload rather than attaching a dead id -- the
+        # same reasoning as WpLinkPill's "Broken Link" badge.
+        try:
+            existing = await wp_get(f"{wp_url('Media')}/{map_rows[0]['wp_object_id']}")
+        except Exception:
+            existing = None
+        if existing is not None:
+            return existing["id"], False
+        await db.execute(
+            "delete from wp_object_map where map_id = $1", [map_rows[0]["map_id"]]
+        )
+
+    data = await read_stored_file(db, file_id)
+    if data is None:
+        api_error(
+            "NOT_FOUND",
+            "The stored file for this manifest could not be read -- regenerate it.",
+            {"file_id": file_id},
+            404,
+        )
+
+    try:
+        item = await wp_upload_media(filename, content_type, data)
+    except httpx.HTTPStatusError as e:
+        api_error("WP_ERROR", f"WordPress rejected the upload: {e.response.text}", {}, e.response.status_code)
+    except Exception as e:
+        api_error("WP_ERROR", f"Could not upload to WordPress: {type(e).__name__}: {e}", {}, 500)
+
+    try:
+        await db.execute(
+            """
+            insert into wp_object_map
+                (posda_object_type, posda_object_id, wp_object_type, wp_object_id,
+                 wp_edit_url, wp_view_url, when_synced)
+            values ('file', $1, 'media', $2, $3, $4, now())
+            on conflict on constraint unq_wp_object_map_posda_object do update set
+                wp_object_id = excluded.wp_object_id,
+                wp_edit_url  = excluded.wp_edit_url,
+                wp_view_url  = excluded.wp_view_url,
+                when_synced  = excluded.when_synced
+            """,
+            [file_id, item["id"], wp_edit_url(item["id"]), item.get("link")],
+        )
+    except Exception as e:
+        # The upload succeeded; only the bookkeeping failed. Say so plainly --
+        # silently returning would orphan the attachment on the next call.
+        db_error(
+            e,
+            operation="recording the uploaded WordPress media",
+            context={"file_id": file_id, "wp_media_id": item["id"]},
+        )
+    return item["id"], True
+
+
+@router.post("/transfers/{transfer_id}/recordsets/{recordset_release_id}/manifest/attach")
+# Put a generated retriever manifest onto the recordset's WordPress download
+# page, uploading it to the media library first if those bytes are not there.
+#
+# Dissemination work, not transfer work: the manifest is what the TCIA Data
+# Retriever hands a user from the public page.
+async def attach_transfer_recordset_manifest(
+    transfer_id: int,
+    recordset_release_id: int,
+    db: Database = Depends()):
+
+    manifest_q = """\
+        select
+            tr.retriever_manifest_file_id,
+            f.digest,
+            r.recordset_id,
+            r.recordset_name,
+            td.destination_abbr,
+            m.map_id,
+            m.wp_object_id as download_post_id
+        from transfer_recordset tr
+        join dataset_release_transfer drt using (dataset_release_transfer_id)
+        join transfer_destination td using (destination_id)
+        join recordset_release rr on rr.recordset_release_id = tr.recordset_release_id
+        join recordset r on r.recordset_id = rr.recordset_id
+        left join "file" f on f.file_id = tr.retriever_manifest_file_id
+        left join wp_object_map m
+               on m.posda_object_type = 'recordset'
+              and m.posda_object_id = r.recordset_id
+              and m.wp_object_type = 'download'
+        where tr.dataset_release_transfer_id = $1
+          and tr.recordset_release_id = $2;
+        """
+
+    try:
+        rows = await db.fetch(manifest_q, [transfer_id, recordset_release_id])
+    except Exception as e:
+        db_error(e, operation="attaching retriever manifest", context={
+            "transfer_id": transfer_id, "recordset_release_id": recordset_release_id})
+
+    if not rows:
+        api_error("NOT_FOUND", "Transfer recordset not found",
+                  {"transfer_id": transfer_id, "recordset_release_id": recordset_release_id}, 404)
+
+    row = rows[0]
+    if row["destination_abbr"] == "wp":
+        api_error(
+            "VALIDATION_ERROR",
+            "WordPress downloads have no manifest to attach -- the download page "
+            "links the media file the transfer uploaded.",
+            {"transfer_id": transfer_id, "destination_abbr": row["destination_abbr"]},
+            422,
+        )
+    if row["retriever_manifest_file_id"] is None:
+        api_error(
+            "VALIDATION_ERROR",
+            "This recordset has no retriever manifest yet -- generate it first.",
+            {"transfer_id": transfer_id, "recordset_release_id": recordset_release_id},
+            422,
+        )
+    if row["download_post_id"] is None:
+        api_error(
+            "VALIDATION_ERROR",
+            f"'{row['recordset_name']}' has no WordPress download page -- link it in Setup first.",
+            {"recordset_id": row["recordset_id"]},
+            422,
+        )
+
+    # Digest in the filename so the media library is legible to a human and two
+    # different manifests never collide on name. Not the dedup mechanism -- WP
+    # renames colliding uploads (foo.csv -> foo-1.csv), so a filename is not
+    # something to match on.
+    fmt = manifest_format(row["destination_abbr"])
+    slug = re.sub(r"[^a-z0-9]+", "-", row["recordset_name"].lower()).strip("-")
+    filename = f"{slug}-manifest-{row['digest'][:8]}.{fmt['extension']}"
+
+    media_id, uploaded = await ensure_wp_media(
+        db, row["retriever_manifest_file_id"], filename, fmt["mime_type"]
+    )
+
+    # Skip the PATCH when the page already points at this attachment -- the
+    # normal case for a release whose manifest did not change.
+    try:
+        post = await wp_get(f"{wp_url('Download')}/{row['download_post_id']}")
+    except Exception as e:
+        api_error("WP_ERROR", f"Could not read the WordPress download page: {type(e).__name__}: {e}", {}, 500)
+    if post is None:
+        api_error(
+            "NOT_FOUND",
+            f"The WordPress download page (id={row['download_post_id']}) no longer exists.",
+            {"recordset_id": row["recordset_id"]},
+            404,
+        )
+
+    # download_file reads back as the whole attachment post, with its ID as a
+    # *string* ("6589") -- so this is compared as text, not as an int. Comparing
+    # int to str would never match and would re-PATCH on every call.
+    current = post.get("download_file")
+    current_id = current.get("ID") if isinstance(current, dict) else current
+    attached = False
+    if str(current_id) != str(media_id):
+        try:
+            # Read gives {"ID": "6589"}, write takes a bare int -- confirmed
+            # against the wiki-migration tooling, which sets these fields the
+            # same way (wp_tools run_cleanup.py: download_metadata = int(id)).
+            await wp_patch(
+                f"{wp_url('Download')}/{row['download_post_id']}",
+                {"download_file": media_id},
+            )
+        except httpx.HTTPStatusError as e:
+            api_error("WP_ERROR", f"WordPress rejected the change: {e.response.text}", {}, e.response.status_code)
+        except Exception as e:
+            api_error("WP_ERROR", f"Could not reach WordPress: {type(e).__name__}: {e}", {}, 500)
+        attached = True
+        await db.execute(
+            "update wp_object_map set when_synced = now() where map_id = $1",
+            [row["map_id"]],
+        )
+
+    return item_response({
+        "recordset_id": row["recordset_id"],
+        "recordset_name": row["recordset_name"],
+        "file_id": row["retriever_manifest_file_id"],
+        "wp_media_id": media_id,
+        "download_post_id": row["download_post_id"],
+        # False/False is a success, not a no-op failure: the identical manifest
+        # was already uploaded and already attached.
+        "uploaded": uploaded,
+        "attached": attached,
+    })
+
 
 # NOTE:
 # AI tools suggest that this is not optimal
