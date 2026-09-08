@@ -63,7 +63,9 @@ my $ins_file = Query("InsertActivityTimepointFile");
 my $num_files = 0;
 for my $file_id (keys %Files){
   $num_files += 1;
-  $background->SetActivityStatus("Adding $num_files of $tot_files");
+  if($num_files % 1000 == 0 || $num_files == $tot_files){
+    $background->SetActivityStatus("Adding $num_files of $tot_files");
+  }
   $ins_file->RunQuery(sub{}, sub{}, $act_time_id, $file_id);
 }
 my $creation_time = time;
