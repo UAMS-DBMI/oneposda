@@ -98,7 +98,6 @@ sub new {
     Query('InsertActivityTaskStatus')->RunQuery(
       sub {}, sub {}, $activity_id, $invoc_id
     );
-    $this->{UpdStatusQ} = Query("UpdateActivityTaskStatus");
   }
 
   # convert $notify to username if it is an email
@@ -136,20 +135,69 @@ sub SetActivityStatus{
     return;
   }
 
-  if(defined $time_remaining) {
-    Query('UpdateActivityTaskStatusAndCompletionTime')->RunQuery(
-      sub{}, sub{}, $status, $time_remaining,
-      $self->{activity_id}, $self->{invoc_id});
-  } else {
-    Query('UpdateActivityTaskStatus')->RunQuery(
-      sub{}, sub{}, $status,
-      $self->{activity_id}, $self->{invoc_id});
-  }
+  $self->_update_activity_status($status, $time_remaining);
 
   if($status eq "Schedule Complete - Manual Process Follows"){
     $self->SetActivityManualUpdate($status);
     return;
   }
+}
+
+# Run the heartbeat update, reporting rather than swallowing the two ways it
+# can quietly stop working. Reconnecting after a lost connection is handled a
+# layer down in PosdaDB::Queries; what is left here is making sure the outcome
+# is not silently discarded:
+#   - the query failed outright, which used to be invisible because DBI runs
+#     with RaiseError off and the row callback was sub{};
+#   - the update matched no rows, meaning the (activity_id,
+#     subprocess_invocation_id) key no longer identifies a row, which looks
+#     exactly like success to a caller that ignores the row count.
+sub _update_activity_status {
+  my ($self, $status, $time_remaining) = @_;
+
+  my $name = defined($time_remaining)
+    ? 'UpdateActivityTaskStatusAndCompletionTime'
+    : 'UpdateActivityTaskStatus';
+  my @args = defined($time_remaining)
+    ? ($status, $time_remaining, $self->{activity_id}, $self->{invoc_id})
+    : ($status, $self->{activity_id}, $self->{invoc_id});
+
+  my($rows, $err);
+  my $ok = eval {
+    $self->_status_query($name)->RunQuery(
+      sub { $rows = $_[0]->[0] },
+      sub {},
+      sub { $err = $_[0] },
+      @args);
+    1;
+  };
+  unless ($ok) { $err = $@ }
+
+  if (defined $err) {
+    print STDERR "SetActivityStatus: $name failed ($err); " .
+      "activity_task_status for activity $self->{activity_id} / " .
+      "invocation $self->{invoc_id} has stopped updating\n";
+    return 0;
+  }
+
+  if (defined($rows) && $rows == 0) {
+    print STDERR "SetActivityStatus: $name matched no rows for " .
+      "activity $self->{activity_id} / invocation $self->{invoc_id}; " .
+      "status is not being recorded\n";
+  }
+
+  return 1;
+}
+
+# Query objects cache a prepared statement handle, so hold onto them rather
+# than re-running _load_query (a select against the queries table) on every
+# single heartbeat.
+sub _status_query {
+  my ($self, $name) = @_;
+  unless (defined $self->{status_queries}->{$name}) {
+    $self->{status_queries}->{$name} = Query($name);
+  }
+  return $self->{status_queries}->{$name};
 }
 
 sub SetActivityManualUpdate {
@@ -249,6 +297,17 @@ sub WriteToEmail {
 
 sub Finish {
   my($self,$mess) = @_;
+
+  unless (defined $mess) {
+    $mess = "Complete - no status specified";
+  }
+
+  # Close the activity task status FIRST. Everything below -- importing the
+  # report files, building downloadable files, sending the inbox mail -- can
+  # die, and when it did the row was left with end_time NULL, so the UI kept
+  # showing the task as running forever even though the work had completed.
+  $self->CloseActivityTaskStatus($mess);
+
   unless ($self->{cl_mode}) {
     # log completion time
     $self->{add_comp_time_query}->RunQuery(
@@ -260,6 +319,48 @@ sub Finish {
   $self->WriteToEmail("Background process ended at: $end_time\n");
   $self->WriteToEmail("Total time elapsed: " .
     ($self->{script_end_time} - $self->{script_start_time}) . "\n");
+
+  eval { $self->_finish_reports };
+  if ($@) {
+    my $err = $@;
+    print STDERR "Error finishing reports: $err\n";
+    $err =~ s/\s+/ /g;
+    if (length($err) > 200) { $err = substr($err, 0, 200) . "..." }
+    # end_time is already recorded; just amend the text so this is visible.
+    $self->SetActivityStatus("$mess (report generation failed: $err)");
+  }
+
+  $self->{finished} = 1;
+}
+
+# Sets end_time on the activity_task_status row. Split out of Finish so it can
+# run before the fallible report work, and so a script's END block can use it
+# as a backstop. Idempotent.
+sub CloseActivityTaskStatus {
+  my ($self, $mess) = @_;
+
+  unless ($self->{activity_id}) { return }
+  if ($self->{cl_mode}) { return }
+  if ($self->{activity_status_closed}) { return }
+  $self->{activity_status_closed} = 1;
+
+  unless (defined $mess) {
+    $mess = "Complete - no status specified";
+  }
+
+  # This comparison used to run before the defined() guard, so an undef $mess
+  # warned under -w on every call.
+  if ($mess eq "Schedule Complete - Manual Process Follows") {
+    $self->SetActivityManualUpdate($mess);
+    return;
+  }
+
+  Query('FinishActivityTaskStatus')->RunQuery(sub{}, sub {},
+    $mess, $self->{activity_id}, $self->{invoc_id});
+}
+
+sub _finish_reports {
+  my ($self) = @_;
 
   for my $h (sort keys %{$self->{reports}}) {
     if ($h ne 'Email') {
@@ -323,17 +424,6 @@ sub Finish {
     unlink $rpt->{temp_filename};
   }
 
-  if($self->{activity_id} && not $self->{cl_mode}){
-    if($mess eq "Schedule Complete - Manual Process Follows"){
-      $self->SetActivityManualUpdate($mess);
-      return;
-    }
-    unless(defined $mess){
-      $mess = "Complete - no status specified";
-    }
-    Query('FinishActivityTaskStatus')->RunQuery(sub{}, sub {},
-      $mess, $self->{activity_id}, $self->{invoc_id});
-  }
 }
 
 sub LogError {

@@ -553,6 +553,10 @@ sub look_for_private{
 #
 #
 
+# How many unparsable lines from StreamingEditCompare.pl we tolerate before
+# giving up. It used to be zero -- the first one called exit.
+my $MaxBadCompareLines = 10;
+
 my $num_sops = keys %SopsToEdit;
 if($num_sops <= 0){
   print "No sops found to edit\n";
@@ -626,6 +630,8 @@ $ins->RunQuery(sub {}, sub{}, $invoc_id, $BackgroundPid, $DestDir);
      list_of_sops => $list,
       sop_hash => $hash,
       sops_in_process => {},
+      pids_in_process => {},
+      bad_compare_lines => 0,
       sops_completed => {},
       compare_requests => {},
       comparing => {},
@@ -695,7 +701,7 @@ $ins->RunQuery(sub {}, sub{}, $invoc_id, $BackgroundPid, $DestDir);
         ref($this->{compares_complete}) eq "HASH"
       ){
         $num_compares_complete = keys %{$this->{compares_complete}};
-      } else { $num_comparing = 0 }
+      } else { $num_compares_complete = 0 }
       if(
         exists $this->{compares_failed} &&
         ref($this->{compares_failed}) eq "HASH"
@@ -735,9 +741,8 @@ $ins->RunQuery(sub {}, sub{}, $invoc_id, $BackgroundPid, $DestDir);
         $background->WriteToEmail($report);
 #        print STDERR $report;
         if($this->{WeAreDone}) {
-         $background->Finish("Done $num_compares_complete changed," .
-           " $num_compares_failed failed in $elapsed seconds");
-         exit;
+         $this->Shutdown("Done $num_compares_complete changed," .
+           " $num_compares_failed failed in $elapsed seconds", 0);
         };
       }
       unless($this->{WeAreDone}){
@@ -765,10 +770,13 @@ $ins->RunQuery(sub {}, sub{}, $invoc_id, $BackgroundPid, $DestDir);
 #$background->WriteToEmail("params: ");
 #Debug::GenPrint(make_debug_bg($background), $next_struct, 1);
 #$background->WriteToEmail("\n");
-      $this->SerializedSubProcess($next_struct,
-#        "NewSubprocessEditor.pl 2>/dev/null",
+      # NewSubprocessEditor.pl inherits this process's STDERR on purpose; its
+      # per-file debug output is gated by POSDA_DEBUG at the source rather than
+      # being thrown away wholesale with 2>/dev/null.
+      my $pid = $this->SerializedSubProcess($next_struct,
         "NewSubprocessEditor.pl",
         $this->WhenEditDone($next_sop, $next_struct));
+      $this->{pids_in_process}->{$next_sop} = $pid;
       $num_in_process = keys %{$this->{sops_in_process}};
       $num_waiting = @{$this->{list_of_sops}};
     }
@@ -803,6 +811,7 @@ $ins->RunQuery(sub {}, sub{}, $invoc_id, $BackgroundPid, $DestDir);
         };
       }
       delete $this->{sops_in_process}->{$sop};
+      delete $this->{pids_in_process}->{$sop};
       $this->RestartProcessing;
     };
   }
@@ -812,6 +821,46 @@ $ins->RunQuery(sub {}, sub{}, $invoc_id, $BackgroundPid, $DestDir);
       $this->{process_pending} = 1;
       $this->InvokeAfterDelay("StartProcessing", 0);
     }
+  }
+
+  # The single exit point for this script once the dispatch loop is running.
+  #
+  # A bare "exit" from inside an event handler left up to $num_simul
+  # NewSubprocessEditor.pl children running -- they reparent to init and keep
+  # on editing -- never called Finish, and returned status 0. The worker
+  # therefore recorded the item as finished while activity_task_status stayed
+  # frozen at its last heartbeat with end_time NULL, and the stderr temp file
+  # it was about to upload was still being written to by the orphans.
+  sub Shutdown{
+    my($this, $mess, $exit_code) = @_;
+    unless(defined $exit_code) { $exit_code = 0 }
+    if($this->{ShuttingDown}) { return }
+    $this->{ShuttingDown} = 1;
+
+    if(defined $this->{CompareSubprocess}){
+      my $compare = $this->{CompareSubprocess};
+      delete $this->{CompareSubprocess};
+      eval { $compare->TearDown };
+      if($@) { print STDERR "Shutdown: tearing down compare failed: $@\n" }
+    }
+
+    for my $sop (keys %{$this->{pids_in_process}}){
+      my $pid = $this->{pids_in_process}->{$sop};
+      next unless $pid;
+      eval {
+        $this->KillProcessAndChildren($pid);
+        waitpid $pid, 0;
+      };
+      if($@) { print STDERR "Shutdown: reaping $pid failed: $@\n" }
+    }
+    $this->{pids_in_process} = {};
+
+    eval { $background->Finish($mess) };
+    if($@) {
+      print STDERR "Shutdown: Finish failed: $@\n";
+      eval { $background->CloseActivityTaskStatus($mess) };
+    }
+    exit $exit_code;
   }
 
   sub HandleInputFromCompare{
@@ -831,17 +880,22 @@ $ins->RunQuery(sub {}, sub{}, $invoc_id, $BackgroundPid, $DestDir);
 #        $background->WriteToEmail("Compare failed:\n\tsop:$sop\n" .
 #          "\tmessage: $mess\n");
       } else {
-#        print STDERR
-#          "!!!!!!!!!!!!!!!!!!!!!!!!!!!!  Auuuuugh!!   !!!!!!!!!!!!!!!!!\n" .
-#          "!!!!!!!  You idiot!  !!!!!!!!!!!!" .
-#          "Bad line: \"$line\"\n" .
-#          "!!!!!!!!! Always have default case !!!!!!!!";
+        # StreamingEditCompare.pl runs with 2>/dev/null, so whatever provoked
+        # this line is already gone. Record it and carry on rather than
+        # abandoning a run that may have hours of edits behind it.
+        $this->{bad_compare_lines} += 1;
+        my $m = $line;
+        $m =~ s/"/""/g;
+        $rpt_pipe_err->print("\"<compare protocol>\",\"Unparsable line " .
+          "from StreamingEditCompare.pl: $m\"\r\n");
         $background->WriteToEmail(
-          "!!!!!!!!!!!!!!!!!!!!!!!!!!!!  Auuuuugh!!!!!!!!!!!!!!!!!!!\n" .
-          "!!!!!!!  You idiot !!!!!!!!!!!!" .
-          "Bad line: \"$line\"\n" .
-          "!!!!!!!!! Always have default case !!!!!!!!\n");
-        exit;
+          "Warning: unparsable line from StreamingEditCompare.pl " .
+          "($this->{bad_compare_lines} so far): \"$line\"\n");
+        if($this->{bad_compare_lines} >= $MaxBadCompareLines){
+          $this->Shutdown("Aborted: $this->{bad_compare_lines} unparsable " .
+            "lines from StreamingEditCompare.pl", 1);
+        }
+        return;
       }
       # here is where we check from being done
       my $num_in_process = keys %{$this->{sops_in_process}};
@@ -898,6 +952,18 @@ $ins->RunQuery(sub {}, sub{}, $invoc_id, $BackgroundPid, $DestDir);
   }
   sub QueueCompareRequest{
     my($this, $key, $value) = @_;
+    # If the compare child has died, StartWriter silently does nothing --
+    # Dispatch::Select::Socket->Add just prints "No associated socket" -- so
+    # requests pile up, AtTheEnd never fires, WeAreDone is never set and the
+    # job spins on the 10s timer forever looking alive.
+    unless(
+      defined $this->{CompareSubprocess} &&
+      defined $this->{CompareSubprocess}->{fh}
+    ){
+      $this->Shutdown("Aborted: StreamingEditCompare.pl is gone; " .
+        "cannot compare $key", 1);
+      return;
+    }
     my $existing_request_count  = keys %{$this->{compare_requests}};
     $this->{compare_requests}->{$key} = $value;
     if($existing_request_count == 0){
@@ -1036,3 +1102,26 @@ sub MakeEditor{
     MakeEditor(\@sops, \%SopsToEdit, $invoc_id))->queue;
 }
 Dispatch::Select::Dispatch();
+
+# Backstop for anything that gets out of the dispatch loop without going
+# through Shutdown -- an uncaught die, a signal, an exit path nobody
+# anticipated. Nothing outside this process ever corrects activity_task_status,
+# so without this the row reads "Running" in the UI forever.
+#
+# The pid guard matters: the forked editor children normally exec (which
+# discards END blocks), but if that exec fails they die here instead, and they
+# must not close out the parent's row.
+END {
+  my $exit_status = $?;
+  if(
+    defined($BackgroundPid) && $$ == $BackgroundPid &&
+    defined($background) && !$background->{finished}
+  ){
+    eval {
+      $background->CloseActivityTaskStatus(
+        "Aborted: process exited (status $exit_status) without completing");
+    };
+    if($@) { print STDERR "END: could not close activity task status: $@\n" }
+  }
+  $? = $exit_status;
+}
