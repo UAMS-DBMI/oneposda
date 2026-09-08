@@ -1,10 +1,14 @@
 #!/usr/bin/perl -w
+#
+# The diff itself now lives in Posda::EditCompare so the distributed workers can
+# run it concurrently. This script keeps the exact stdin/stdout line protocol
+# BackgroundEditorTp.pl speaks, so the existing single-process pipeline is
+# unchanged.
+#
 use strict;
 use File::Temp qw/ tempfile /;
 use Posda::DB::PosdaFilesQueries;
-use Posda::Try;
-use Posda::DiffDicom;
-use Posda::Dataset;
+use Posda::EditCompare;
 use Digest::MD5;
 
 my $usage = <<EOF;
@@ -25,98 +29,67 @@ unless($#ARGV == 0 ){ die $usage }
 my ($invoc_id) = @ARGV;
 
 my $ins = PosdaDB::Queries->GetQueryInstance(
-  "InsertIntoDicomEditCompareFixed");
+  "InsertIntoDicomEditCompareIdempotent");
+
+# Reports repeat heavily across an edit run -- every file getting the same
+# treatment produces the same diff text -- so cache the imported file_id by
+# report digest. Correctness does not depend on this cache: file.digest is
+# unique and the importer resolves an existing digest to the same file_id,
+# which is why several workers can now do this concurrently.
 my %FileIdByDig;
+
+sub import_report {
+  my($text) = @_;
+  my $ctx = Digest::MD5->new;
+  $ctx->add($text);
+  my $dig = $ctx->hexdigest;
+  return $FileIdByDig{$dig} if exists $FileIdByDig{$dig};
+
+  my($fh, $path) = tempfile();
+  $fh->print($text);
+  my $cmd = "ImportSingleFileIntoPosdaAndReturnId.pl \"$path\" " .
+    "\"Difference report\"";
+  my $result = `$cmd`;
+  unlink $path;
+  if($result =~ /File id: (.*)/){
+    my $file_id = $1;
+    $FileIdByDig{$dig} = $file_id;
+    return $file_id;
+  }
+  return undef;
+}
+
 line:
 while(my $line = <STDIN>){
   chomp $line;
-#print STDERR "Received Compare Instructions: $line\n";
-  my($sop_inst, $from_file, $to_file) =
-    split(/\|/, $line);
-  my $f_try;
-  eval { $f_try = Posda::Try->new($from_file) };
-  if ($@){
-    print "Failed: $sop_inst|$from_file ($from_file => $to_file) failed to open\n";
+  my($sop_inst, $from_file, $to_file) = split(/\|/, $line);
+
+  my $r = Posda::EditCompare::compare($from_file, $to_file);
+
+  if($r->{Status} eq "Error"){
+    print "Failed: $sop_inst|$r->{message}\n";
     next line;
   }
-  unless(exists $f_try->{dataset}){
-    print "Failed: $sop_inst|$from_file is not a dicom file\n";
+  if($r->{Status} eq "Unchanged"){
+    # Reported exactly as before so the caller's counters are unaffected.
+    print "Failed: $sop_inst|$r->{message}\n";
     next line;
   }
-  my $t_try;
-  eval { $t_try = Posda::Try->new($to_file) };
-  if ($@){
-    print "Failed: $sop_inst|$to_file ($from_file => $to_file) failed to open\n";
+
+  my $s_rept_file_id = import_report($r->{short_report});
+  unless(defined $s_rept_file_id){
+    print "Failed: $sop_inst|Couldn't import short_rept into posda\n";
     next line;
   }
-  unless(exists $t_try->{dataset}){
-    print "Failed: $sop_inst|$to_file is not a dicom file\n";
+  my $l_rept_file_id = import_report($r->{long_report});
+  unless(defined $l_rept_file_id){
+    print "Failed: $sop_inst|Couldn't import long_rept into posda\n";
     next line;
   }
-  my $fds = $f_try->{dataset};
-  my $tds = $t_try->{dataset};
-  my $f_dig = $f_try->{digest};
-  my $t_dig = $t_try->{digest};
-  my $diff = Posda::DiffDicom->new($fds, $tds);
-  $diff->Analyze;
-  my($only_in_from, $only_in_to, $different) = 
-    $diff->SemiDiffReport;
-  my($s_rept, $l_rept) = 
-    $diff->ReportFromSemi($only_in_from, $only_in_to, $different);
-#  my($s_rept, $l_rept) = $diff->DiffReport;
-  if(length($s_rept) <= 0){
-    print "Failed: $sop_inst|no lines in short_rept\n";
-    next line;
-  }
-  if(length($l_rept) <= 0){
-      print "Failed: $sop_inst|no lines in long_rept\n";
-    next line;
-  }
-  my $ctx = Digest::MD5->new;
-  $ctx->add($s_rept);
-  my $s_rept_dig = $ctx->hexdigest;
-  my $ctx1 = Digest::MD5->new;
-  $ctx1->add($l_rept);
-  my $l_rept_dig = $ctx1->hexdigest;
-  my($s_rept_file_id, $l_rept_file_id);
-  if(exists $FileIdByDig{$s_rept_dig}){
-    $s_rept_file_id = $FileIdByDig{$s_rept_dig};
-  } else {
-    my($fhs, $short_rept) = tempfile();
-    $fhs->print($s_rept);
-    my $cmd = 
-      "ImportSingleFileIntoPosdaAndReturnId.pl \"$short_rept\" " .
-      "\"Difference report\"";
-    my $result = `$cmd`;
-    unlink $short_rept;
-    if($result =~ /File id: (.*)/){
-      $s_rept_file_id = $1;
-      $FileIdByDig{$s_rept_dig} = $s_rept_file_id;
-    } else {
-      print "Failed: $sop_inst|Couldn't import short_rept into posda\n";
-      next line;
-    }
-  }
-  if(exists $FileIdByDig{$l_rept_dig}){
-    $l_rept_file_id = $FileIdByDig{$l_rept_dig};
-  } else {
-    my($fhl, $long_rept) = tempfile();
-    $fhl->print($l_rept);
-    my $cmd = 
-      "ImportSingleFileIntoPosdaAndReturnId.pl \"$long_rept\" " .
-      "\"Difference report\"";
-    my $result = `$cmd`;
-    unlink $long_rept;
-    if($result =~ /File id: (.*)/){
-      $l_rept_file_id = $1;
-      $FileIdByDig{$l_rept_dig} = $l_rept_file_id;
-    } else {
-      print "Failed: $sop_inst|Couldn't import long_rept into posda\n";
-      next line;
-    }
-  }
+
   $ins->RunQuery(sub{}, sub{},
-    $invoc_id, $f_dig, $t_dig, $s_rept_file_id, $l_rept_file_id, $to_file);
+    $invoc_id, $r->{from_digest}, $r->{to_digest},
+    $s_rept_file_id, $l_rept_file_id, $to_file);
   print "Completed: $sop_inst|$from_file|" .
     "$to_file|$s_rept_file_id|$l_rept_file_id\n";
 }
