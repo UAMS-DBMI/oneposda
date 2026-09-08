@@ -32,6 +32,13 @@ COPY mirabelle /mirabelle
 RUN cd /mirabelle && \
   make build
 
+FROM oven/bun:1.3-alpine AS release-module-builder
+RUN apk --update add make
+COPY posda-release-module/ /posda-release-module
+RUN cd /posda-release-module && \
+  bun i && \
+  bun run build
+
 #FROM nginx:1.13.10-alpine
 #FROM bitnamilegacy/nginx:1.21
 # Change to an officialy supported nonroot image, pinned on nginx version
@@ -50,3 +57,4 @@ COPY --from=roots-builder /roots/dist/dicom-root /www/roots
 COPY --from=kohlrabi-builder /kohlrabi/build /www/kohlrabi
 #COPY --from=ohif/viewer:builder /usr/src/app/platform/viewer/dist /www/ohif
 COPY --from=mirabelle-builder /mirabelle/dist /www/mira
+COPY --from=release-module-builder /posda-release-module/dist /www/release

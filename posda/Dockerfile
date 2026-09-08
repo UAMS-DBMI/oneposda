@@ -77,6 +77,7 @@ RUN <<EOF
 set -e
 apt-get update
 apt-get install -y --no-install-recommends \
+	git \
 	time \
 	file \
 	vim \
