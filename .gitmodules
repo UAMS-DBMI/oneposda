@@ -7,3 +7,6 @@
 [submodule "web/mirabelle"]
 	path = web/mirabelle
 	url = git@github.com:quasarj/mirabelle.git
+[submodule "web/posda-release-module"]
+	path = web/posda-release-module
+	url = git@github.com:UAMS-DBMI/posda-release-module.git
