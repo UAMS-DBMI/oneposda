@@ -173,6 +173,35 @@ services:
         deploy:
             replicas: 1
 
+    ## Performs queued DICOM edits, comparisons and imports.
+    ## Unlike posda-worker-*, these take no arguments and find their own work in
+    ## the dicom_edit_task table, so scale them freely: raise replicas to go
+    ## faster, lower it to give the cluster back. Killing one is safe at any
+    ## time -- an unfinished file's lease expires and another worker redoes it,
+    ## and edited files are published with rename() so a partial file is never
+    ## visible. stop_grace_period gives SIGTERM time to finish the file in
+    ## flight and hand back anything else it had claimed.
+    posda-edit-worker:
+        image: tcia/posda:1.0.4
+        command: edit-worker
+        restart: always
+        stop_grace_period: 60s
+        depends_on:
+            - db
+            - redis
+        volumes:
+            - posda_cache_alpine:/home/posda/cache
+            - ./posda/posdatools:/home/posda/posdatools
+            - /mnt:/mnt
+            - /nas:/nas
+        env_file:
+            - database.env
+            - common.env
+            - nbia.env
+            - posda.env
+        deploy:
+            replicas: 2
+
     ## Service which performs DICOM file parsing and importing to the db
     posda-fast-file-process:
         image: tcia/posda:1.0.4

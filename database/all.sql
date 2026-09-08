@@ -50813,6 +50813,9 @@ curator	Status	30
 
 COPY dbif_config.spreadsheet_operation (operation_name, command_line, operation_type, input_line_format, tags, can_chain, outdated, worker_priority) FROM stdin;
 AnnotateTimeline	InsertListOfAnnotatedFiles.pl <?bkgrnd_id?> "<comment>" <notify>	background_process	<file_id>&<file_name>&<mime_type>&<description>	{activity_timepoints,send_series_via_dicom,bills_test}	\N	f	0
+BackgroundEditTpQ	BackgroundEditorTpQ.pl <?bkgrnd_id?> <activity_id> "<edit_description>" <notify>	background_process	<series_instance_uid>&<op>&<tag>&<val1>&<val2>	{activity_timepoints}	\N	f	1
+BuildEditTimepointTp	BuildEditTimepointTp.pl <?bkgrnd_id?> <activity_id> <subprocess_invoc_id> <notify>	background_process	\N	{edit_files}	\N	f	1
+EditReportsTp	EditReportsTp.pl <?bkgrnd_id?> <activity_id> <subprocess_invoc_id> <notify>	background_process	\N	{edit_files}	\N	f	1
 FindWhichSubprocessesCreatedTimepointByUser	FindWhichSubprocessesCreatedTimepointByUser.pl <?bkgrnd_id?> <activity_id> <user> <notify>	background_process	\N	{temp}	\N	f	0
 ConsolidateTimepoints	ConsolidateActivityTimepoints.py <?bkgrnd_id?> <activity_id> <notify>	background_process	<activity_timepoint_id>	{activity_timepoints}	\N	f	0
 SRPhiScanOp	SRPhiScan.pl <?bkgrnd_id?> <activity_id> <notify>	background_process		{"PHI report"}	\N	f	0
@@ -51725,6 +51728,20 @@ group by collection, site, subj_id, study_instance_uid, series_instance_uid
         ;
 
             insert into queries
+            values ('EditTaskStateCounts', 'select state, count(*) as num_tasks
+from dicom_edit_task
+where subprocess_invocation_id = ?
+group by state
+order by state
+', ARRAY['subprocess_invocation_id'], 
+                    ARRAY['state','num_tasks'], ARRAY['for_scripting','dicom_edit'], 'posda_files', 'Count edit tasks by state for one edit run.
+
+Replaces the in-memory counters the old single-process editor kept in its
+Editor object, so progress survives a restart and is the same regardless of
+which worker asks.')
+        ;
+
+            insert into queries
             values ('SeriesSentToIntakeByDate', 'select
   series_to_send as series_instance_uid,
   send_started, send_ended - send_started as duration,
@@ -51762,6 +51779,38 @@ insert into tiff_tag_value_occurrence (tiff_tag_seen_id,tiff_value_seen_id,tiff_
   source_pending_change_request = ''DbIf'',
   request_time = now()', '{}', 
                     '{}', ARRAY['NotInteractive','Backlog','Backlog Monitor'], 'posda_backlog', 'request a shutdown of Backlog processing')
+        ;
+
+            insert into queries
+            values ('ClaimEditTasks', 'update dicom_edit_task
+   set state         = ?,
+       worker_id     = ?,
+       attempts      = attempts + 1,
+       lease_expires = now() + (? * interval ''1 second''),
+       updated_at    = now()
+ where edit_task_id in (
+   select edit_task_id
+     from dicom_edit_task
+    where subprocess_invocation_id = ?
+      and ( state = ?
+            or ( state = ? and lease_expires < now() ) )
+    order by edit_task_id
+      for update skip locked
+    limit ?
+ )
+returning edit_task_id, sop_instance_uid, from_path, to_path,
+          edit_spec, from_file_digest, to_file_digest, from_file_id, attempts
+', ARRAY['new_state','worker_id','lease_seconds','subprocess_invocation_id','pending_state','stale_state','batch_size'], 
+                    ARRAY['edit_task_id','sop_instance_uid','from_path','to_path','edit_spec','from_file_digest','to_file_digest','from_file_id','attempts'], ARRAY['for_scripting','dicom_edit'], 'posda_files', 'Atomically claim a batch of edit tasks for one worker.
+
+FOR UPDATE SKIP LOCKED lets any number of workers claim disjoint batches
+concurrently without blocking each other. Rows already in stale_state whose
+lease_expires has passed are reclaimed by the same statement, so a worker
+killed with SIGKILL needs no reaper to recover its work.
+
+Must be run with FetchResults, not RunQuery: RunQuery decides select-mode by
+regex on the leading keyword and would return the row count instead of the
+RETURNING rows.')
         ;
 
             insert into queries
@@ -54938,6 +54987,43 @@ where study_instance_uid in (
 )', ARRAY['collection'], 
                     ARRAY['study_instance_uid','patient_id'], ARRAY['by_study','consistency','study_consistency'], 'posda_files', 'Find Inconsistent Studies
 ')
+        ;
+
+            insert into queries
+            values ('ActiveEditInvocations', 'select d.subprocess_invocation_id,
+       d.current_disposition,
+       count(*) filter (
+         where t.state in (''pending_edit'', ''pending_compare'', ''pending_import'')
+            or ( t.state in (''editing'', ''comparing'', ''importing'')
+                 and t.lease_expires < now() )
+       ) as num_ready
+from dicom_edit_task t
+join dicom_edit_compare_disposition d
+  on d.subprocess_invocation_id = t.subprocess_invocation_id
+where d.current_disposition in
+        (''Edits Planned'', ''Comparisons In Progress'', ''Importing Files'')
+group by d.subprocess_invocation_id, d.current_disposition
+order by d.subprocess_invocation_id
+', '{}', 
+                    ARRAY['subprocess_invocation_id','current_disposition','num_ready'], ARRAY['for_scripting','dicom_edit'], 'posda_files', 'Edit runs a worker should look at, oldest first.
+
+Workers take no arguments and find their own work here, so they can be scaled
+purely by replica count.
+
+The join against the disposition row is load-bearing, not decoration. While
+the planner is still streaming tasks in, the run sits at ''Starting Up'' and
+must be invisible: a worker that saw a partially-inserted task list could
+drain it, observe nothing pending, and declare the whole edit complete while
+the planner was still writing.
+
+Runs with num_ready = 0 are returned deliberately rather than filtered out.
+Such a run has no claimable work but has also not been advanced to its next
+disposition yet -- which is exactly the state left behind when the worker
+that finished the last file is killed before it can run the transition. If
+these were filtered out, nothing would ever notice them again and the run
+would hang at ''Comparisons In Progress'' forever. Workers skip the claim step
+when num_ready is 0 and just re-run the completion check, which is cheap and
+self-limiting: finalizing moves the run to a disposition not listed here.')
         ;
 
             insert into queries
@@ -59467,6 +59553,24 @@ group by series_instance_uid, dicom_file_type, modality
         ;
 
             insert into queries
+            values ('InsertIntoDicomEditCompareIdempotent', 'insert into dicom_edit_compare (
+  subprocess_invocation_id, from_file_digest, to_file_digest,
+  short_report_file_id, long_report_file_id, to_file_path
+) values ( ?, ?, ?, ?, ?, ? )
+on conflict (subprocess_invocation_id, from_file_digest) do update set
+  to_file_digest       = excluded.to_file_digest,
+  short_report_file_id = excluded.short_report_file_id,
+  long_report_file_id  = excluded.long_report_file_id,
+  to_file_path         = excluded.to_file_path
+', ARRAY['subprocess_invocation_id','from_file_digest','to_file_digest','short_report_file_id','long_report_file_id','to_file_path'], 
+                    '{}', ARRAY['for_scripting','dicom_edit'], 'posda_files', 'Upserting form of InsertIntoDicomEditCompareFixed.
+
+A compare can now run more than once for the same file, because a worker
+killed mid-compare has its task reclaimed and redone. The plain insert would
+add a second row and double-count that file in DifferenceReportByEditId.')
+        ;
+
+            insert into queries
             values ('ImportedFileNamesFromTimepoint', 'select
   distinct  digest, file_name
 from
@@ -61602,6 +61706,31 @@ where
   and active = true;
 ', ARRAY['from_patient_id'], 
                     ARRAY['from_patient_id','to_patient_id','to_patient_name','collection_name','site_name','batch_number','diagnosis_date','baseline_date','date_shift','uid_root','upload_id'], ARRAY['adding_ctp','for_scripting','non_dicom_phi','non_dicom_edit'], 'posda_files', 'Simple Phi Report with Meta Quotes')
+        ;
+
+            insert into queries
+            values ('BuildTimepointFromEditTasks', 'insert into activity_timepoint_file (activity_timepoint_id, file_id)
+select ?, f.file_id
+from (
+  select distinct coalesce(t.to_file_id, atf.file_id) as file_id
+    from activity_timepoint_file atf
+    left join dicom_edit_task t
+      on  t.subprocess_invocation_id = ?
+      and t.from_file_id             = atf.file_id
+      and t.state                    = ''imported''
+   where atf.activity_timepoint_id = ?
+) f
+', ARRAY['new_activity_timepoint_id','subprocess_invocation_id','old_activity_timepoint_id'], 
+                    '{}', ARRAY['for_scripting','dicom_edit','activity_timepoint_support'], 'posda_files', 'Populate a new activity timepoint from an old one, substituting edited files.
+
+Replaces the per-file Perl loop in ImportEditsTp.pl, which ran one insert AND
+one activity_task_status update for every file in the timepoint. Files that
+were edited come across as their edited file_id, everything else is carried
+over unchanged.
+
+The distinct matches the old loop''s source query (FilesInTimepoint selects
+distinct file_id) and additionally collapses the case where two source files
+edit to byte-identical content and therefore share one file_id.')
         ;
 
             insert into queries
@@ -64129,6 +64258,19 @@ order by subprocess_invocation_id desc
         ;
 
             insert into queries
+            values ('CompleteImportTask', 'update dicom_edit_task set
+  state         = ''imported'',
+  to_file_id    = ?,
+  worker_id     = null,
+  lease_expires = null,
+  error         = null,
+  updated_at    = now()
+where edit_task_id = ?
+', ARRAY['to_file_id','edit_task_id'], 
+                    '{}', ARRAY['for_scripting','dicom_edit'], 'posda_files', 'Record the imported file_id for an edited file and mark it imported.')
+        ;
+
+            insert into queries
             values ('CreateDciodvfyScanInstance', 'insert into dciodvfy_scan_instance(
   type_of_unit,
   description_of_scan,
@@ -65940,6 +66082,18 @@ where
         ;
 
             insert into queries
+            values ('FailEditTask', 'update dicom_edit_task set
+  state         = ?,
+  error         = ?,
+  worker_id     = null,
+  lease_expires = null,
+  updated_at    = now()
+where edit_task_id = ?
+', ARRAY['new_state','error','edit_task_id'], 
+                    '{}', ARRAY['for_scripting','dicom_edit'], 'posda_files', 'Move a task to a terminal failure state with its error text.')
+        ;
+
+            insert into queries
             values ('PixelTypesWithGeo', 'select
   distinct photometric_interpretation,
   samples_per_pixel,
@@ -65980,6 +66134,25 @@ where
 ', ARRAY['bits_allocated'], 
                     ARRAY['file_id','file','file_offset','size','bits_stored','bits_allocated','pixel_representation','number_of_frames','samples_per_pixel','pixel_rows','pixel_columns','photometric_interpretation','modality'], '{}', 'posda_files', 'Get pixel descriptors for all files
 ')
+        ;
+
+            insert into queries
+            values ('EditRunContext', 'select ats.activity_id,
+       bs.user_to_notify,
+       d.dest_dir,
+       d.import_event_id
+from dicom_edit_compare_disposition d
+left join activity_task_status ats
+  on ats.subprocess_invocation_id = d.subprocess_invocation_id
+left join background_subprocess bs
+  on bs.subprocess_invocation_id = d.subprocess_invocation_id
+where d.subprocess_invocation_id = ?
+', ARRAY['subprocess_invocation_id'], 
+                    ARRAY['activity_id','user_to_notify','dest_dir','import_event_id'], ARRAY['for_scripting','dicom_edit'], 'posda_files', 'The activity, notify target and temp directory of an edit run.
+
+A worker knows only the subprocess_invocation_id it picked up, but has to
+pass the activity and notify target on to the report and timepoint jobs it
+queues. Both were recorded when the planner created its background process.')
         ;
 
             insert into queries
@@ -70068,6 +70241,14 @@ order by when_created', ARRAY['activity_id'],
         ;
 
             insert into queries
+            values ('GetEditImportEvent', 'select import_event_id, dest_dir
+from dicom_edit_compare_disposition
+where subprocess_invocation_id = ?
+', ARRAY['subprocess_invocation_id'], 
+                    ARRAY['import_event_id','dest_dir'], ARRAY['for_scripting','dicom_edit'], 'posda_files', 'The import_event and temp directory for an edit run.')
+        ;
+
+            insert into queries
             values ('GetAllInboxItems', 'select
   user_inbox_content_id,
   background_subprocess_report_id,
@@ -73846,6 +74027,14 @@ order by subprocess_invocation_id desc
         ;
 
             insert into queries
+            values ('SetEditImportEvent', 'update dicom_edit_compare_disposition set
+  import_event_id = ?
+where subprocess_invocation_id = ?
+', ARRAY['import_event_id','subprocess_invocation_id'], 
+                    '{}', ARRAY['for_scripting','dicom_edit'], 'posda_files', 'Record the import_event the accept phase files its imports under.')
+        ;
+
+            insert into queries
             values ('FileExportForEvent', '
 select
   fe.file_id as file_id, ed.export_file_dispositions_params_id as null_if_no_disp_parms, 
@@ -74510,6 +74699,23 @@ where
         ;
 
             insert into queries
+            values ('ReleaseEditTask', 'update dicom_edit_task set
+  state         = ?,
+  worker_id     = null,
+  lease_expires = null,
+  attempts      = greatest(attempts - 1, 0),
+  updated_at    = now()
+where edit_task_id = ?
+', ARRAY['pending_state','edit_task_id'], 
+                    '{}', ARRAY['for_scripting','dicom_edit'], 'posda_files', 'Return a claimed but unstarted task to its pending state.
+
+Used on SIGTERM so a scaled-down worker hands work back immediately instead
+of making the next worker wait out the lease. The attempt is given back too:
+a graceful release is not a failed attempt and must not count against the
+poison-pill budget.')
+        ;
+
+            insert into queries
             values ('PosdaPublicDifferenceReportByEditId', 'select
   distinct short_report_file_id, long_report_file_id, count(distinct sop_instance_uid) as num_files
 from public_to_posda_file_comparison
@@ -74809,6 +75015,16 @@ order by
 ', ARRAY['sop_instance_uid'], 
                     ARRAY['collection','site','patient_id','sop_instance_uid','modality','file_id','file_path','num_uploads','first_upload','last_upload'], ARRAY['duplicates'], 'posda_files', 'Counts query by Collection, Site
 ')
+        ;
+
+            insert into queries
+            values ('EditTaskErrorsForEdit', 'select sop_instance_uid, state, attempts, error, from_path
+from dicom_edit_task
+where subprocess_invocation_id = ?
+  and state in (''edit_failed'', ''compare_failed'', ''import_failed'')
+order by sop_instance_uid
+', ARRAY['subprocess_invocation_id'], 
+                    ARRAY['sop_instance_uid','state','attempts','error','from_path'], ARRAY['for_scripting','dicom_edit'], 'posda_files', 'Tasks that ended in a failure state, for the errors report.')
         ;
 
             insert into queries
@@ -76573,6 +76789,15 @@ from
 where
   element_sig_pattern like ?', ARRAY['element_sig_pattern_like'], 
                     ARRAY['id','element_sig_pattern','vr','tag_name','disp'], ARRAY['DispositionReport','NotInteractive','used_in_reconcile_tag_names'], 'posda_phi_simple', 'Get Private Tags for making keep')
+        ;
+
+            insert into queries
+            values ('ExtendEditTaskLease', 'update dicom_edit_task set
+  lease_expires = now() + (? * interval ''1 second''),
+  updated_at    = now()
+where edit_task_id = ?
+', ARRAY['lease_seconds','edit_task_id'], 
+                    '{}', ARRAY['for_scripting','dicom_edit'], 'posda_files', 'Heartbeat a lease so a slow file is not reclaimed while in progress.')
         ;
 
             insert into queries
@@ -78953,6 +79178,22 @@ where gs.study_pk_id = s.study_pk_id
         ;
 
             insert into queries
+            values ('CompleteEditTask', 'update dicom_edit_task set
+  state            = ?,
+  from_file_digest = coalesce(?, from_file_digest),
+  to_file_digest   = coalesce(?, to_file_digest),
+  worker_id        = null,
+  lease_expires    = null,
+  error            = null,
+  updated_at       = now()
+where edit_task_id = ?
+', ARRAY['new_state','from_file_digest','to_file_digest','edit_task_id'], 
+                    '{}', ARRAY['for_scripting','dicom_edit'], 'posda_files', 'Advance a task to its next state and record the file digests.
+
+Clears the lease so the row is no longer reclaimable.')
+        ;
+
+            insert into queries
             values ('AddProcessCount', 'update round
   set process_count = ?
 where
@@ -79430,6 +79671,21 @@ group by patient_id, dicom_file_type, modality', '{}',
         ;
 
             insert into queries
+            values ('InsertEditTask', 'insert into dicom_edit_task (
+  subprocess_invocation_id, sop_instance_uid, from_file_id,
+  from_path, to_path, edit_spec
+) values ( ?, ?, ?, ?, ?, ?::jsonb )
+on conflict (subprocess_invocation_id, sop_instance_uid) do nothing
+returning edit_task_id
+', ARRAY['subprocess_invocation_id','sop_instance_uid','from_file_id','from_path','to_path','edit_spec'], 
+                    ARRAY['edit_task_id'], ARRAY['for_scripting','dicom_edit'], 'posda_files', 'Insert one file''s edit task for a distributed edit run.
+
+Returns no rows when the SOP is already present for this invocation, which is
+how the planner detects the same SOP appearing in two series without holding
+every SOP in memory. Also makes re-running the planner idempotent.')
+        ;
+
+            insert into queries
             values ('FinishActivityTaskStatus', 'update activity_task_status set
   status_text = ?,
   expected_remaining_time = null,
@@ -79805,6 +80061,22 @@ where
                     ARRAY['sop_instance_uid','ss_sop_instance_uid'], ARRAY['Structure Sets','sops','LinkageChecks'], 'posda_files', 'Get list of plan which reference unknown SOPs
 
 ')
+        ;
+
+            insert into queries
+            values ('UpdateEditProgressCounts', 'update dicom_edit_compare_disposition set
+  number_edits_scheduled        = ?,
+  number_compares_with_diffs    = ?,
+  number_compares_without_diffs = ?,
+  last_updated                  = now()
+where subprocess_invocation_id = ?
+', ARRAY['number_edits_scheduled','number_compares_with_diffs','number_compares_without_diffs','subprocess_invocation_id'], 
+                    '{}', ARRAY['for_scripting','dicom_edit'], 'posda_files', 'Update only the progress counters on a disposition row.
+
+Deliberately does NOT write current_disposition. UpdateDicomEditCompareDisposition
+sets it to ''Comparisons In Progress'' in the same statement, which races its own
+finalizer and can clobber a state that ImportEditsTp.pl just claimed via CAS.
+State transitions belong to Posda::EditStateChange::Trans and nothing else.')
         ;
 
             insert into queries
@@ -80238,6 +80510,18 @@ where
 group by
   patient_id, study_uid, series_uid, shift', ARRAY['collection'], 
                     ARRAY['patient_id','study_uid','series_uid','num_files','shift'], ARRAY['adding_ctp','for_scripting','non_dicom_phi','non_dicom_edit'], 'posda_files', 'Simple Phi Report with Meta Quotes')
+        ;
+
+            insert into queries
+            values ('EditTaskCountInStates', 'select count(*) as num_tasks
+from dicom_edit_task
+where subprocess_invocation_id = ?
+  and state = any (?::text[])
+', ARRAY['subprocess_invocation_id','states'], 
+                    ARRAY['num_tasks'], ARRAY['for_scripting','dicom_edit'], 'posda_files', 'Count tasks for one edit in any of the given states.
+
+states is a Postgres text array, e.g. ''{pending_edit,editing}''. Used for the
+"is this phase drained?" check that decides who advances the disposition.')
         ;
 
             insert into queries
@@ -82080,6 +82364,23 @@ where sop_instance_uid = ?', ARRAY['sop_instance_uid'],
         ;
 
             insert into queries
+            values ('SeedImportTasks', 'update dicom_edit_task set
+  state         = ''pending_import'',
+  attempts      = 0,
+  worker_id     = null,
+  lease_expires = null,
+  error         = null,
+  updated_at    = now()
+where subprocess_invocation_id = ?
+  and state = ''compared''
+', ARRAY['subprocess_invocation_id'], 
+                    '{}', ARRAY['for_scripting','dicom_edit'], 'posda_files', 'Queue every compared file for import in one statement.
+
+Resets attempts so a file that needed retries during the edit phase starts
+the import phase with a full poison-pill budget.')
+        ;
+
+            insert into queries
             values ('FileIdsOfDicomImportsBySourceWhichAreNotInActivityTimepoint', '
 select distinct file_id from (
 select 
@@ -82531,6 +82832,25 @@ where
                     ARRAY['file_id','import_time','size','path','alt_path'], ARRAY['activity_timepoint_support','manifests'], 'posda_files', 'Create An Activity Timepoint
 
 ')
+        ;
+
+            insert into queries
+            values ('OrphanToFilesForEdit', 'select t.to_file_id, t.from_file_id, t.sop_instance_uid
+from dicom_edit_task t
+where t.subprocess_invocation_id = ?
+  and t.state = ''imported''
+  and not exists (
+    select 1
+      from activity_timepoint_file atf
+     where atf.activity_timepoint_id = ?
+       and atf.file_id = t.from_file_id
+  )
+order by t.to_file_id
+', ARRAY['subprocess_invocation_id','old_activity_timepoint_id'], 
+                    ARRAY['to_file_id','from_file_id','sop_instance_uid'], ARRAY['for_scripting','dicom_edit'], 'posda_files', 'Edited files whose source file was not in the timepoint being replaced.
+
+The set the old code arrived at by deleting from %InverseConversionsInNewTimepoint
+as it walked the timepoint, and reported as an error spreadsheet if non-empty.')
         ;
 
             insert into queries

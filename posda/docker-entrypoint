@@ -28,6 +28,14 @@ worker() {
 	exec ./worker_start.sh
 }
 
+edit_worker() {
+	echo "Starting Posda Edit Worker...";
+	# Stateless: finds its own work in dicom_edit_task and takes no arguments,
+	# so this is scaled purely by replica count. Safe to kill at any time --
+	# see EditWorkerLoop.pl.
+	exec EditWorkerLoop.pl
+}
+
 file_process() {
 	echo "Starting Posda Fast File Process Daemon..."
 
@@ -79,6 +87,7 @@ help() {
   echo "main -- start the main Posda server"
   echo "api -- start the Posda API Server (python based)"
 	echo "worker -- start a Posda Worker node"
+  echo "edit-worker -- start a Posda Edit Worker (scale with replicas)"
   echo "file-process -- start the Posda File Process Daemon"
   echo "backlog-process -- start the Backlog Process Daemon"
 }
@@ -96,6 +105,10 @@ case "$1" in
 	  shift
 		worker
 		;;
+  edit-worker)
+    shift
+    edit_worker
+    ;;
   file-process)
     shift
 	file_process

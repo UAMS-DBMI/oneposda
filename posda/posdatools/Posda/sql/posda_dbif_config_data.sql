@@ -761,6 +761,9 @@ curator	Status	30
 
 COPY dbif_config.spreadsheet_operation (operation_name, command_line, operation_type, input_line_format, tags, can_chain, outdated, worker_priority) FROM stdin;
 AnnotateTimeline	InsertListOfAnnotatedFiles.pl <?bkgrnd_id?> "<comment>" <notify>	background_process	<file_id>&<file_name>&<mime_type>&<description>	{activity_timepoints,send_series_via_dicom,bills_test}	\N	f	0
+BackgroundEditTpQ	BackgroundEditorTpQ.pl <?bkgrnd_id?> <activity_id> "<edit_description>" <notify>	background_process	<series_instance_uid>&<op>&<tag>&<val1>&<val2>	{activity_timepoints}	\N	f	1
+BuildEditTimepointTp	BuildEditTimepointTp.pl <?bkgrnd_id?> <activity_id> <subprocess_invoc_id> <notify>	background_process	\N	{edit_files}	\N	f	1
+EditReportsTp	EditReportsTp.pl <?bkgrnd_id?> <activity_id> <subprocess_invoc_id> <notify>	background_process	\N	{edit_files}	\N	f	1
 FindWhichSubprocessesCreatedTimepointByUser	FindWhichSubprocessesCreatedTimepointByUser.pl <?bkgrnd_id?> <activity_id> <user> <notify>	background_process	\N	{temp}	\N	f	0
 ConsolidateTimepoints	ConsolidateActivityTimepoints.py <?bkgrnd_id?> <activity_id> <notify>	background_process	<activity_timepoint_id>	{activity_timepoints}	\N	f	0
 SRPhiScanOp	SRPhiScan.pl <?bkgrnd_id?> <activity_id> <notify>	background_process		{"PHI report"}	\N	f	0
