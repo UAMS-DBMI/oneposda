@@ -98,7 +98,7 @@ class Fixes:
 
     #: Use ON CONFLICT against the shared lookup tables instead of
     #: check-then-insert. Requires the unique indexes added by
-    #: Posda/sql/migrations/ingest_lookup_unique.sql.
+    #: database/migrations/posda_files/20260913_ingest_lookup_unique.sql.
     #: Without it, concurrent workers race: 3 of 4 slope_intercept rows in
     #: the dev database are duplicates.
     #: REQUIRES A SCHEMA MIGRATION.

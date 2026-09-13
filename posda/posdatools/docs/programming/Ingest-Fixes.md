@@ -85,10 +85,11 @@ and `window_level` 5 of which 3 were.
 The race scales with worker count, so this is the flag to plan for first if
 you intend to run `posda-file-worker` above five replicas.
 
-It needs the unique indexes from
-`Posda/sql/migrations/ingest_lookup_unique.sql`, which deduplicates the
-existing rows and remaps references before deleting. Run that **before**
-enabling the flag. `NULLS NOT DISTINCT` is load-bearing there — `si_units`
+It needs the unique indexes from the
+`database/migrations/posda_files/20260913_ingest_lookup_unique.sql`
+migration, which deduplicates the existing rows and remaps references
+before deleting. Apply it (`./migrate up posda_files`) **before** enabling
+the flag. `NULLS NOT DISTINCT` is load-bearing there — `si_units`
 and `win_lev_desc` are NULL on most rows, and under the default the
 constraint would prevent nothing. It needs PostgreSQL 15 or later.
 

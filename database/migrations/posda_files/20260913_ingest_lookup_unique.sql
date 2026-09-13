@@ -1,7 +1,6 @@
 -- Unique indexes for the ingest pipeline's shared lookup tables.
 --
--- SCHEMA CHANGE. Required by the posda.ingest lookup_upsert fix; not
--- applied automatically.
+-- Required by the posda.ingest lookup_upsert fix (POSDA_INGEST_FIX_LOOKUP_UPSERT).
 --
 -- These three tables are populated with check-then-insert and no unique
 -- constraint. With the production five workers running concurrently, two
@@ -14,10 +13,9 @@
 -- considered unique and the constraint would prevent nothing. It requires
 -- PostgreSQL 15 or later (the deployment runs 18).
 --
--- Deduplicate before creating the indexes, remapping any references first.
--- Run inside a transaction and check the row counts afterwards.
-
-begin;
+-- Deduplicates before creating the indexes, remapping any references first.
+-- ./migrate runs this in a single transaction, so a failure leaves nothing
+-- half-applied.
 
 -- slope_intercept ---------------------------------------------------------
 create temporary table si_map as
@@ -76,5 +74,3 @@ create unique index if not exists window_level_natural_key
 -- ever reaching it, so no deduplication step is needed here.
 create unique index if not exists unique_pixel_data_natural_key
   on unique_pixel_data (digest, size);
-
-commit;
