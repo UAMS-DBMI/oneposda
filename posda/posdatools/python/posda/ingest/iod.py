@@ -950,12 +950,16 @@ def import_dataset(
     description: str | None = None,
     import_event_id: object = None,
     handlers: dict[str, object] | None = None,
+    errors: list[str] | None = None,
 ) -> list[str]:
     """Port of ``Posda::DB::DicomIod::Import``.
 
     Returns the error strings that were written to ``dicom_process_errors``.
+    A caller may pass its own ``errors`` list to keep hold of whatever
+    accumulated before a handler crash -- the atomic worker writes those
+    rows after rolling the import back.
     """
-    errors: list[str] = []
+    errors = [] if errors is None else errors
     registry = handlers if handlers is not None else modules.HANDLERS
 
     _insert_ctp(db, values, file_id)

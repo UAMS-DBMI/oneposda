@@ -8,6 +8,7 @@ harness, which runs both implementations against real schemas.
 
 import io
 import re
+from contextlib import contextmanager
 
 import pytest
 from pydicom import dcmread
@@ -50,6 +51,17 @@ class FakeDb:
         key = self._next_key
         self._next_key += 1
         return key
+
+    @contextmanager
+    def transaction(self):
+        self.statements.append(("begin", []))
+        try:
+            yield
+        except BaseException:
+            self.statements.append(("rollback", []))
+            raise
+        else:
+            self.statements.append(("commit", []))
 
     def inserts_into(self, table):
         pattern = re.compile(rf"^insert into {table}\b")
@@ -147,7 +159,7 @@ class TestImagePixel:
     def test_small_pixel_data_populates_dedup_tables(self):
         # Only reachable with skip_large disabled, but the code path is the
         # one the fix in the follow-up commit will re-enable.
-        db = FakeDb(rows=[None, []])
+        db = FakeDb(rows=[None, {"unique_pixel_data_id": 5}, []])
         values = build(Rows=4, Columns=4, BitsAllocated=8, PixelData=bytes(16))
         values.skip_large = 0
         hist: dict = {}
@@ -169,13 +181,27 @@ class TestWindowLevel:
     def test_single_value_still_writes_because_dictionary_vm_boxes_it(self):
         # WindowCenter has dictionary VM 1-n, so a lone value arrives as a
         # list and the handler proceeds. A scalar here would drop the row.
-        db = FakeDb(rows=[None, None])
+        db = FakeDb(rows=[{"window_level_id": 5}, None])
         values = build(WindowCenter="45", WindowWidth="400")
         modules.window_level(db, values, 9, {"image_id": 100}, [])
         assert len(db.inserts_into("file_win_lev")) == 1
 
+    def test_lookup_is_a_race_free_upsert(self):
+        # The Perl's check-then-insert duplicated lookup rows under
+        # concurrency; the port always writes ON CONFLICT instead.
+        db = FakeDb(rows=[{"window_level_id": 5}, None])
+        values = build(WindowCenter="45", WindowWidth="400")
+        modules.window_level(db, values, 9, {"image_id": 100}, [])
+        assert any(
+            s.startswith("insert into window_level") and "on conflict" in s
+            for s, _ in db.statements
+        )
+        assert not any(
+            s.startswith("select * from window_level") for s, _ in db.statements
+        )
+
     def test_multiple_values_write_one_row_each(self):
-        db = FakeDb(rows=[None, None, None, None])
+        db = FakeDb(rows=[{"window_level_id": 1}, None, {"window_level_id": 2}, None])
         values = build(WindowCenter="45\\50", WindowWidth="400\\500")
         modules.window_level(db, values, 9, {"image_id": 100}, [])
         rows = db.inserts_into("file_win_lev")
@@ -190,7 +216,7 @@ class TestWindowLevel:
     def test_explanation_branch_reproduces_the_shadowed_loop_defect(self):
         # Two explanations means the inner loop runs twice over both values:
         # four file_win_lev rows for two window settings.
-        db = FakeDb(rows=[None] * 12)
+        db = FakeDb(rows=[{"window_level_id": 1}, None] * 4)
         values = build(
             WindowCenter="45\\50",
             WindowWidth="400\\500",
@@ -216,18 +242,33 @@ class TestSlopeIntercept:
         assert errors == ["no slope intercept for file 4"]
 
     def test_writes_lookup_and_links(self):
-        db = FakeDb(rows=[None, None])
+        db = FakeDb(rows=[{"slope_intercept_id": 5}, None])
         values = build(RescaleSlope="1", RescaleIntercept="-1024")
         modules.slope_intercept(db, values, 4, {"image_id": 11}, [])
         assert len(db.inserts_into("slope_intercept")) == 1
         assert len(db.inserts_into("image_slope_intercept")) == 1
         assert len(db.inserts_into("file_slope_intercept")) == 1
 
-    def test_reuses_an_existing_lookup_row(self):
+    def test_lookup_is_a_race_free_upsert(self):
+        # The Perl's check-then-insert duplicated lookup rows under
+        # concurrency; the port always writes ON CONFLICT instead.
+        db = FakeDb(rows=[{"slope_intercept_id": 7}, None])
+        values = build(RescaleSlope="1", RescaleIntercept="-1024")
+        modules.slope_intercept(db, values, 4, {"image_id": 11}, [])
+        assert any(
+            s.startswith("insert into slope_intercept") and "on conflict" in s
+            for s, _ in db.statements
+        )
+        assert not any(
+            s.startswith("select * from slope_intercept") for s, _ in db.statements
+        )
+
+    def test_reuses_an_existing_image_link(self):
+        # The upsert returns the surviving row's id; an image already linked
+        # to it gets no second image_slope_intercept row.
         db = FakeDb(rows=[{"slope_intercept_id": 77}, {"x": 1}])
         values = build(RescaleSlope="1", RescaleIntercept="-1024")
         modules.slope_intercept(db, values, 4, {"image_id": 11}, [])
-        assert db.inserts_into("slope_intercept") == []
         assert db.inserts_into("image_slope_intercept") == []
         ((_, params),) = db.inserts_into("file_slope_intercept")
         assert params[0] == 77

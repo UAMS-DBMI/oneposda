@@ -30,7 +30,7 @@ data:
   # needs a rollout restart of the workers to take effect. See
   # docs/programming/Ingest-Fixes.md before turning any of them on -- five
   # change row counts in tables that analyst queries read.
-  # POSDA_INGEST_FIX_LOOKUP_UPSERT: "1"
+  # POSDA_INGEST_FIX_ATOMIC_IMPORT: "1"
 ---
 # Replace with a real secret, or drop this and point the Deployments at
 # whatever already holds the database password in your cluster.

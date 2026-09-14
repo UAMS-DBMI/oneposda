@@ -246,11 +246,15 @@ def image_pixel(
             unique_pixel_data_id = existing["unique_pixel_data_id"]
             hist["already_existing_pixel_data"] = 1
         else:
-            unique_pixel_data_id = db.insert_returning(
-                "insert into unique_pixel_data (digest, size) values (%s, %s)",
+            # ON CONFLICT (requiring unique_pixel_data_natural_key) so two
+            # workers racing on the same pixel digest converge on one row.
+            unique_pixel_data_id = db.fetchone(
+                "insert into unique_pixel_data (digest, size) values (%s, %s)"
+                " on conflict (digest, size)"
+                " do update set digest = excluded.digest"
+                " returning unique_pixel_data_id",
                 [pixel_digest, pixel_size],
-                "unique_pixel_data_id",
-            )
+            )["unique_pixel_data_id"]
         if unique_pixel_data_id is not None:
             db.execute(
                 "insert into pixel_location"
@@ -413,41 +417,18 @@ def slope_intercept(
         errors.append(f"no slope intercept for file {file_id}")
         return
 
-    if fixes.ACTIVE.lookup_upsert:
-        si_id = db.fetchone(
-            "insert into slope_intercept (slope, intercept, si_units)"
-            " values (%s, %s, %s)"
-            " on conflict (slope, intercept, si_units)"
-            " do update set slope = excluded.slope"
-            " returning slope_intercept_id",
-            [slope, intercept, units],
-        )["slope_intercept_id"]
-        _link_slope_intercept(db, si_id, hist["image_id"], file_id)
-        return
-
-    if units is not None:
-        row = db.fetchone(
-            "select * from slope_intercept"
-            " where slope = %s and intercept = %s and si_units = %s",
-            [slope, intercept, units],
-        )
-    else:
-        row = db.fetchone(
-            "select * from slope_intercept"
-            " where slope = %s and intercept = %s and si_units is null",
-            [slope, intercept],
-        )
-
-    if row is not None:
-        si_id = row["slope_intercept_id"]
-    else:
-        si_id = db.insert_returning(
-            "insert into slope_intercept (slope, intercept, si_units)"
-            " values (%s, %s, %s)",
-            [slope, intercept, units],
-            "slope_intercept_id",
-        )
-
+    # Race-free lookup, requiring slope_intercept_natural_key. The Perl's
+    # check-then-insert let two concurrent workers both miss and both
+    # insert; ON CONFLICT collapses that into one row, DO UPDATE rather
+    # than DO NOTHING so the id comes back on the conflicting path too.
+    si_id = db.fetchone(
+        "insert into slope_intercept (slope, intercept, si_units)"
+        " values (%s, %s, %s)"
+        " on conflict (slope, intercept, si_units)"
+        " do update set slope = excluded.slope"
+        " returning slope_intercept_id",
+        [slope, intercept, units],
+    )["slope_intercept_id"]
     _link_slope_intercept(db, si_id, hist["image_id"], file_id)
 
 
@@ -528,44 +509,9 @@ def window_level(
 def _window_level_id(
     db: "Database", width: object, centre: object, explanation: object
 ) -> object:
-    if fixes.ACTIVE.lookup_upsert:
-        return _upsert_window_level(db, width, centre, explanation)
-
-    if explanation is not None:
-        row = db.fetchone(
-            "select * from window_level"
-            " where window_width = %s and window_center = %s"
-            " and win_lev_desc = %s",
-            [width, centre, explanation],
-        )
-        if row is not None:
-            return row["window_level_id"]
-        return db.insert_returning(
-            "insert into window_level (window_width, window_center, win_lev_desc)"
-            " values (%s, %s, %s)",
-            [width, centre, explanation],
-            "window_level_id",
-        )
-    row = db.fetchone(
-        "select * from window_level"
-        " where window_width = %s and window_center = %s and win_lev_desc is null",
-        [width, centre],
-    )
-    if row is not None:
-        return row["window_level_id"]
-    return db.insert_returning(
-        "insert into window_level (window_width, window_center) values (%s, %s)",
-        [width, centre],
-        "window_level_id",
-    )
-
-
-def _upsert_window_level(
-    db: "Database", width: object, centre: object, explanation: object
-) -> object:
     """Race-free lookup, requiring window_level_natural_key.
 
-    The check-then-insert above lets two concurrent workers both miss and
+    The Perl's check-then-insert let two concurrent workers both miss and
     both insert. ON CONFLICT collapses that into one row; DO UPDATE rather
     than DO NOTHING so the id comes back on the conflicting path too.
     """

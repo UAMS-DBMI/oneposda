@@ -14,8 +14,16 @@ tables that analyst queries read.
 Every defect here was confirmed against a real database, not inferred.
 
 See ``docs/programming/Ingest-Fixes.md`` for the operator-facing version:
-what each flag changes, which ones move row counts, and the migration
-``lookup_upsert`` depends on.
+what each flag changes and which ones move row counts.
+
+Two departures from the Perl are *not* flags. ``RtPatientSetup`` is fixed
+outright because reproducing it means reproducing a crash, and the shared
+lookup tables (``slope_intercept``, ``window_level``,
+``unique_pixel_data``) are always written with ``ON CONFLICT`` because the
+Perl's check-then-insert duplicates rows under concurrency. The upserts
+require the unique indexes from
+``database/migrations/posda_files/20260913_ingest_lookup_unique.sql``;
+without that migration applied they fail outright.
 """
 
 from __future__ import annotations
@@ -96,13 +104,18 @@ class Fixes:
     #: CHANGES ROW COUNTS in beam_general_accessory.
     beam_general_accessory: bool = False
 
-    #: Use ON CONFLICT against the shared lookup tables instead of
-    #: check-then-insert. Requires the unique indexes added by
-    #: database/migrations/posda_files/20260913_ingest_lookup_unique.sql.
-    #: Without it, concurrent workers race: 3 of 4 slope_intercept rows in
-    #: the dev database are duplicates.
-    #: REQUIRES A SCHEMA MIGRATION.
-    lookup_upsert: bool = False
+    #: Run each file's import as one transaction. The Perl works under
+    #: DBI's default AutoCommit, so a handler that dies partway leaves the
+    #: rows it already wrote -- and because is_dicom_file was committed
+    #: first, the file is never re-queued and sits partial forever. With
+    #: this on, a failure rolls the whole file back, then a follow-up
+    #: transaction records the accumulated dicom_process_errors plus the
+    #: crash reason and clears file.ready_to_process so the daemon does not
+    #: retry it into an infinite loop. Re-queue a repaired file by setting
+    #: ready_to_process back to true.
+    #: CHANGES FAILURE RESIDUE ONLY; successful imports commit the same
+    #: rows.
+    atomic_import: bool = False
 
     @classmethod
     def from_env(cls, environ: dict[str, str] | None = None) -> "Fixes":

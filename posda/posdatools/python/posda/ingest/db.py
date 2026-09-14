@@ -2,9 +2,11 @@
 
 Deliberately thin. The Perl workers run every statement under DBI's default
 AutoCommit, with no explicit transactions, so a file that fails partway
-through leaves the rows it already wrote. That is reproduced here: the port
-is being verified by exact row diff against the Perl, and wrapping each file
-in a transaction would change what lands in the database after an error.
+through leaves the rows it already wrote. That is reproduced by default:
+the port is verified by exact row diff against the Perl, and wrapping each
+file in a transaction changes what lands in the database after an error.
+The ``atomic_import`` fix (see ``posda.ingest.fixes``) opts a worker into
+per-file transactions via :meth:`Database.transaction`.
 
 Connection parameters come from the standard libpq environment
 (``PGHOST``/``PGUSER``/``PGPASSWORD``), which is how the containers are
@@ -15,6 +17,7 @@ configured and how ``Posda::Config::Database`` ends up connecting -- the
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from typing import Any, Iterator, Sequence
 
 import psycopg2
@@ -50,6 +53,26 @@ class Database:
     def __exit__(self, *exc: object) -> bool:
         self.close()
         return False
+
+    @contextmanager
+    def transaction(self) -> Iterator[None]:
+        """Run the enclosed statements as one transaction.
+
+        Autocommit is suspended for the scope: the first statement opens
+        the transaction, leaving the block commits it, and any exception
+        rolls the whole thing back before propagating. Not reentrant --
+        the pipeline has no nested-transaction need, so none is modelled.
+        """
+        self.connection.autocommit = False
+        try:
+            yield
+        except BaseException:
+            self.connection.rollback()
+            raise
+        else:
+            self.connection.commit()
+        finally:
+            self.connection.autocommit = True
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> None:
         with self.connection.cursor() as cur:

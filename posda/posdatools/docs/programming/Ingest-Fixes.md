@@ -6,10 +6,14 @@ be compared by exact row diff, and that comparison is what makes the cutover
 safe.
 
 Twelve defects were found while porting, all confirmed against a real
-database rather than inferred. Eleven of them are reproduced by default and
-corrected only when you ask, through the flags below. The twelfth
-(`RtPatientSetup`) is fixed outright, because reproducing it means
-reproducing a crash.
+database rather than inferred. Ten of them are reproduced by default and
+corrected only when you ask, through the flags below. Two are fixed
+outright, with no flag: `RtPatientSetup`, because reproducing it means
+reproducing a crash, and the lookup-table insert race, because reproducing
+it means duplicating rows under concurrency (see "Always on" below).
+
+One flag is not a defect correction at all: `ATOMIC_IMPORT` changes how a
+*failed* import lands, wrapping each file in a transaction.
 
 ## Sequencing
 
@@ -74,26 +78,55 @@ row or count.
 |---|---|
 | `PRESCRIPTION_ORGAN_AT_RISK_TAGS` | `RtPrescription` reads (300a,002b) into organ-at-risk limit dose, maximum dose *and* overdose volume fraction alike, so the last two currently carry the limit dose. The flag reads (300a,002c) and (300a,002d) instead. Existing `rt_prescription_dose_ref` rows keep the wrong values; only new rows differ. |
 
-## Requires a schema migration
+## Changes failure behaviour: `ATOMIC_IMPORT`
 
-`LOOKUP_UPSERT` replaces check-then-insert on `window_level`,
-`slope_intercept` and `unique_pixel_data` with `ON CONFLICT`. Without it the
-production five workers race: two can miss the same row and both insert it.
-In the dev database `slope_intercept` held 4 rows of which 1 was distinct,
-and `window_level` 5 of which 3 were.
+The Perl runs every statement under DBI's default AutoCommit. A handler
+that dies partway leaves the rows it already wrote — and because
+`dicom_file.is_dicom_file` is committed before the handlers run, the failed
+file drops out of the daemon's replenish query and sits partial forever.
+Nothing marks it failed, and re-processing it by hand duplicates rows,
+since most module tables carry no unique constraints.
 
-The race scales with worker count, so this is the flag to plan for first if
-you intend to run `posda-file-worker` above five replicas.
+With `ATOMIC_IMPORT` on, each file's import is one transaction:
 
-It needs the unique indexes from the
+- A **successful** import commits exactly the rows it would have written
+  anyway; the flag changes nothing.
+- A **failed** import rolls back completely — including the
+  `is_dicom_file` update. To keep the daemon from re-queueing the file into
+  an infinite retry loop, a follow-up step then records the
+  `dicom_process_errors` accumulated before the crash plus an
+  `import failed, rows rolled back: ...` row naming the exception, and
+  clears `file.ready_to_process`.
+
+To retry a file after fixing the cause, set `ready_to_process` back to
+true; the daemon picks it up on its next refill. Rows in
+`dicom_file_errors` (metaheader complaints) are not preserved across the
+rollback; they regenerate on retry.
+
+This flag only changes what a failure leaves behind, so the differential
+harness stays at zero differences as long as the corpus imports cleanly.
+
+## Always on: lookup upserts (requires a schema migration)
+
+The shared lookup tables `slope_intercept`, `window_level` and
+`unique_pixel_data` are written with `ON CONFLICT` rather than the Perl's
+check-then-insert. Under the production five workers, check-then-insert
+races: two workers can miss the same row and both insert it. In the dev
+database `slope_intercept` held 4 rows of which 1 was distinct, and
+`window_level` 5 of which 3 were. Single-threaded — which is how the
+differential harness runs — the two approaches produce identical rows, so
+this is not a flag.
+
+The upserts require the unique indexes from the
 `database/migrations/posda_files/20260913_ingest_lookup_unique.sql`
 migration, which deduplicates the existing rows and remaps references
-before deleting. Apply it (`./migrate up posda_files`) **before** enabling
-the flag. `NULLS NOT DISTINCT` is load-bearing there — `si_units`
+before deleting. Apply it (`./migrate up posda_files`) **before** running
+the Python workers: without the indexes, every `ON CONFLICT` statement
+fails outright. `NULLS NOT DISTINCT` is load-bearing there — `si_units`
 and `win_lev_desc` are NULL on most rows, and under the default the
 constraint would prevent nothing. It needs PostgreSQL 15 or later.
 
-## Fixed outright, no flag: `RtPatientSetup`
+## Always on: `RtPatientSetup`
 
 This handler crashes the Perl, so there is no working behaviour to preserve.
 Two independent fatal paths, both confirmed by running it:

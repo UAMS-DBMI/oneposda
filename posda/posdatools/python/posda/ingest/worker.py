@@ -80,10 +80,58 @@ def process_file(db: Database, job: FileJob) -> None:
         )
         return
 
-    _import_dicom(db, job, result)
+    if fixes.ACTIVE.atomic_import:
+        _import_dicom_atomic(db, job, result)
+    else:
+        _import_dicom(db, job, result)
 
 
-def _import_dicom(db: Database, job: FileJob, result: ParseResult) -> None:
+def _import_dicom_atomic(db: Database, job: FileJob, result: ParseResult) -> None:
+    """Import one file as a single transaction.
+
+    On failure everything the file wrote is rolled back -- including the
+    is_dicom_file update, which under autocommit is what strands a failed
+    file partial and unqueued forever. A rolled-back file would then be
+    re-queued by the daemon indefinitely, so a follow-up autocommit step
+    records why it failed and clears ready_to_process to take it out of
+    the replenish query. Re-queue a repaired file by setting
+    ready_to_process back to true.
+    """
+    process_errors: list[str] = []
+    try:
+        with db.transaction():
+            _import_dicom(db, job, result, process_errors)
+    except Exception as exc:
+        _record_rolled_back_import(db, job.file_id, process_errors, exc)
+        raise
+
+
+def _record_rolled_back_import(
+    db: Database, file_id: int, process_errors: list[str], exc: Exception
+) -> None:
+    """Preserve the evidence a rollback would otherwise destroy."""
+    for error in process_errors:
+        db.execute(
+            "insert into dicom_process_errors (file_id, error_msg)"
+            " values (%s, %s)",
+            [file_id, error],
+        )
+    db.execute(
+        "insert into dicom_process_errors (file_id, error_msg) values (%s, %s)",
+        [file_id, f"import failed, rows rolled back: {type(exc).__name__}: {exc}"],
+    )
+    db.execute(
+        "update file set ready_to_process = false where file_id = %s",
+        [file_id],
+    )
+
+
+def _import_dicom(
+    db: Database,
+    job: FileJob,
+    result: ParseResult,
+    process_errors: list[str] | None = None,
+) -> None:
     errors: list[str] = []
     has_meta = False
     media_storage_sop_class = None
@@ -145,6 +193,7 @@ def _import_dicom(db: Database, job: FileJob, result: ParseResult) -> None:
             job.file_id,
             str(sop_class),
             dicom_file_type,
+            errors=process_errors,
         )
 
 

@@ -154,14 +154,14 @@ class TestWindowLevelDuplication:
         modules.window_level(db, values, 9, {"image_id": 100}, [])
 
     def test_n_squared_by_default(self):
-        db = FakeDb(rows=[None] * 12)
+        db = FakeDb(rows=[{"window_level_id": 1}, None] * 4)
         self._run(db)
         rows = db.inserts_into("file_win_lev")
         assert [p[2] for _, p in rows] == [0, 1, 0, 1]
 
     def test_one_row_per_value_when_enabled(self, enable):
         enable(window_level_duplication=True)
-        db = FakeDb(rows=[None] * 12)
+        db = FakeDb(rows=[{"window_level_id": 1}, None] * 4)
         self._run(db)
         rows = db.inserts_into("file_win_lev")
         assert [p[2] for _, p in rows] == [0, 1]
@@ -170,7 +170,7 @@ class TestWindowLevelDuplication:
         # These take the else branch, which never had the defect.
         for flags in ({}, {"window_level_duplication": True}):
             enable(**flags)
-            db = FakeDb(rows=[None] * 8)
+            db = FakeDb(rows=[{"window_level_id": 1}, None] * 2)
             values = build(WindowCenter="45\\50", WindowWidth="400\\500")
             modules.window_level(db, values, 9, {"image_id": 100}, [])
             assert [p[2] for _, p in db.inserts_into("file_win_lev")] == [0, 1]
@@ -197,44 +197,79 @@ class TestLoadLargeValues:
         enable(load_large_values=True)
         values = build(Rows=4, Columns=4, BitsAllocated=8, PixelData=bytes(300))
         values.skip_large = 0
-        db = FakeDb(rows=[None, []])
+        db = FakeDb(rows=[None, {"unique_pixel_data_id": 1}, []])
         modules.image_pixel(db, values, 3, {}, [])
         assert len(db.inserts_into("unique_pixel_data")) == 1
         assert len(db.inserts_into("pixel_location")) == 1
 
 
-class TestLookupUpsert:
-    def test_check_then_insert_by_default(self):
-        db = FakeDb(rows=[None, None])
-        values = build(WindowCenter="45", WindowWidth="400")
-        modules.window_level(db, values, 9, {"image_id": 100}, [])
-        selects = [
-            s for s, _ in db.statements if s.startswith("select * from window_level")
-        ]
-        assert len(selects) == 1
-        assert not any("on conflict" in s for s, _ in db.statements)
+class ExplodingDb(FakeDb):
+    """A FakeDb that raises on the first statement matching a fragment."""
 
-    def test_upsert_when_enabled(self, enable):
-        enable(lookup_upsert=True)
-        db = FakeDb(rows=[{"window_level_id": 5}, None])
-        values = build(WindowCenter="45", WindowWidth="400")
-        modules.window_level(db, values, 9, {"image_id": 100}, [])
+    def __init__(self, explode_on, **kwargs):
+        super().__init__(**kwargs)
+        self.explode_on = explode_on
+
+    def execute(self, sql, params=()):
+        if self.explode_on in sql:
+            raise RuntimeError("boom")
+        super().execute(sql, params)
+
+
+class TestAtomicImport:
+    def _process(self, tmp_path, db, **attrs):
+        path = write_dicom(tmp_path, **attrs)
+        worker.process_file(db, FileJob(42, path))
+
+    def test_partial_rows_survive_by_default(self, tmp_path):
+        # The Perl's autocommit behaviour: everything before the failing
+        # statement stays, nothing marks the file failed.
+        db = ExplodingDb("insert into file_study", rows=[[]] * 20)
+        with pytest.raises(RuntimeError):
+            self._process(tmp_path, db)
+        assert not any(s == "begin" for s, _ in db.statements)
+        assert len(db.inserts_into("file_patient")) == 1
+        assert not any("ready_to_process" in s for s, _ in db.statements)
+
+    def test_failure_rolls_back_and_poisons_the_file(self, tmp_path, enable):
+        enable(atomic_import=True)
+        db = ExplodingDb("insert into file_study", rows=[[]] * 20)
+        with pytest.raises(RuntimeError):
+            self._process(tmp_path, db)
+
+        statements = [s for s, _ in db.statements]
+        assert "begin" in statements and "rollback" in statements
+        # Everything after the rollback is the follow-up recording step.
+        after = db.statements[statements.index("rollback") + 1 :]
         assert any(
-            s.startswith("insert into window_level") and "on conflict" in s
-            for s, _ in db.statements
+            s.startswith("insert into dicom_process_errors")
+            and "rows rolled back" in p[1]
+            for s, p in after
         )
-        assert not any(
-            s.startswith("select * from window_level") for s, _ in db.statements
+        assert ("update file set ready_to_process = false where file_id = %s",
+                [42]) in after
+
+    def test_accumulated_errors_survive_the_rollback(self, tmp_path, enable):
+        # Patient runs before the exploding Study insert and complains about
+        # the bad birth date; that complaint must still reach
+        # dicom_process_errors after the rollback discards its first write.
+        enable(atomic_import=True)
+        db = ExplodingDb("insert into file_study", rows=[[]] * 20)
+        with pytest.raises(RuntimeError):
+            self._process(tmp_path, db, PatientBirthDate="bad")
+
+        statements = [s for s, _ in db.statements]
+        after = db.statements[statements.index("rollback") + 1 :]
+        assert any(
+            s.startswith("insert into dicom_process_errors") and "Bad date" in p[1]
+            for s, p in after
         )
 
-    def test_slope_intercept_upsert_when_enabled(self, enable):
-        enable(lookup_upsert=True)
-        db = FakeDb(rows=[{"slope_intercept_id": 7}, None])
-        values = build(RescaleSlope="1", RescaleIntercept="-1024")
-        modules.slope_intercept(db, values, 4, {"image_id": 11}, [])
-        assert any(
-            s.startswith("insert into slope_intercept") and "on conflict" in s
-            for s, _ in db.statements
-        )
-        ((_, params),) = db.inserts_into("file_slope_intercept")
-        assert params == [7, 4]
+    def test_success_commits_and_does_not_poison(self, tmp_path, enable):
+        enable(atomic_import=True)
+        db = FakeDb(rows=[[]] * 20)
+        self._process(tmp_path, db)
+        statements = [s for s, _ in db.statements]
+        assert "commit" in statements and "rollback" not in statements
+        assert not any("ready_to_process" in s for s in statements)
+        assert len(db.inserts_into("dicom_file")) == 1

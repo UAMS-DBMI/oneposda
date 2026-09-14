@@ -3,9 +3,9 @@
 # only through BRPOP on the shared "files" list, so replicas is the
 # concurrency knob and nothing needs to know how many there are.
 #
-# Before going much above five replicas, read the LOOKUP_UPSERT section of
-# docs/programming/Ingest-Fixes.md. The shared lookup tables are populated
-# check-then-insert, and that race gets worse with every worker you add.
+# The shared lookup tables are written with ON CONFLICT, so scaling up does
+# not race them -- but that requires the ingest_lookup_unique migration; see
+# the "Always on" section of docs/programming/Ingest-Fixes.md.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

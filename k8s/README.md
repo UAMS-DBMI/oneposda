@@ -75,7 +75,8 @@ that costs more on the pixel tier than the file tier.
 `POSDA_INGEST_TICK` in the ConfigMap control the daemon's refill loop; the
 defaults (1000 / 10s / 1s) are the Perl's. The `POSDA_INGEST_FIX_*` flags
 are documented in `posda/posdatools/docs/programming/Ingest-Fixes.md` —
-`LOOKUP_UPSERT` is the one to consider before running many file workers.
+`ATOMIC_IMPORT` is the one to consider first: it stops a failed file
+leaving partial rows behind.
 
 All of these are read once at startup, so a ConfigMap edit needs
 `kubectl rollout restart deploy/<name>` to take effect.
