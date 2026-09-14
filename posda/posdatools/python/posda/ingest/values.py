@@ -349,10 +349,22 @@ class ParsedValues:
             return None
         if _is_skipped(raw, vr, self.skip_large):
             return None
-        value = raw.value if isinstance(raw, RawDataElement) else raw.value
+        value = raw.value
         if not isinstance(value, bytes):
-            # Already-converted element (e.g. one pydicom eagerly decoded).
-            return value
+            if vr != "SQ" and getattr(raw, "is_empty", False):
+                # A zero-length element in an implicit-VR file: pydicom
+                # stores its raw value as None (the VR is unknown at read
+                # time), and Dataset.get_item routes value-None elements
+                # through the converting __getitem__, which hands back
+                # PersonName("")/""/None instead of bytes. Re-decode from
+                # the empty byte string Posda's parser saw, so implicit and
+                # explicit files produce identical values and no pydicom
+                # type reaches the database driver.
+                value = b""
+            else:
+                # Genuinely converted element -- an undefined-length SQ,
+                # which dcmread parses eagerly.
+                return value
         vm = declared[0] if declared is not None else _dictionary_vm(tag)
         return decode_value(value, vr, vm, sig, self.errors)
 

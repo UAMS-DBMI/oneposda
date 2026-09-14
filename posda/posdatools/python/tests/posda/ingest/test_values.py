@@ -15,7 +15,11 @@ from pydicom import dcmread
 from pydicom.dataelem import RawDataElement
 from pydicom.dataset import Dataset, FileMetaDataset
 from pydicom.tag import Tag
-from pydicom.uid import CTImageStorage, ExplicitVRLittleEndian
+from pydicom.uid import (
+    CTImageStorage,
+    ExplicitVRLittleEndian,
+    ImplicitVRLittleEndian,
+)
 
 from posda.ingest.values import SKIP_LARGE, DicomValueError, ParsedValues, unpad
 
@@ -39,6 +43,23 @@ def build(**attrs) -> Dataset:
 
 def values_for(**attrs) -> ParsedValues:
     return ParsedValues(build(**attrs))
+
+
+def build_implicit(**attrs) -> Dataset:
+    """Like build(), but written as implicit VR little endian."""
+    ds = Dataset()
+    ds.file_meta = FileMetaDataset()
+    ds.file_meta.TransferSyntaxUID = ImplicitVRLittleEndian
+    ds.file_meta.MediaStorageSOPClassUID = CTImageStorage
+    ds.file_meta.MediaStorageSOPInstanceUID = "1.2.3.4"
+    ds.SOPClassUID = CTImageStorage
+    ds.SOPInstanceUID = "1.2.3.4"
+    for key, value in attrs.items():
+        setattr(ds, key, value)
+    buf = io.BytesIO()
+    ds.save_as(buf, implicit_vr=True, little_endian=True, enforce_file_format=True)
+    buf.seek(0)
+    return dcmread(buf, force=True)
 
 
 class TestArrayness:
@@ -118,6 +139,46 @@ class TestSkipLarge:
         values = values_for(StudyDescription="X" * 300)
         values.skip_large = 0
         assert values.get("(0008,1030)") == "X" * 300
+
+
+class TestZeroLengthImplicitVR:
+    """Zero-length elements in implicit-VR files must decode like explicit.
+
+    pydicom stores a zero-length implicit-VR element as a RawDataElement
+    whose value is None (the VR is unknown at read time), and
+    Dataset.get_item converts those on access -- handing back PersonName("")
+    for a PN, which psycopg2 cannot bind. The shim re-decodes such elements
+    from the empty byte string instead.
+    """
+
+    def test_empty_pn_is_a_plain_str(self):
+        got = ParsedValues(build_implicit(PatientName="")).get("(0010,0010)")
+        assert got == ""
+        assert type(got) is str
+
+    def test_empty_pn_matches_explicit_vr(self):
+        implicit = ParsedValues(build_implicit(PatientName="")).get("(0010,0010)")
+        explicit = values_for(PatientName="").get("(0010,0010)")
+        assert implicit == explicit
+
+    def test_empty_multi_vm_text_matches_explicit_vr(self):
+        # WindowCenter is VM 1-n: both syntaxes must yield the same list,
+        # because WindowLevel branches on list-ness.
+        implicit = ParsedValues(build_implicit(WindowCenter=None)).get("(0028,1050)")
+        explicit = values_for(WindowCenter=None).get("(0028,1050)")
+        assert implicit == explicit == [""]
+
+    def test_empty_numeric_matches_explicit_vr(self):
+        implicit_errors: list[str] = []
+        implicit_values = ParsedValues(
+            build_implicit(Rows=None), errors=implicit_errors
+        )
+        explicit_errors: list[str] = []
+        explicit_values = ParsedValues(build(Rows=None), errors=explicit_errors)
+        assert implicit_values.get("(0028,0010)") == explicit_values.get(
+            "(0028,0010)"
+        )
+        assert implicit_errors == explicit_errors
 
 
 class TestLookup:
