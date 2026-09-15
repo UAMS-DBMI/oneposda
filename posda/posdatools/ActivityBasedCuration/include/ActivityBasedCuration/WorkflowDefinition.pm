@@ -19,6 +19,11 @@ use vars qw(@ActivityCategories %WorkflowQueries);
         caption => "Find files In Timepoint Not In Public",
         action =>  "FilesInTpNotInPublic",
       },
+      {
+        operation => "InvokeNewOperation",
+        caption => "Create Timepoint From Import Event Id",
+        action =>  "CreateTimepointFromImportEventId",
+      },
     #  {
     #    operation => "ConsolidateVisualReview",
     #    caption =>"ConsolidateVisualReview",
