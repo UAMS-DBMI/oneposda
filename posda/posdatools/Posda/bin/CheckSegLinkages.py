@@ -65,7 +65,6 @@ class SegLinkageChecker(LinkageChecker):
         self.create_edit_skeleton()
         print(DIVIDER)
         background.finish("Process complete")
-        print(DIVIDER)
 
 
 def parse_args():
