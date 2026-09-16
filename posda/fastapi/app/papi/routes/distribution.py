@@ -8,6 +8,7 @@ import csv
 import hashlib
 import httpx
 import io
+from html.parser import HTMLParser
 import os
 import re
 import secrets
@@ -18,7 +19,8 @@ from . import importer
 from ..util import Database
 from ..util.models import File, consistent
 from ..util.wp import (
-    wp_get, wp_patch, wp_url, wp_client, wp_upload_media, wp_edit_url, WP_TYPE_MAP,
+    wp_get, wp_get_paged, wp_patch, wp_url, wp_client, wp_upload_media, wp_edit_url,
+    format_citation, format_license, WP_TYPE_MAP,
 )
 
 FILE_STORAGE_PATH = os.getenv("FILE_STORAGE_PATH", "/home/posda/cache/created")
@@ -5172,13 +5174,204 @@ async def upsert_transfer_idc(
     return item_response(record[0])
 
 
+def _is_set(value) -> bool:
+    """WordPress serializes an unset ACF field as the literal string "False".
+
+    24 of the 925 downloads in CM carry it for data_license, and 908 for
+    supporting_data. Without this it ships to IDC as a license or a supporting
+    data type literally named "False".
+    """
+    return bool(value) and str(value) not in ("False", "0")
+
+
+class _TextExtractor(HTMLParser):
+    """Collect the text of an HTML fragment, dropping the markup.
+
+    stdlib rather than a regex: this handles character references and
+    attributes containing '>' correctly. convert_charrefs (the default) turns
+    &amp; into & for us.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        # Block-level boundaries are word boundaries -- without this, text on
+        # either side of a paragraph break runs together.
+        if tag in ("p", "br", "div", "li", "tr"):
+            self.parts.append(" ")
+
+    handle_startendtag = handle_starttag
+
+
+def _strip_html(value) -> str:
+    """WordPress stores rich text as HTML; the manifests are plain CSV."""
+    if not value:
+        return ""
+    parser = _TextExtractor()
+    parser.feed(str(value))
+    parser.close()
+    # \xa0 is a non-breaking space, not whitespace to re.sub's \s in bytes
+    # terms -- normalize it before collapsing runs.
+    return re.sub(r"\s+", " ", "".join(parser.parts).replace("\xa0", " ")).strip()
+
+
+async def _transfer_recordset_downloads(transfer_id: int, db: Database) -> list[dict]:
+    """The CM download objects for the recordsets a transfer carries.
+
+    Best effort, same as the clinical manifest: CM may not be live when a
+    transfer is prepared, and a recordset may not be WP-mapped yet. A missing
+    download contributes nothing rather than failing the manifest.
+    """
+    link_rows = await db.fetch(
+        """
+        select wom.wp_object_id
+        from transfer_recordset tr
+        join recordset_release rr using (recordset_release_id)
+        join wp_object_map wom
+          on wom.posda_object_type = 'recordset'
+         and wom.wp_object_type = 'download'
+         and wom.posda_object_id = rr.recordset_id
+        where tr.dataset_release_transfer_id = $1
+        """,
+        [transfer_id],
+    )
+
+    downloads = []
+    for link in link_rows:
+        try:
+            item = await wp_get(f"{wp_url('Download')}/{link['wp_object_id']}")
+        except Exception:
+            item = None
+        if item:
+            downloads.append(item)
+    return downloads
+
+
+async def _transfer_supporting_data(transfer_id: int, db: Database) -> str:
+    """The distinct supporting data types across a transfer's CM downloads.
+
+    supporting_data is a per-download field, not a collection-level one -- the
+    collection's own value is the unset-ACF literal "False" on every collection
+    checked, which is what was shipping to IDC. On a download it is either that
+    same "False" or a list of labels like ["Clinical"].
+
+    Sorted, because the CSV is content-addressed by MD5 and an unstable order
+    would fork the file on every regeneration.
+    """
+    labels = set()
+    for item in await _transfer_recordset_downloads(transfer_id, db):
+        value = item.get("supporting_data")
+        if not _is_set(value):
+            continue
+        for entry in (value if isinstance(value, list) else [value]):
+            if isinstance(entry, dict):
+                entry = entry.get("name") or entry.get("slug") or entry.get("title")
+            if _is_set(entry):
+                labels.add(str(entry))
+    return "|".join(sorted(labels))
+
+
+async def _transfer_licenses(transfer_id: int, db: Database) -> dict[str, str]:
+    """Resolve the dataset manifest's license triple for a transfer.
+
+    Licensing is WordPress's to own -- recordset_license was dropped 2026-09-01,
+    so there is no license column in Posda any more. WordPress carries it per
+    *download*, as `data_license`: a plain string naming a License post, not a
+    relation. So the chain is recordset -> wp_object_map -> download ->
+    data_license -> License post.
+
+    Scoped to the recordsets this transfer carries, not the whole collection, so
+    the manifest describes what this package actually ships.
+
+    Multiple distinct licenses are pipe-joined and stay index-aligned across the
+    three fields, matching how cancer_types/species/program already handle
+    multi-value. Sorted, because the CSV is content-addressed by MD5 and an
+    unstable order would fork the file on every regeneration.
+    """
+    recordset_rows = await db.fetch(
+        """
+        select distinct rs.recordset_id
+        from transfer_recordset tr
+        join recordset_release rr using (recordset_release_id)
+        join recordset rs         using (recordset_id)
+        where tr.dataset_release_transfer_id = $1
+        """,
+        [transfer_id],
+    )
+    if not recordset_rows:
+        return {"license_url": "", "license_long_name": "", "license_short_name": ""}
+
+    link_rows = await db.fetch(
+        """
+        select wp_object_id
+        from wp_object_map
+        where posda_object_type = 'recordset'
+          and wp_object_type = 'download'
+          and posda_object_id = any($1::int[])
+        """,
+        [[r["recordset_id"] for r in recordset_rows]],
+    )
+
+    # Best effort, same as the clinical manifest: CM may not be live when a
+    # transfer is prepared, and a recordset may not be WP-mapped yet. A missing
+    # download contributes no license rather than failing the manifest.
+    names = set()
+    for link in link_rows:
+        try:
+            item = await wp_get(f"{wp_url('Download')}/{link['wp_object_id']}")
+        except Exception:
+            item = None
+        name = (item or {}).get("data_license")
+        # An unset ACF field serializes as the literal string "False", not null
+        # -- 24 of the 925 downloads in CM carry it. Without this it would ship
+        # to IDC as a license named "False".
+        if name and str(name) not in ("False", "0"):
+            names.add(str(name))
+
+    if not names:
+        return {"license_url": "", "license_long_name": "", "license_short_name": ""}
+
+    # format_license flattens the raw WP post: title arrives as
+    # {"rendered": "CC BY 4.0"}, so matching against the raw item silently never
+    # matches and leaves every url/long name blank.
+    try:
+        licenses = [format_license(lic) for lic in await wp_get_paged(wp_url("License"))]
+    except Exception:
+        licenses = []
+
+    # data_license holds the License post's title. license_label is a coarser
+    # policy grouping -- five of the nine licenses share "NIH Controlled Data
+    # Access Policy" -- so it is the long name, never the match key.
+    by_title = {str(lic.get("title")): lic for lic in licenses if lic.get("title")}
+
+    urls, long_names, short_names = [], [], []
+    for name in sorted(names):
+        lic = by_title.get(name) or {}
+        # An unmatched string still names the license honestly; only the fields
+        # that genuinely require the WP post are left blank.
+        short_names.append(name)
+        long_names.append(str(lic.get("license_label") or ""))
+        urls.append(str(lic.get("license_url") or ""))
+
+    return {
+        "license_url":        "|".join(urls),
+        "license_long_name":  "|".join(long_names),
+        "license_short_name": "|".join(short_names),
+    }
+
+
 @router.post("/transfers/{transfer_id}/idc/dataset-manifest/generate")
 async def generate_idc_dataset_manifest(transfer_id: int, db: Database = Depends()):
     # Resolve transfer → dataset_release → dataset
     rows = await db.fetch(
         """
         select drt.dataset_release_id, dr.dataset_id,
-               dr.release_number, dr.release_date
+               dr.release_number, dr.release_date, dr.release_doi
         from dataset_release_transfer drt
         join dataset_release dr using (dataset_release_id)
         where drt.dataset_release_transfer_id = $1
@@ -5192,6 +5385,7 @@ async def generate_idc_dataset_manifest(transfer_id: int, db: Database = Depends
     dataset_id         = rows[0]["dataset_id"]
     release_number     = rows[0]["release_number"]
     release_date       = rows[0]["release_date"]
+    release_doi        = rows[0]["release_doi"]
 
     # Find the WP object mapped to this dataset
     wp_rows = await db.fetch(
@@ -5255,21 +5449,44 @@ async def generate_idc_dataset_manifest(transfer_id: int, db: Database = Depends
         doi        = _str(wp_item.get("result_doi"))
         abstract   = _str(wp_item.get("result_abstract"))
 
-    citations_raw = wp_item.get("citations")
-    if isinstance(citations_raw, list):
-        citation = "|".join(
-            c.get("tcia_citation_statement") or c.get("tcia_citation_text") or ""
-            for c in citations_raw
-            if isinstance(c, dict) and c.get("citation_type") == "Data Citation"
+    # The collection's `citations` is a list of Citation post *ids*, not embedded
+    # objects -- so each has to be fetched. The previous code tested
+    # `c.get("citation_type")` on those ints, which no int satisfies, so citation
+    # silently came out empty for every dataset. The field is also
+    # `tcia_citation_type`, not `citation_type`.
+    citation_parts = []
+    for cid in (wp_item.get("citations") or []):
+        if isinstance(cid, dict):        # already embedded -- use as-is
+            cit = cid
+        else:
+            try:
+                raw = await wp_get(f"{wp_url('Citation')}/{cid}")
+            except Exception:
+                raw = None
+            cit = format_citation(raw) if raw else None
+        if not cit or cit.get("tcia_citation_type") != "Data Citation":
+            continue
+        # statement is the curated one-liner; it is empty on every citation
+        # checked, so text is the practical source.
+        text = _strip_html(
+            cit.get("tcia_citation_statement") or cit.get("tcia_citation_text")
         )
-    else:
-        citation = _str(citations_raw)
+        if text:
+            citation_parts.append(text)
+    citation = "|".join(citation_parts)
+
+    licenses = await _transfer_licenses(transfer_id, db)
+    supporting_data = await _transfer_supporting_data(transfer_id, db)
 
     manifest_row = {
         "post_id":              wp_item.get("id", ""),
         "dataset_slug":         _str(wp_item.get("slug")),
         "dataset_type":         _str(wp_item.get("type")),
         "dataset_doi":          doi,
+        # The DOI for this specific version, distinct from the collection DOI
+        # above. TCIA-sourced datasets carry TCIA's versioned DOI here; it is
+        # optional, so a release without one emits an empty cell.
+        "dataset_version_doi":  _str(release_doi),
         "dataset_short_name":   short_name,
         "dataset_title":        title,
         "dataset_status":       status,
@@ -5280,13 +5497,21 @@ async def generate_idc_dataset_manifest(transfer_id: int, db: Database = Depends
         "dataset_version":      str(release_number),
         "dataset_version_date": release_date.date().isoformat() if release_date else "",
         "dataset_url":          _str(wp_item.get("view_url")),
+        # Deliberately blank: the tooltip's only source was the NBIA API
+        # (getCollectionDescriptions), and we are eliminating our use of NBIA.
+        # It has not been rehomed yet, so the column ships empty rather than
+        # absent -- IDC parses a fixed header, and a missing column is a
+        # breaking change where an empty cell is not.
+        "dataset_tooltip":      "",
         "cancer_types":         _pipe(wp_item.get("cancer_types")),
-        "supporting_data":      _pipe(wp_item.get("supporting_data")),
+        # Per-download, not per-collection -- see _transfer_supporting_data.
+        "supporting_data":      supporting_data,
         "species":              _pipe(wp_item.get("species")),
         "cancer_locations":     _pipe(wp_item.get("cancer_locations")),
         "program":              _pipe(wp_item.get("program")),
         "abstract":             abstract,
         "citation":             citation,
+        **licenses,
     }
 
     # The bucket path anchors every relative path in the imaging and clinical
