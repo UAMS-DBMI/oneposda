@@ -3405,8 +3405,58 @@ sub ActivityOperations{
       }
       $http->queue("</ul>");
     }
+    if ($i->{operation_picker}){
+      $self->DrawOperationPicker($http);
+    }
     $http->queue('</blockquote></div>');
   }
+}
+
+sub DrawOperationPicker{
+  my($self, $http) = @_;
+  my $input_id = "operation_picker_name";
+  my $list_id = "operation_picker_list";
+  $http->queue(qq{
+    <p> Operation: </p>
+    <input type="text" id="$input_id" list="$list_id" class="form-control"
+      placeholder="Type or choose an operation name" autocomplete="off">
+    <datalist id="$list_id">
+  });
+  for my $name (sort keys %{$self->{Commands}}){
+    $http->queue("<option value=\"$name\">");
+  }
+  $http->queue("</datalist>");
+  my $args = "'operation=' + " .
+    "encodeURIComponent(document.getElementById('$input_id').value)";
+  $http->queue(qq{
+    <input type="button" id="btn_launch_named_operation"
+      class="btn btn-default" style="margin-top: 5px;"
+      value="Launch Operation"
+      onClick="javascript:PosdaGetRemoteMethod('InvokeNamedOperation',
+        $args, function () { Update(); });">
+  });
+}
+
+sub InvokeNamedOperation{
+  my($self, $http, $dyn) = @_;
+  my $operation = $dyn->{operation};
+  $operation = "" unless defined $operation;
+  $operation =~ s/^\s+|\s+$//g;
+  if($operation eq ""){
+    $self->QueueJsCmd("alert('Please enter or select an operation name.');");
+    return;
+  }
+  unless(defined $self->GetOperationDescription($operation)){
+    my $safe_name = $operation;
+    $safe_name =~ s/[^A-Za-z0-9_.-]//g;
+    $self->QueueJsCmd("alert('Unknown operation: $safe_name');");
+    return;
+  }
+  return $self->InvokeNewOperation($http, {
+    operation => $operation,
+    caption => $operation,
+    special => "",
+  });
 }
 
 sub LaunchUploadToEventWindow{

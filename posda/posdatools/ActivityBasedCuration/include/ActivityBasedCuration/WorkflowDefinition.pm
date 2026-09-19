@@ -623,6 +623,16 @@ This step should not be needed if your data was imported through CTP",
   #     },
   #   ],
   # },
+  {
+    id => "99_any_operation",
+    name => "Launch Any Operation",
+    note => "Use this when the operation you need does not have a dedicated " .
+      "button in one of the sections above.",
+    description => "Open the Process Operation Popup for any operation " .
+      "defined in the system.  Start typing to filter the list, or pick an " .
+      "operation from the dropdown, then click Launch.",
+    operation_picker => 1,
+  },
 );
 
 %WorkflowQueries = (
