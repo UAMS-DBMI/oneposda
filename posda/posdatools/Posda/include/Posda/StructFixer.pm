@@ -2,6 +2,14 @@ package Posda::StructFixer;
 use strict;
 use Posda::Try;
 Posda::Dataset::InitDD();
+#
+# Tolerance for the "is this image axial?" test in CheckImagGeo.
+# IOP components are direction cosines, so this is effectively an angle:
+# 1e-4 is about 0.006 degrees, far below any real tilt, but large enough to
+# absorb scanner/anonymizer rounding (e.g. a third component written as
+# -0.00002359 rather than exactly 0).
+#
+our $IopAxialTolerance = 1e-4;
 ####################################################
 #   Build Data Stuctures:
 #
@@ -66,14 +74,14 @@ sub GetImagSop{
 sub CheckImagGeo{
   my($this) = @_;
   for my $i (keys %{$this->{ImgsByUid}}){
-    my @iop = map { sprintf("%.8f", $_) } split /\\/, $this->{ImgsByUid}->{$i}->{iop};
+    my @iop = split /\\/, $this->{ImgsByUid}->{$i}->{iop};
     if (
-      $iop[0] == 1 and
-      $iop[1] == 0 and
-      $iop[2] == 0 and
-      $iop[3] == 0 and
-      $iop[4] == 1 and
-      $iop[5] == 0
+      abs($iop[0] - 1) < $IopAxialTolerance and
+      abs($iop[1])     < $IopAxialTolerance and
+      abs($iop[2])     < $IopAxialTolerance and
+      abs($iop[3])     < $IopAxialTolerance and
+      abs($iop[4] - 1) < $IopAxialTolerance and
+      abs($iop[5])     < $IopAxialTolerance
     ){
       my($x, $y, $z) = split /\\/, $this->{ImgsByUid}->{$i}->{ipp};
       my $file = $this->{ImgsByUid}->{$i}->{file};
@@ -81,8 +89,8 @@ sub CheckImagGeo{
       $this->{ImgsByFile}->{$file} = $i;
       $this->{ImgsByUid}->{$i}->{z} = $z;
     } else {
-      my $msg = "Image ($i) is not axial ($iop[0], $iop[1], " .
-        "$iop[2], $iop[3], $iop[4], $iop[5])";
+      my $msg = "Image ($i) is not axial (" .
+        join(", ", map { sprintf("%.8f", $_) } @iop) . ")";
       $this->{errors}->{$msg} = 1;
     }
   }
