@@ -17,7 +17,7 @@ everything:
 	make -C nopperabo
 
 test:
-	echo "There are no tests yet :("
+	python -m pytest posda/fastapi/tests -q
 
 .PHONY: push
 push:
