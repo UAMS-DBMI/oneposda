@@ -1,5 +1,7 @@
 last_built
 docker-compose.yaml
+__pycache__/
+*.pyc
 ream.env
 common.env
 database.env

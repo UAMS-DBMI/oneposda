@@ -1,5 +1,5 @@
 #!/bin/bash
-export POSDA_IMG_VERSION=1.0.3
+source ./VERSION
 
 echo "Setting up your environment..."
 
