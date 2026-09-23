@@ -2,15 +2,10 @@ description = """
 This is a complete listing of the Posda API.
 This API is used internally by Posda and its various applications,
 and can also be used by you.
-
-## Test
-this is just a *test*.
-
-_this is some italics_
-
 """
 import os
 import sys
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, APIRouter
 from fastapi.middleware.gzip import GZipMiddleware
 import asyncio
@@ -89,32 +84,35 @@ tags_metadata = [
 ]
 
 
-app = FastAPI(
-    title="PosdaAPI",
-    description=description,
-    version="0.1",
-    root_path="/papi",
-    openapi_tags=tags_metadata,
-)
-
-app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=9)
-
-
 def handle_sigterm(*_):
     print("SIGTERM received, shutting down...")
     # Exit immediately.
     # TODO: Do some nice cleanup, like disconnect from DB at least
     sys.exit(0)
 
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(_: FastAPI):
     print(20*"#", "database connecting")
     await db.setup(database='posda_files')
     print(20*"#", "database connected")
 
     # hook SIGTERM so we can shutdown quickly
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     loop.add_signal_handler(signal.SIGTERM, handle_sigterm)
+    yield
+
+
+app = FastAPI(
+    title="PosdaAPI",
+    description=description,
+    version="0.1",
+    root_path="/papi",
+    openapi_tags=tags_metadata,
+    lifespan=lifespan,
+)
+
+app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=9)
+
 
 router_v1 = APIRouter()
 router_v1.include_router(wadors.router, prefix="/wadors")

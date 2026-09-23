@@ -19,14 +19,14 @@ def flush_pool():
     for i, conn in POOL.items():
         try:
             conn.close()
-        except:
+        except Exception:
             pass
     POOL = {}
 
     for i, conn in MYPOOL.items():
         try:
             conn.close()
-        except:
+        except Exception:
             pass
     MYPOOL = {}
 
@@ -99,11 +99,12 @@ class PostgresDatabase(BaseDatabase):
     def __str__(self):
         return f"<posda.database.PostgresDatabase: {self.name}>"
 
+    @staticmethod
     def _get_connection_from_pool(dbname):
         if dbname not in POOL:
             POOL[dbname] = psycopg2.connect(
                 # TODO: this needs to handle the full dsn!
-                f"dbname={dbname}", 
+                f"dbname={dbname}",
                 cursor_factory=NamedTupleCursor)
             POOL[dbname].autocommit = True
 
@@ -112,7 +113,7 @@ class PostgresDatabase(BaseDatabase):
 
     def connection(self):
         self._connection = \
-            PostgresDatabase._get_connection_from_pool(self.dsn['database'])
+            self._get_connection_from_pool(self.dsn['database'])
 
         return self._connection
 
