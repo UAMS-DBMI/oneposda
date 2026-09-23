@@ -69,6 +69,7 @@ RUN apt-get update && apt-get install -y \
 	file \
 	vim \
 	libperl-dev \
+	build-essential \
 	wget \
 	libssl-dev \
 	python3 \
@@ -116,7 +117,8 @@ RUN apt-get update && apt-get install -y \
 # Perl modules that are not in system repositories
 RUN cpanm --notest \
 				   K/KE/KEN/xls2csv-1.07.tar.gz \
-				   HTTP::Request::StreamingUpload
+				   HTTP::Request::StreamingUpload \
+				   Crypt::Bcrypt
 
 
 # Install needed python utils

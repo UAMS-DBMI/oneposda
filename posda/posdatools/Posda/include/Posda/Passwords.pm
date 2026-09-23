@@ -2,6 +2,7 @@ package Posda::Passwords;
 
 use Modern::Perl '2010';
 use Digest::SHA 'sha256_base64';
+use Crypt::Bcrypt qw(bcrypt bcrypt_check);
 
 sub make_salt {
   my ($len) = @_;
@@ -18,10 +19,15 @@ sub make_salt {
   return $result;
 }
 
+sub make_bcrypt_salt {
+  my $octets = "";
+  $octets .= chr(int(rand(256))) for 1..16;
+  return $octets;
+}
+
 sub encode {
   my ($password) = @_;
-  my $salt = make_salt();
-  return _encode($salt, $password);
+  return bcrypt($password, '2b', 12, make_bcrypt_salt());
 }
 
 sub _encode {
@@ -31,6 +37,11 @@ sub _encode {
 
 sub is_valid {
   my ($enc_password, $candidate_password) = @_;
+
+  if ($enc_password =~ /^\$2[abxy]\$/) {
+    return bcrypt_check($candidate_password, $enc_password);
+  }
+
   my ($salt, $text) = split(',', $enc_password);
 
   my $new_text = _encode($salt, $candidate_password);
@@ -40,6 +51,11 @@ sub is_valid {
   } else {
     return 0;
   }
+}
+
+sub needs_rehash {
+  my ($enc_password) = @_;
+  return $enc_password !~ /^\$2[abxy]\$/ ? 1 : 0;
 }
 
 1;

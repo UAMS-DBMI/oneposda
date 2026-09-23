@@ -8,7 +8,7 @@ import os
 import logging
 
 from ..util import Database
-from ..util.password import is_valid
+from ..util.password import is_valid, needs_rehash, encode
 from ..util.redisqueue import get_redis_connection
 
 router = APIRouter(
@@ -131,6 +131,14 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(),
     if not is_valid(user.hashed_password, form_data.password):
         raise HTTPException(status_code=400,
                             detail="Incorrect username or password")
+
+    # Rehash legacy (salted SHA-256) passwords to bcrypt on successful login
+    if needs_rehash(user.hashed_password):
+        new_hash = encode(form_data.password)
+        await db.execute(
+            "update auth.users set password = $1 where user_name = $2",
+            [new_hash, form_data.username],
+        )
 
     # return a token if everything was good
     access_token = str(uuid.uuid4())

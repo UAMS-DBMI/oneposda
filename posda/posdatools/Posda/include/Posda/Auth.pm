@@ -46,7 +46,22 @@ sub db_auth {
   $stmt->finish;
   $dbh->disconnect;
 
-  return Posda::Passwords::is_valid($correct_pass, $password);
+  return 0 unless Posda::Passwords::is_valid($correct_pass, $password);
+
+  if (Posda::Passwords::needs_rehash($correct_pass)) {
+    my $new_pass = Posda::Passwords::encode($password);
+    my $upd_dbh = DBI->connect(Database('posda_files'));
+    my $upd = $upd_dbh->prepare(qq{
+      update auth.users
+      set password = ?
+      where user_name = ?
+    });
+    $upd->execute($new_pass, $username);
+    $upd->finish;
+    $upd_dbh->disconnect;
+  }
+
+  return 1;
 }
 
 # submit login request to api, return token if successful
