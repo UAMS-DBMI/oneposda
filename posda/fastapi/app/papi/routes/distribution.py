@@ -8,6 +8,7 @@ import csv
 import hashlib
 import httpx
 import io
+import mimetypes
 from html.parser import HTMLParser
 import os
 import re
@@ -4967,9 +4968,10 @@ async def update_dataset_release_transfer(
     # settled yet, and the upload cannot be recalled once it begins.
     if payload.transfer_status == "queued":
         parent = await db.fetch_one(
-            """select dr.release_status
+            """select dr.release_status, td.destination_abbr
                from dataset_release_transfer drt
                join dataset_release dr using (dataset_release_id)
+               join transfer_destination td using (destination_id)
                where drt.dataset_release_transfer_id = $1""",
             [transfer_id],
         )
@@ -5072,6 +5074,11 @@ async def update_dataset_release_transfer(
 
     if not record:
         api_error("NOT_FOUND", "Dataset release transfer not found", {"transfer_id": transfer_id}, 404)
+
+    # WordPress has no daemon: queueing it does the work here, after the commit
+    # above, and settles the status to success or failed before returning.
+    if payload.transfer_status == "queued" and parent["destination_abbr"] == "wp":
+        return item_response(await run_wp_transfer(transfer_id, db))
 
     return item_response(record)
 
@@ -6867,6 +6874,222 @@ async def attach_transfer_recordset_manifest(
         "uploaded": uploaded,
         "attached": attached,
     })
+
+
+# --------------------------------WORDPRESS TRANSFER--------------------------------------
+
+def wp_download_size(size_bytes: int) -> tuple[str, str]:
+    """download_size / download_size_unit as WordPress stores them.
+
+    Mirrors convert_bytes in the wiki-migration tooling (wp_tools): the field
+    holds a pre-converted string, 1000-based, floored at 1 kb. There is no
+    separate display conversion, so what is stored is what is shown -- and a
+    page last written with 1024-based sizes will visibly change when refreshed."""
+    units = ["kb", "mb", "gb", "tb"]
+    size = max(1.0, size_bytes / 1000.0)
+    unit_index = 0
+    while size >= 1000 and unit_index < len(units) - 1:
+        size /= 1000.0
+        unit_index += 1
+    return f"{size:.2f}", units[unit_index]
+
+
+async def deliver_wp_recordset(transfer_id: int, recordset_release_id: int, db: Database) -> dict:
+    """Put a recordset release's data file on its WordPress download page.
+
+    The same flow as manifest/attach with the release's own file in place of a
+    retriever manifest: upload to the media library unless those bytes are
+    already there, point download_file at the attachment, and record it in
+    transfer_recordset.download_file_id. Also refreshes the page's size fields,
+    which describe the file rather than the page.
+
+    A download page holds exactly one download_file, so a release with any
+    other file count is refused rather than guessed at. Idempotent: a re-run
+    against a page that is already current changes nothing."""
+    rows = await db.fetch(
+        """
+        select
+            r.recordset_id,
+            r.recordset_name,
+            td.destination_abbr,
+            m.map_id,
+            m.wp_object_id as download_post_id,
+            (select count(*) from recordset_release_file rrf
+             where rrf.recordset_release_id = tr.recordset_release_id) as file_count
+        from transfer_recordset tr
+        join dataset_release_transfer drt using (dataset_release_transfer_id)
+        join transfer_destination td using (destination_id)
+        join recordset_release rr on rr.recordset_release_id = tr.recordset_release_id
+        join recordset r on r.recordset_id = rr.recordset_id
+        left join wp_object_map m
+               on m.posda_object_type = 'recordset'
+              and m.posda_object_id = r.recordset_id
+              and m.wp_object_type = 'download'
+        where tr.dataset_release_transfer_id = $1
+          and tr.recordset_release_id = $2
+        """,
+        [transfer_id, recordset_release_id],
+    )
+    if not rows:
+        api_error("NOT_FOUND", "Transfer recordset not found",
+                  {"transfer_id": transfer_id, "recordset_release_id": recordset_release_id}, 404)
+
+    row = rows[0]
+    if row["destination_abbr"] != "wp":
+        api_error(
+            "VALIDATION_ERROR",
+            "Only a WordPress transfer delivers files to a download page.",
+            {"transfer_id": transfer_id, "destination_abbr": row["destination_abbr"]},
+            422,
+        )
+    if row["file_count"] != 1:
+        api_error(
+            "VALIDATION_ERROR",
+            f"'{row['recordset_name']}' has {row['file_count']} files -- a WordPress "
+            "download page holds exactly one.",
+            {"recordset_id": row["recordset_id"], "file_count": row["file_count"]},
+            422,
+        )
+    if row["download_post_id"] is None:
+        api_error(
+            "VALIDATION_ERROR",
+            f"'{row['recordset_name']}' has no WordPress download page -- link it in Setup first.",
+            {"recordset_id": row["recordset_id"]},
+            422,
+        )
+
+    file_rows = await db.fetch(
+        """
+        select f.file_id, f.size,
+               -- Same fallback the IDC paths use; non-DICOM files normally
+               -- carry their import name here.
+               coalesce(rrf.file_name, f.file_id::text) as file_name
+        from recordset_release_file rrf
+        join file f using (file_id)
+        where rrf.recordset_release_id = $1
+        """,
+        [recordset_release_id],
+    )
+    file = file_rows[0]
+
+    # The original name, since that is what a user downloads. Not a dedup key --
+    # ensure_wp_media dedups by file_id.
+    content_type = mimetypes.guess_type(file["file_name"])[0] or "application/octet-stream"
+    media_id, uploaded = await ensure_wp_media(db, file["file_id"], file["file_name"], content_type)
+
+    await db.execute(
+        """
+        update transfer_recordset set download_file_id = $1
+        where dataset_release_transfer_id = $2 and recordset_release_id = $3
+        """,
+        [file["file_id"], transfer_id, recordset_release_id],
+    )
+
+    try:
+        post = await wp_get(f"{wp_url('Download')}/{row['download_post_id']}")
+    except Exception as e:
+        api_error("WP_ERROR", f"Could not read the WordPress download page: {type(e).__name__}: {e}", {}, 500)
+    if post is None:
+        api_error(
+            "NOT_FOUND",
+            f"The WordPress download page (id={row['download_post_id']}) no longer exists.",
+            {"recordset_id": row["recordset_id"]},
+            404,
+        )
+
+    # download_file reads back as the attachment post with a *string* ID and
+    # writes as a bare int -- compared as text, as in manifest/attach.
+    current = post.get("download_file")
+    current_id = current.get("ID") if isinstance(current, dict) else current
+    changes = {}
+    if str(current_id) != str(media_id):
+        changes["download_file"] = media_id
+    if file["size"] is not None:
+        size, unit = wp_download_size(file["size"])
+        if post.get("download_size") != size or post.get("download_size_unit") != unit:
+            changes["download_size"] = size
+            changes["download_size_unit"] = unit
+
+    if changes:
+        try:
+            await wp_patch(f"{wp_url('Download')}/{row['download_post_id']}", changes)
+        except httpx.HTTPStatusError as e:
+            api_error("WP_ERROR", f"WordPress rejected the change: {e.response.text}", {}, e.response.status_code)
+        except Exception as e:
+            api_error("WP_ERROR", f"Could not reach WordPress: {type(e).__name__}: {e}", {}, 500)
+        await db.execute(
+            "update wp_object_map set when_synced = now() where map_id = $1",
+            [row["map_id"]],
+        )
+
+    return {
+        "recordset_id": row["recordset_id"],
+        "recordset_name": row["recordset_name"],
+        "file_id": file["file_id"],
+        "wp_media_id": media_id,
+        "download_post_id": row["download_post_id"],
+        # False/False is a success: the page already carried this file.
+        "uploaded": uploaded,
+        "attached": "download_file" in changes,
+    }
+
+
+@router.post("/transfers/{transfer_id}/recordsets/{recordset_release_id}/wp/deliver")
+# Deliver one recordset of a WordPress transfer -- a retry for a single page
+# without re-running the whole transfer. Does not change transfer_status.
+async def deliver_transfer_recordset_wp(
+    transfer_id: int,
+    recordset_release_id: int,
+    db: Database = Depends()):
+    return item_response(await deliver_wp_recordset(transfer_id, recordset_release_id, db))
+
+
+async def run_wp_transfer(transfer_id: int, db: Database) -> dict:
+    """Deliver every recordset in a WordPress transfer and settle its status.
+
+    In-process rather than through the transfer daemon: the API already holds
+    the WordPress credentials and every helper, and one small file per
+    recordset needs no queue. Called after the queue transition commits, so no
+    database transaction is held open across WordPress calls.
+
+    Every recordset is attempted even when an earlier one fails, so one broken
+    page does not strand the rest. The transfer is `success` only if all of
+    them delivered, which is what releases the IDC clinical-manifest gate
+    (_wp_precedence_block). Safe to re-queue: delivery is a no-op for anything
+    already in place."""
+    rows = await db.fetch(
+        """
+        select recordset_release_id from transfer_recordset
+        where dataset_release_transfer_id = $1
+        order by recordset_release_id
+        """,
+        [transfer_id],
+    )
+
+    results = []
+    for row in rows:
+        recordset_release_id = row["recordset_release_id"]
+        try:
+            delivered = await deliver_wp_recordset(transfer_id, recordset_release_id, db)
+            results.append({"recordset_release_id": recordset_release_id, "ok": True, **delivered})
+        except HTTPException as e:
+            results.append({
+                "recordset_release_id": recordset_release_id,
+                "ok": False,
+                "error": e.detail["error"]["message"],
+            })
+
+    status = "success" if all(r["ok"] for r in results) else "failed"
+    record = await db.fetch(
+        """
+        update dataset_release_transfer
+        set transfer_status = $1, when_updated = now()
+        where dataset_release_transfer_id = $2
+        returning *
+        """,
+        [status, transfer_id],
+    )
+    return {**dict(record[0]), "wp_delivery": results}
 
 
 # NOTE:
