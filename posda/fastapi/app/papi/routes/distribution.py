@@ -181,11 +181,6 @@ class TransferNbiaUpdate(BaseModel):
     published: Optional[bool] = None
     public: Optional[bool] = None
 
-class TransferWpUpdate(BaseModel):
-    wp_media_file_id: Optional[int] = None
-    published: Optional[bool] = None
-    public: Optional[bool] = None
-
 class TransferReleaseRecordsetRequest(BaseModel):
     recordset_release_ids: list[int]
 
@@ -6387,42 +6382,6 @@ async def upsert_transfer_nbia(transfer_id: int, payload: TransferNbiaUpdate, db
     return item_response(record[0])
 
 
-@router.get("/transfers/{transfer_id}/wp")
-async def get_transfer_wp(transfer_id: int, db: Database = Depends()):
-    query = """\
-        select dataset_release_transfer_id, wp_media_file_id, published, public
-        from transfer_wp
-        where dataset_release_transfer_id = $1
-        """
-    try:
-        record = await db.fetch(query, [transfer_id])
-    except Exception as e:
-        db_error(e, operation="fetching WordPress transfer fields", context={"transfer_id": transfer_id})
-    return item_response(record[0] if record else None)
-
-
-@router.put("/transfers/{transfer_id}/wp")
-async def upsert_transfer_wp(transfer_id: int, payload: TransferWpUpdate, db: Database = Depends()):
-    if payload.wp_media_file_id is None and payload.published is None and payload.public is None:
-        api_error("VALIDATION_ERROR", "No WordPress fields were provided", {}, 422)
-    query = """\
-        insert into transfer_wp (dataset_release_transfer_id, wp_media_file_id, published, public)
-        values ($1, $2, $3, $4)
-        on conflict (dataset_release_transfer_id) do update set
-            wp_media_file_id = coalesce(excluded.wp_media_file_id, transfer_wp.wp_media_file_id),
-            published        = coalesce(excluded.published,        transfer_wp.published),
-            public           = coalesce(excluded.public,           transfer_wp.public)
-        returning *
-        """
-    try:
-        record = await db.fetch(query, [transfer_id, payload.wp_media_file_id, payload.published, payload.public])
-    except Exception as e:
-        db_error(e, operation="upserting WordPress transfer fields", context={"transfer_id": transfer_id})
-    if not record:
-        api_error("NOT_FOUND", "Transfer not found", {"transfer_id": transfer_id}, 404)
-    return item_response(record[0])
-
-
 # ---------------------------------------- Transfer recordset membership-----------------------------------------------
 
 @router.get("/transfers/{transfer_id}/recordsets")
@@ -6440,7 +6399,7 @@ async def get_recordset_releases_by_transfer(transfer_id: int, db: Database = De
           r.recordset_id,
           r.recordset_name,
           rr.release_number,
-          tr.retriever_manifest_file_id,
+          tr.download_file_id,
           df.downloadable_file_id,
           df.security_hash,
           rt.recordset_type_name,
@@ -6452,7 +6411,7 @@ async def get_recordset_releases_by_transfer(transfer_id: int, db: Database = De
             join recordset_release rr on tr.recordset_release_id = rr.recordset_release_id
             join recordset r on rr.recordset_id = r.recordset_id
             join recordset_type rt on r.recordset_type_id = rt.recordset_type_id
-            left join downloadable_file df on df.file_id = tr.retriever_manifest_file_id
+            left join downloadable_file df on df.file_id = tr.download_file_id
             left join lateral (
                 select
                     count(*) filter (where {IDC_IMAGING_PREDICATE})  as imaging_files,
@@ -6651,7 +6610,7 @@ async def generate_transfer_recordset_manifest(
             await conn.execute(
                 """
                 update transfer_recordset
-                set retriever_manifest_file_id = $1
+                set download_file_id = $1
                 where dataset_release_transfer_id = $2 and recordset_release_id = $3
                 """,
                 file_id, transfer_id, recordset_release_id,
@@ -6791,7 +6750,7 @@ async def attach_transfer_recordset_manifest(
 
     manifest_q = """\
         select
-            tr.retriever_manifest_file_id,
+            tr.download_file_id,
             f.digest,
             r.recordset_id,
             r.recordset_name,
@@ -6803,7 +6762,7 @@ async def attach_transfer_recordset_manifest(
         join transfer_destination td using (destination_id)
         join recordset_release rr on rr.recordset_release_id = tr.recordset_release_id
         join recordset r on r.recordset_id = rr.recordset_id
-        left join "file" f on f.file_id = tr.retriever_manifest_file_id
+        left join "file" f on f.file_id = tr.download_file_id
         left join wp_object_map m
                on m.posda_object_type = 'recordset'
               and m.posda_object_id = r.recordset_id
@@ -6831,7 +6790,7 @@ async def attach_transfer_recordset_manifest(
             {"transfer_id": transfer_id, "destination_abbr": row["destination_abbr"]},
             422,
         )
-    if row["retriever_manifest_file_id"] is None:
+    if row["download_file_id"] is None:
         api_error(
             "VALIDATION_ERROR",
             "This recordset has no retriever manifest yet -- generate it first.",
@@ -6855,7 +6814,7 @@ async def attach_transfer_recordset_manifest(
     filename = f"{slug}-manifest-{row['digest'][:8]}.{fmt['extension']}"
 
     media_id, uploaded = await ensure_wp_media(
-        db, row["retriever_manifest_file_id"], filename, fmt["mime_type"]
+        db, row["download_file_id"], filename, fmt["mime_type"]
     )
 
     # Skip the PATCH when the page already points at this attachment -- the
@@ -6900,7 +6859,7 @@ async def attach_transfer_recordset_manifest(
     return item_response({
         "recordset_id": row["recordset_id"],
         "recordset_name": row["recordset_name"],
-        "file_id": row["retriever_manifest_file_id"],
+        "file_id": row["download_file_id"],
         "wp_media_id": media_id,
         "download_post_id": row["download_post_id"],
         # False/False is a success, not a no-op failure: the identical manifest
