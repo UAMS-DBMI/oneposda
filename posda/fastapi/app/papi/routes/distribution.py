@@ -1126,6 +1126,9 @@ async def get_dataset_cycle(
         where dr.dataset_id = $1 and dr.dataset_release_id = $2;
         """
 
+    # `configured` is false once no released member recordset routes to the
+    # destination any more -- the Transfer page's "no longer configured". Such a
+    # transfer has nothing to ship, so the cycle must not wait on it.
     transfers_q = """\
         select
             drt.dataset_release_transfer_id,
@@ -1133,7 +1136,16 @@ async def get_dataset_cycle(
             td.destination_name,
             td.destination_abbr,
             drt.transfer_name,
-            drt.transfer_status
+            drt.transfer_status,
+            exists (
+                select 1
+                from dataset_release_recordset drr
+                join recordset_release rr using (recordset_release_id)
+                join recordset_destination rd using (recordset_id)
+                where drr.dataset_release_id = drt.dataset_release_id
+                  and rd.destination_id = drt.destination_id
+                  and rr.release_status = 'released'
+            ) as configured
         from dataset_release_transfer drt
         join transfer_destination td using (destination_id)
         where drt.dataset_release_id = $1
@@ -1584,12 +1596,26 @@ async def publish_dataset_release(
     # Every transfer must have landed. Publishing a download page whose bytes
     # have not reached their destination points the public at nothing -- so the
     # gate is delivery, not merely that the release was finalized.
+    #
+    # Only transfers to a destination some released member recordset still
+    # routes to count: one left behind when a destination was unconfigured has
+    # nothing to ship, and waiting on it would block the release forever. Same
+    # test as the cycle payload's `configured`.
     transfers_q = """\
         select
             count(*)::int as total,
             count(*) filter (where transfer_status = 'success')::int as delivered
-        from dataset_release_transfer
-        where dataset_release_id = $1;
+        from dataset_release_transfer drt
+        where drt.dataset_release_id = $1
+          and exists (
+              select 1
+              from dataset_release_recordset drr
+              join recordset_release rr using (recordset_release_id)
+              join recordset_destination rd using (recordset_id)
+              where drr.dataset_release_id = drt.dataset_release_id
+                and rd.destination_id = drt.destination_id
+                and rr.release_status = 'released'
+          );
         """
 
     # A member recordset with no download page cannot be published, and a
