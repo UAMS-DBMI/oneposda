@@ -1,0 +1,62 @@
+---
+# Parses each queued file and imports it. Scale freely: workers coordinate
+# only through BRPOP on the shared "files" list, so replicas is the
+# concurrency knob and nothing needs to know how many there are.
+#
+# The shared lookup tables are written with ON CONFLICT, so scaling up does
+# not race them -- but that requires the ingest_lookup_unique migration; see
+# the "Always on" section of docs/programming/Ingest-Fixes.md.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: posda-ingest-file-worker
+  labels:
+    app.kubernetes.io/name: posda-ingest-file-worker
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/part-of: posda-ingest
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: posda-ingest-file-worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: posda-ingest-file-worker
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/part-of: posda-ingest
+    spec:
+      # A worker finishes the file it is holding before exiting. Worst case
+      # is one BRPOP timeout (5s) plus one file's import; the largest RT
+      # Plans are the slow case. If a pod is still being SIGKILLed here,
+      # raise this rather than accepting the loss -- see README.md.
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 2123
+        fsGroup: 2123
+      containers:
+        - name: file-worker
+          image: registry.dbmi.cloud/posda:1.1.6
+          args: ["file-worker-py"]
+          envFrom:
+            - configMapRef:
+                name: posda-ingest-config
+            - secretRef:
+                name: posda-ingest-db
+          volumeMounts:
+            - name: cache
+              mountPath: /home/posda/cache
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              # Parsing is bounded by skip_large=256, so memory is steady.
+              # Raise this if you enable POSDA_INGEST_FIX_LOAD_LARGE_VALUES,
+              # which pulls whole pixel elements into memory.
+              memory: 1Gi
+      volumes:
+        - name: cache
+          persistentVolumeClaim:
+            claimName: posda-cache

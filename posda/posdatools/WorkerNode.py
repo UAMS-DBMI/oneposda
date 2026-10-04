@@ -75,7 +75,12 @@ def main():
                      "NODE_NAME": NODE_NAME
                  })
 
-    redis_db = redis.StrictRedis(host=redis_host, db=0, decode_responses=True)
+    # socket_timeout must exceed the brpop block time in work_loop, or every
+    # empty poll times out at the socket layer (redis-py >= 8 defaults
+    # socket_timeout to 5s)
+    redis_db = redis.StrictRedis(
+        host=redis_host, db=0, decode_responses=True, socket_timeout=10
+    )
     logging.info("connected to redis")
 
     BASE_URL = f"{api_url}/v1"

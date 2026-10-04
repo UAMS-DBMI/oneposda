@@ -154,7 +154,10 @@ def old_main(filename, import_comment="CLI API Import", base_url="http://localho
     print(import_event_id)
 
 def main():
-    redis_db = redis.StrictRedis(host="redis", db=0)
+    # socket_timeout must exceed the brpop block time below, or every
+    # empty poll times out at the socket layer (redis-py >= 8 defaults
+    # socket_timeout to 5s)
+    redis_db = redis.StrictRedis(host="redis", db=0, socket_timeout=10)
 
     while True:
         sr = redis_db.brpop(keyname, 5)

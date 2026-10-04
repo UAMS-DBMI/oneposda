@@ -225,7 +225,12 @@ def main(activity_id: int,
     BASE_DIR = base_dir
     DRY = dry_run
 
-    redis_db = redis.StrictRedis(host="tcia-posda-rh-2.ad.uams.edu", db=0)
+    # socket_timeout must exceed the brpop block time below, or every
+    # empty poll times out at the socket layer (redis-py >= 8 defaults
+    # socket_timeout to 5s)
+    redis_db = redis.StrictRedis(
+        host="tcia-posda-rh-2.ad.uams.edu", db=0, socket_timeout=10
+    )
     print("Connected to redis...")
 
     psql_db_conn = psycopg2.connect(dbname=PSQL_DB_NAME)

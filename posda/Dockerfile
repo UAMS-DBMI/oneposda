@@ -133,7 +133,8 @@ RUN pip3 install \
 	numpy \
 	nibabel \
 	pyarrow \
-	storable
+	storable \
+	psycopg2-binary
 
 COPY --from=pydicom-bg-builder /build/pydicom-background-editor/dist/*.whl /
 RUN pip install /*.whl

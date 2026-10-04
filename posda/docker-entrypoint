@@ -38,6 +38,20 @@ file_process() {
 	exec ./run_in_posda_env.sh Posda/bin/FastFileProcessDaemon.pl
 }
 
+# The Python ingest pipeline is three separately scaled tiers, one process
+# per container. Each of these runs exactly one role and exits on SIGTERM;
+# concurrency comes from running more containers, not from forking here.
+ingest() {
+	role=$1
+	echo "Starting Posda ingest role '$role' (Python)..."
+
+	cd $APPROOT/systemd
+
+	echo "Working dir is: $(pwd)"
+
+	exec ./run_in_posda_env.sh python3 -m posda.ingest.daemon "$role"
+}
+
 backlog_process() {
 	echo "Starting Backlog Process Daemon..."
 
@@ -79,8 +93,13 @@ help() {
   echo "main -- start the main Posda server"
   echo "api -- start the Posda API Server (python based)"
 	echo "worker -- start a Posda Worker node"
-  echo "file-process -- start the Posda File Process Daemon"
+  echo "file-process -- start the Posda File Process Daemon (Perl)"
   echo "backlog-process -- start the Backlog Process Daemon"
+  echo ""
+  echo "Python ingest pipeline (one role per container, scale by replicas):"
+  echo "file-process-py -- queue filler; run exactly one"
+  echo "file-worker-py -- DICOM parse and import"
+  echo "pixel-worker-py -- pixel data location pass"
 }
 
 case "$1" in
@@ -99,6 +118,18 @@ case "$1" in
   file-process)
     shift
 	file_process
+    ;;
+  file-process-py)
+    shift
+	ingest daemon
+    ;;
+  file-worker-py)
+    shift
+	ingest file-worker
+    ;;
+  pixel-worker-py)
+    shift
+	ingest pixel-worker
     ;;
   backlog-process)
     shift
