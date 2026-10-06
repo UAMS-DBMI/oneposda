@@ -70,7 +70,34 @@ create unique index if not exists window_level_natural_key
   on window_level (window_width, window_center, win_lev_desc) nulls not distinct;
 
 -- unique_pixel_data -------------------------------------------------------
--- Empty in every database inspected, because skip_large stops ImagePixel
--- ever reaching it, so no deduplication step is needed here.
+-- Empty in the dev database because skip_large stops ImagePixel ever
+-- reaching it, but production holds duplicates over (digest, size).
+--
+-- Rows with a NULL size are left alone: the index below keeps the default
+-- NULLS DISTINCT (the ingest lookup matches with "size = %s", which never
+-- matches NULL), so such rows do not conflict and need no merging.
+create temporary table upd_map as
+select
+  unique_pixel_data_id as old_id,
+  min(unique_pixel_data_id) over (
+    partition by digest, size
+  ) as new_id
+from unique_pixel_data
+where size is not null;
+
+update image t
+set unique_pixel_data_id = m.new_id
+from upd_map m
+where t.unique_pixel_data_id = m.old_id and m.old_id <> m.new_id;
+
+update pixel_location t
+set unique_pixel_data_id = m.new_id
+from upd_map m
+where t.unique_pixel_data_id = m.old_id and m.old_id <> m.new_id;
+
+delete from unique_pixel_data u
+using upd_map m
+where u.unique_pixel_data_id = m.old_id and m.old_id <> m.new_id;
+
 create unique index if not exists unique_pixel_data_natural_key
   on unique_pixel_data (digest, size);
