@@ -14,3 +14,5 @@ sub new_rest_client {
 
   return $client;
 }
+
+1;
