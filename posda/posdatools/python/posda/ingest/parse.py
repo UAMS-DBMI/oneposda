@@ -10,6 +10,13 @@ than substituting a libmagic binding, which would change those strings.
 One ordering detail matters: ``NewTry`` sets ``skip_large => 256`` on the
 parser *after* the file meta group has already been read, so the metaheader
 is parsed without a size limit while the dataset is parsed with one.
+
+``skip_large`` is also handed to ``dcmread`` as ``defer_size``. Posda's
+parser seeks past large elements, so they never occupy memory; without
+``defer_size`` pydicom reads every element -- pixel data included -- into
+memory before the size limit is ever consulted, which is enough to OOM a
+worker on large files. pydicom applies ``defer_size`` to the dataset only,
+never to the file meta group, so the ordering above still holds.
 """
 
 from __future__ import annotations
@@ -121,7 +128,7 @@ def parse_with_digest_and_length(
     skip_large: int = SKIP_LARGE,
 ) -> ParseResult:
     try:
-        dataset = dcmread(path)
+        dataset = dcmread(path, defer_size=_defer_size(skip_large))
     except InvalidDicomError:
         return _describe_non_dicom(path, digest, length)
     except Exception as exc:  # noqa: BLE001 - any read failure is "not Part 10"
@@ -150,6 +157,16 @@ def parse_with_digest_and_length(
         meta=meta,
         errors=values.errors,
     )
+
+
+def _defer_size(skip_large: int) -> int | None:
+    """The ``dcmread`` deferral threshold matching a ``skip_large`` limit.
+
+    A deferred element keeps only its offset and length, which is all
+    ``ParsedValues`` needs to treat it as skipped. With no limit (the pixel
+    worker, or the load_large_values fix) every value has to be read.
+    """
+    return skip_large if skip_large else None
 
 
 def _meta_header(dataset, length: int) -> MetaHeader:

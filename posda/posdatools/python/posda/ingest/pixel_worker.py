@@ -19,6 +19,7 @@ import logging
 
 from posda.ingest import parse
 from posda.ingest.db import Database
+from posda.ingest.values import raw_item
 from posda.ingest.worker import FileJob
 
 log = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ def populate_pixel_info(db: Database, job: FileJob) -> None:
         log.info("File (%s): %s didn't parse", job.file_id, job.path)
         return
 
-    raw = result.values.dataset.get_item(PIXEL_DATA_TAG)
+    raw = raw_item(result.values.dataset, PIXEL_DATA_TAG, result.values.skip_large)
     value = getattr(raw, "value", None) if raw is not None else None
     if not isinstance(value, bytes):
         db.execute(

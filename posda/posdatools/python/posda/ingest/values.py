@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from pydicom.datadict import dictionary_VM, dictionary_VR
 from pydicom.dataelem import RawDataElement
 from pydicom.dataset import Dataset
+from pydicom.filereader import read_deferred_data_element
 from pydicom.sequence import Sequence
 
 from posda.ingest.privatedict import private_vm_vr
@@ -215,7 +216,7 @@ class ParsedValues:
             index = int(match.group(1))
             return value[index] if index < len(value) else None
 
-        vr = _resolve_vr(dataset.get_item(tag), tag)
+        vr = _resolve_vr(dataset.get_item(tag, keep_deferred=True), tag)
         if vr != "SQ":
             raise DicomValueError(
                 f'invalid remaining ("{remain}") for non-seq ({vr}) element'
@@ -243,7 +244,7 @@ class ParsedValues:
         ``get_item`` hands back the undecoded bytes for SQ, which cannot be
         indexed by item.
         """
-        vr = _resolve_vr(dataset.get_item(tag), tag)
+        vr = _resolve_vr(dataset.get_item(tag, keep_deferred=True), tag)
         if vr == "SQ":
             return dataset[tag].value
         return self._read(dataset, tag, sig)
@@ -339,7 +340,7 @@ class ParsedValues:
         sig: str,
         declared: tuple[str, str] | None = None,
     ) -> object:
-        raw = dataset.get_item(tag)
+        raw = raw_item(dataset, tag, self.skip_large)
         if raw is None:
             return None
         vr = _resolve_vr(raw, tag)
@@ -350,21 +351,19 @@ class ParsedValues:
         if _is_skipped(raw, vr, self.skip_large):
             return None
         value = raw.value
-        if not isinstance(value, bytes):
-            if vr != "SQ" and getattr(raw, "is_empty", False):
-                # A zero-length element in an implicit-VR file: pydicom
-                # stores its raw value as None (the VR is unknown at read
-                # time), and Dataset.get_item routes value-None elements
-                # through the converting __getitem__, which hands back
-                # PersonName("")/""/None instead of bytes. Re-decode from
-                # the empty byte string Posda's parser saw, so implicit and
-                # explicit files produce identical values and no pydicom
-                # type reaches the database driver.
-                value = b""
-            else:
-                # Genuinely converted element -- an undefined-length SQ,
-                # which dcmread parses eagerly.
-                return value
+        if value is None and isinstance(raw, RawDataElement):
+            # A zero-length element in an implicit-VR file: pydicom stores
+            # its raw value as None because the VR is unknown at read time.
+            # Decode from the empty byte string Posda's parser saw, so
+            # implicit and explicit files produce identical values and no
+            # pydicom type reaches the database driver. (A deferred element
+            # also has value None, but raw_item has already read it back or
+            # _is_skipped has already returned.)
+            value = b""
+        elif not isinstance(value, bytes):
+            # Genuinely converted element -- an undefined-length SQ, which
+            # dcmread parses eagerly.
+            return value
         vm = declared[0] if declared is not None else _dictionary_vm(tag)
         return decode_value(value, vr, vm, sig, self.errors)
 
@@ -392,10 +391,41 @@ def _resolve_vr(raw: object, tag: int) -> str | None:
     return str(vr) if vr else None
 
 
+def raw_item(dataset: Dataset, tag: int, skip_large: int) -> object:
+    """``Dataset.get_item`` honouring the deferred reads ``parse`` sets up.
+
+    ``parse`` passes ``skip_large`` to ``dcmread`` as ``defer_size``, so an
+    element over the limit is left on disk with no value in memory. A plain
+    ``get_item`` would quietly read it back and *convert* it, handing back a
+    str or list rather than bytes -- loading exactly what the limit exists
+    to keep out of memory, and slipping past the byte-length skip check.
+    While a limit is in force the element stays deferred and reads as
+    skipped; only when the limit has been lifted after parsing (tests do
+    this) are the raw bytes fetched, so ``skip_large = 0`` means the same
+    thing however the dataset was read. Sequences are the exception: Posda
+    never size-limits them, so a deferred one is always read back.
+    """
+    raw = dataset.get_item(tag, keep_deferred=True)
+    if not _is_deferred(raw):
+        return raw
+    if skip_large and _resolve_vr(raw, tag) != "SQ":
+        return raw
+    return read_deferred_data_element(
+        dataset.fileobj_type, dataset.filename, dataset.timestamp, raw
+    )
+
+
+def _is_deferred(raw: object) -> bool:
+    """True for a raw element whose value was left on disk by ``defer_size``."""
+    return isinstance(raw, RawDataElement) and raw.value is None and raw.length != 0
+
+
 def _is_skipped(raw: object, vr: str, skip_large: int) -> bool:
     """Mirror Posda::Parser's skip_large seek-past behaviour."""
     if vr == "SQ" or not skip_large:
         return False
+    if _is_deferred(raw):
+        return True
     value = getattr(raw, "value", None)
     if not isinstance(value, bytes):
         return False

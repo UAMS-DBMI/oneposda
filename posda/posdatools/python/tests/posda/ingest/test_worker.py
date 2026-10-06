@@ -201,3 +201,73 @@ class TestPixelWorker:
         db = FakeDb()
         pixel_worker.populate_pixel_info(db, FileJob(10, str(path)))
         assert db.statements == []
+
+
+class TestDeferredReads:
+    """``parse`` must not load large elements into memory.
+
+    Posda's parser seeks past anything over ``skip_large``; pydicom only
+    matches that when ``dcmread`` is given ``defer_size``.
+    """
+
+    def test_large_elements_are_left_on_disk(self, tmp_path):
+        path = write_dicom(tmp_path, pixel_data=bytes(1000))
+        result = parse.parse(path)
+        raw = result.values.dataset.get_item(0x7FE00010, keep_deferred=True)
+        assert raw.value is None
+        assert raw.length == 1000
+
+    def test_small_elements_are_read(self, tmp_path):
+        path = write_dicom(tmp_path, pixel_data=bytes(16))
+        result = parse.parse(path)
+        raw = result.values.dataset.get_item(0x7FE00010, keep_deferred=True)
+        assert raw.value == bytes(16)
+
+    def test_deferred_text_element_still_reads_as_skipped(self, tmp_path):
+        # A deferred element must not be read back and converted to a str,
+        # which would slip past the byte-length check.
+        path = write_dicom(tmp_path, StudyDescription="X" * 300)
+        assert parse.parse(path).values.get("(0008,1030)") is None
+
+    def test_sequence_over_the_limit_is_still_navigable(self, tmp_path):
+        from pydicom.sequence import Sequence
+
+        item = Dataset()
+        item.CodeMeaning = "Y" * 300
+        path = write_dicom(tmp_path, ProcedureCodeSequence=Sequence([item]))
+        values = parse.parse(path).values
+        assert values.get("(0008,1032)[0](0008,0104)") is None
+        values.skip_large = 0
+        assert values.get("(0008,1032)[0](0008,0104)") == "Y" * 300
+
+    def test_sequence_over_the_limit_reads_as_before(self, tmp_path):
+        # Posda never size-limits a sequence, so deferral must not change
+        # what a direct read of one returns.
+        from pydicom import dcmread
+        from pydicom.sequence import Sequence
+
+        from posda.ingest.values import ParsedValues
+
+        item = Dataset()
+        item.CodeMeaning = "Y" * 300
+        path = write_dicom(tmp_path, ProcedureCodeSequence=Sequence([item]))
+        eager = ParsedValues(dcmread(path)).get("(0008,1032)")
+        assert parse.parse(path).values.get("(0008,1032)") == eager
+
+    def test_lifting_the_limit_after_parsing_reads_the_value(self, tmp_path):
+        path = write_dicom(tmp_path, StudyDescription="X" * 300)
+        values = parse.parse(path).values
+        values.skip_large = 0
+        assert values.get("(0008,1030)") == "X" * 300
+
+    def test_no_limit_reads_everything(self, tmp_path):
+        path = write_dicom(tmp_path, pixel_data=bytes(1000))
+        result = parse.parse(path, skip_large=0)
+        raw = result.values.dataset.get_item(0x7FE00010, keep_deferred=True)
+        assert raw.value == bytes(1000)
+
+    def test_metaheader_is_never_deferred(self, tmp_path):
+        path = write_dicom(tmp_path, pixel_data=bytes(1000))
+        result = parse.parse(path)
+        for raw in result.meta.values.dataset.values():
+            assert raw.value is not None

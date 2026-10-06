@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 from posda.ingest import fixes, rt_beams, rt_dose, rt_plan, rt_structure, specs
 from posda.ingest.coercions import get_attrs
 from posda.ingest.specs import AttrSpec
-from posda.ingest.values import ParsedValues
+from posda.ingest.values import ParsedValues, raw_item
 
 if TYPE_CHECKING:  # avoids a psycopg2 import for callers that only parse
     from posda.ingest.db import Database
@@ -228,7 +228,7 @@ def image_pixel(
     ``unique_pixel_data_id``, confirming this. It is reproduced rather than
     fixed so the port can be diff-verified; the fix is tracked separately.
     """
-    raw = values.dataset.get_item(PIXEL_DATA_TAG)
+    raw = raw_item(values.dataset, PIXEL_DATA_TAG, values.skip_large)
     if raw is None:
         errors.append("No pixel data in ImagePixel")
         return
