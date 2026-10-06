@@ -1,5 +1,8 @@
 package Posda::File::Import;
 
+use Exporter 'import';
+our @EXPORT_OK = ('insert_file');
+
 {
   package Posda::File::Import::Response;
 
