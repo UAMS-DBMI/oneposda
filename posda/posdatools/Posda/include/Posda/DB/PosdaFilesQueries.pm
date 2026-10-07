@@ -281,6 +281,69 @@ sub FetchResults {
   return $self->{handle}->fetchall_arrayref;
 }
 
+# Prepare (if needed) and execute, retrying once on a dead connection.
+#
+# DBI is connected with RaiseError off, so a dead handle and a rejected
+# statement both show up as an undef return from execute rather than as an
+# exception. Distinguish them: a connection that has gone away is worth
+# reconnecting and retrying once, because otherwise the cached handle stays
+# broken for the life of the process and every later query quietly does
+# nothing. A real SQL error is reported as-is.
+#
+# Returns ($rows_affected, $errstr). $rows_affected is undef on failure, in
+# which case $errstr describes why.
+sub _ExecuteWithReconnect {
+  my $self = shift;
+
+  my $dbh = $self->_get_handle_main();
+  $self->_ensure_prepared($dbh);
+
+  my $rows_affected = $self->Execute(@_);
+  if (defined $rows_affected) { return ($rows_affected, undef) }
+
+  my $errstr = $dbh->errstr;
+  unless (defined $errstr) { $errstr = "(no error string available)" }
+
+  unless ($dbh->ping) {
+    print STDERR "Query $self->{name}: connection lost ($errstr); " .
+      "reconnecting\n";
+    $dbh = $self->_reconnect_main();
+    $self->_ensure_prepared($dbh);
+    $rows_affected = $self->Execute(@_);
+  }
+
+  return ($rows_affected, $errstr);
+}
+
+# Like RunQuery for a select, but tells the caller how many rows there are
+# before delivering any of them, so the caller can size its output up front
+# without buffering the rows itself.
+#
+# DBD::Pg does not stream selects: execute pulls the whole result set into
+# libpq's client-side buffer and returns the row count, so the count here is
+# already known and costs nothing extra. The saving over RunQuery + push is
+# not holding a second, much larger copy of every row in Perl.
+#
+#   $count_callback->($num_rows)   called once, before any rows
+#   $row_callback->(\@row)         called once per row
+#
+# Dies if the query fails to execute. Only meaningful for selects.
+sub RunQueryWithRowCount {
+  my ($self, $count_callback, $row_callback, @binds) = @_;
+
+  my ($num_rows, $errstr) = $self->_ExecuteWithReconnect(@binds);
+  unless (defined $num_rows) {
+    die "Query $self->{name} failed to execute: $errstr";
+  }
+
+  # execute returns the string "0E0" for zero rows (true but numerically 0)
+  &$count_callback($num_rows + 0);
+
+  while (my @row = $self->{handle}->fetchrow_array) {
+    &$row_callback(\@row);
+  }
+}
+
 sub _RunQueryBlocking {
   my($self) = shift;
   my $row_callback = shift;
@@ -301,40 +364,17 @@ sub _RunQueryBlocking {
     };
   }
 
-  my $dbh = $self->_get_handle_main();
-
-  $self->_ensure_prepared($dbh);
-
   ## Test adjusted to allow "-- select" to force select mode
   my $select = ($self->{query} =~ /^\s*-*\s*select/i)? 1:0;
 
-  my $rows_affected = $self->Execute(@_);
+  my ($rows_affected, $errstr) = $self->_ExecuteWithReconnect(@_);
 
-  # DBI is connected with RaiseError off, so a dead handle and a rejected
-  # statement both show up here as undef rather than as an exception.
-  # Distinguish them: a connection that has gone away is worth reconnecting and
-  # retrying once, because otherwise the cached handle stays broken for the
-  # life of the process and every later query quietly does nothing. A real SQL
-  # error is reported as-is.
   unless (defined $rows_affected) {
-    my $errstr = $dbh->errstr;
-    unless (defined $errstr) { $errstr = "(no error string available)" }
-
-    unless ($dbh->ping) {
-      print STDERR "Query $self->{name}: connection lost ($errstr); " .
-        "reconnecting\n";
-      $dbh = $self->_reconnect_main();
-      $self->_ensure_prepared($dbh);
-      $rows_affected = $self->Execute(@_);
+    &$error_callback("Query $self->{name} failed to execute: $errstr");
+    if(ref($end_callback) eq "CODE"){
+      &$end_callback();
     }
-
-    unless (defined $rows_affected) {
-      &$error_callback("Query $self->{name} failed to execute: $errstr");
-      if(ref($end_callback) eq "CODE"){
-        &$end_callback();
-      }
-      return;
-    }
+    return;
   }
 
   if ($select) {
