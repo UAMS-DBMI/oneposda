@@ -193,10 +193,10 @@ sub LinkStructSet{
   #
   # Fix frames of reference in Stucture Set ROI sequence
   #
-  my $for_ref = $ds->Substitutions("(3006,0020)[<0>](3006,0024)");
+  my $for_ref = $ds->Substitutions("(3006,0020)[<0>](3006,0022)");
   my $num_fors = @{$for_ref->{list}};
   my $num_changed = 0;
-  for my $inst (@{$ct_cont_ref->{list}}){
+  for my $inst (@{$for_ref->{list}}){
     my $r_i = $inst->[$for_ref->{index_list}->{"<0>"}];
     my $sig = "(3006,0020)[$r_i](3006,0024)";
     my $ref_for = $ds->ExtractElementBySig($sig);
