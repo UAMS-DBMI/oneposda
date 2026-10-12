@@ -28,7 +28,9 @@ def make_settings(**overrides):
 
 @pytest.fixture
 def manifest():
-    return jobspec.build_job_manifest(make_own_pod(), 7, "1", make_settings())
+    return jobspec.build_job_manifest(
+        make_own_pod(), 7, "work_queue_1", make_settings()
+    )
 
 
 def pod_spec(manifest):
@@ -48,7 +50,7 @@ def test_job_identity_and_labels(manifest):
         "app.kubernetes.io/name": "posda-work",
         "app.kubernetes.io/part-of": "posda",
         "posda.io/work-id": "7",
-        "posda.io/priority": "1",
+        "posda.io/queue": "work_queue_1",
     }
     # Kueue manages the Job, not its pods: no queue label on the template.
     assert (
@@ -60,7 +62,10 @@ def test_job_identity_and_labels(manifest):
 
 def test_priority_class_label_only_when_configured():
     with_class = jobspec.build_job_manifest(
-        make_own_pod(), 7, "1", make_settings(kueue_priority_class="posda-high")
+        make_own_pod(),
+        7,
+        "work_queue_1",
+        make_settings(kueue_priority_class="posda-high"),
     )
     assert (
         with_class["metadata"]["labels"]["kueue.x-k8s.io/priority-class"]
@@ -117,7 +122,7 @@ def test_resources_from_env(manifest):
 
 def test_resources_fall_back_to_the_dispatchers_own():
     settings = make_settings(cpu_request=None, memory_request=None, memory_limit=None)
-    m = jobspec.build_job_manifest(make_own_pod(), 7, "1", settings)
+    m = jobspec.build_job_manifest(make_own_pod(), 7, "work_queue_1", settings)
     assert container(m)["resources"] == {
         "requests": {"cpu": "100m", "memory": "128Mi"},
         "limits": {"memory": "256Mi"},
@@ -128,7 +133,7 @@ def test_missing_requests_warn_and_omit_the_key(caplog):
     pod = make_own_pod()
     del pod["spec"]["containers"][0]["resources"]
     settings = make_settings(cpu_request=None, memory_request=None, memory_limit=None)
-    m = jobspec.build_job_manifest(pod, 7, "1", settings)
+    m = jobspec.build_job_manifest(pod, 7, "work_queue_1", settings)
     assert container(m)["resources"] == {}
     assert (
         "POSDA_JOB_CPU_REQUEST" in caplog.text
@@ -140,11 +145,11 @@ def test_two_containers_are_refused():
     pod = make_own_pod()
     pod["spec"]["containers"].append({"name": "sidecar", "image": "x"})
     with pytest.raises(ValueError, match="exactly one container"):
-        jobspec.build_job_manifest(pod, 7, "1", make_settings())
+        jobspec.build_job_manifest(pod, 7, "work_queue_1", make_settings())
 
 
 def test_input_pod_is_not_mutated():
     pod = make_own_pod()
     before = copy.deepcopy(pod)
-    jobspec.build_job_manifest(pod, 7, "1", make_settings())
+    jobspec.build_job_manifest(pod, 7, "work_queue_1", make_settings())
     assert pod == before

@@ -247,7 +247,7 @@ def make_own_pod():
     }
 
 
-def make_job(work_id, priority="1", condition=None, active=0):
+def make_job(work_id, queue="work_queue_1", condition=None, active=0):
     """A Job as the API lists it; ``condition`` is "Complete", "Failed" or None."""
     status = {"active": active}
     if condition:
@@ -265,7 +265,7 @@ def make_job(work_id, priority="1", condition=None, active=0):
             "labels": {
                 "app.kubernetes.io/name": "posda-work",
                 "posda.io/work-id": str(work_id),
-                "posda.io/priority": priority,
+                "posda.io/queue": queue,
             },
         },
         "status": status,

@@ -13,7 +13,7 @@ LEGACY_VARS = (
 
 @pytest.fixture
 def clean_env(monkeypatch):
-    for name in LEGACY_VARS + ("POD_NAME", "POD_NAMESPACE"):
+    for name in LEGACY_VARS + ("POSDA_WORKER_QUEUE", "POD_NAME", "POD_NAMESPACE"):
         monkeypatch.delenv(name, raising=False)
     for name in list(__import__("os").environ):
         if (
@@ -44,6 +44,17 @@ class TestWorkerSettings:
         assert s.queue_name == "work_queue_1"
         assert s.node_name == "node-x"
         assert s.api_token == "tok"
+
+    def test_queue_override_replaces_the_priority_queue(self, clean_env):
+        clean_env.setenv("POSDA_WORKER_PRIORITY", "1")
+        clean_env.setenv("POSDA_WORKER_QUEUE", "work_queue_kueue")
+        s = settings.load_worker_settings()
+        assert s.queue_name == "work_queue_kueue"
+        assert s.worker_priority == "1"  # still read, still reported
+
+    def test_empty_queue_override_is_ignored(self, clean_env):
+        clean_env.setenv("POSDA_WORKER_QUEUE", "")
+        assert settings.load_worker_settings().queue_name == "work_queue_0"
 
     def test_require_api_url(self, clean_env):
         with pytest.raises(RuntimeError, match="POSDA_INTERNAL_API_URL"):

@@ -71,7 +71,7 @@ def dispatch_loop(
     settings: DispatchSettings,
     shutdown: ShutdownFlag,
 ) -> None:
-    selector = label_selector(worker.worker_priority)
+    selector = label_selector(worker.queue_name)
     open_jobs = 0
     next_reconcile = 0.0
 
@@ -102,10 +102,8 @@ def dispatch_loop(
     log.info("dispatcher stopping")
 
 
-def label_selector(priority: str) -> str:
-    return (
-        f"app.kubernetes.io/name={jobspec.APP_NAME},{jobspec.PRIORITY_LABEL}={priority}"
-    )
+def label_selector(queue: str) -> str:
+    return f"app.kubernetes.io/name={jobspec.APP_NAME},{jobspec.QUEUE_LABEL}={queue}"
 
 
 def dispatch_one(
@@ -123,9 +121,7 @@ def dispatch_one(
         log.error("ignoring non-numeric queue item %r", work_id_raw)
         return False
 
-    manifest = jobspec.build_job_manifest(
-        own_pod, work_id, worker.worker_priority, settings
-    )
+    manifest = jobspec.build_job_manifest(own_pod, work_id, worker.queue_name, settings)
     try:
         k8s.create_job(manifest)
     except JobAlreadyExists:

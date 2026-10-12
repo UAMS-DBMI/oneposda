@@ -30,9 +30,18 @@ class WorkerSettings:
     worker_priority: str
     node_name: str
     api_token: str | None
+    queue_override: str | None = None
 
     @property
     def queue_name(self) -> str:
+        """The Redis list to pop from.
+
+        ``POSDA_WORKER_QUEUE`` names it outright; otherwise it is derived from
+        the priority as it always was. The override lets a dispatcher run
+        beside the legacy workers on a list of its own.
+        """
+        if self.queue_override:
+            return self.queue_override
         return f"work_queue_{self.worker_priority}"
 
     @property
@@ -65,6 +74,9 @@ def load_worker_settings() -> WorkerSettings:
         worker_priority=str(Config.get("worker-priority", default=0)),
         node_name=Config.get("worker-name", default=platform.node()),
         api_token=Config.get("api_system_token"),
+        # Read directly: Config.get warns when a variable is unset, and this
+        # one is optional, so the legacy loop's log output must not change.
+        queue_override=os.environ.get("POSDA_WORKER_QUEUE") or None,
     )
 
 

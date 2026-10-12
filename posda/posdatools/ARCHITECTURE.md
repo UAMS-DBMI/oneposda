@@ -448,15 +448,19 @@ Processing an item (`execute.py`) is the same in every mode:
    files; reap the child's process group
 5. Upload both back into Posda as files; set status finished/errored
 
-The legacy loop polls `work_queue_{priority}` (0 = low, 1 = high) with a 5s
-timeout. Configured from `POSDA_INTERNAL_API_URL`, `POSDA_REDIS_HOST`,
-`POSDA_WORKER_PRIORITY`, `POSDA_WORKER_NAME`, `POSDA_API_SYSTEM_TOKEN`.
-Compose runs one low- and one high-priority worker; scale via `replicas`.
+Both pollers read `work_queue_{priority}` (0 = low, 1 = high) with a 5s
+timeout, or the list named by `POSDA_WORKER_QUEUE` when set, which is how a
+dispatcher runs beside the legacy workers on a list of its own. Configured
+from `POSDA_INTERNAL_API_URL`, `POSDA_REDIS_HOST`, `POSDA_WORKER_PRIORITY`,
+`POSDA_WORKER_NAME`, `POSDA_API_SYSTEM_TOKEN`. Compose runs one low- and one
+high-priority worker; scale via `replicas`.
 
 The dispatcher clones its own pod spec (read through the in-cluster API with
 `POD_NAME`; needs the `posda-scheduler` ServiceAccount) into each Job, with
 `backoffLimit: 0`, resource requests from `POSDA_JOB_*`, and the
-`kueue.x-k8s.io/queue-name` label (`POSDA_KUEUE_QUEUE`). It stops popping
+`kueue.x-k8s.io/queue-name` label (`POSDA_KUEUE_QUEUE`), plus a
+`posda.io/queue` label naming the Redis list so each dispatcher reconciles
+only its own Jobs. It stops popping
 Redis while `POSDA_DISPATCH_MAX_OPEN_JOBS` Jobs are unfinished, and every
 `POSDA_DISPATCH_RECONCILE_SECONDS` marks the `work` row of any Job that failed
 without reporting (OOMKilled, evicted) as errored. `run` refuses an item whose

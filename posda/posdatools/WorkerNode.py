@@ -14,6 +14,8 @@ Those settings are read from the environment variables:
     * POSDA_REDIS_HOST
     * POSDA_WORKER_PRIORITY
     * POSDA_WORKER_NAME
+    * POSDA_WORKER_QUEUE (optional: Redis list to pop, instead of
+      work_queue_<priority>)
 
 Three modes, chosen by the command line:
 

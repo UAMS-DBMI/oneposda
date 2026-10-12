@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 JOB_NAME_PREFIX = "posda-work-"
 APP_NAME = "posda-work"
 WORK_ID_LABEL = "posda.io/work-id"
-PRIORITY_LABEL = "posda.io/priority"
+QUEUE_LABEL = "posda.io/queue"
 KUEUE_QUEUE_LABEL = "kueue.x-k8s.io/queue-name"
 KUEUE_PRIORITY_LABEL = "kueue.x-k8s.io/priority-class"
 
@@ -56,26 +56,28 @@ def job_name(work_id: int) -> str:
     return f"{JOB_NAME_PREFIX}{work_id}"
 
 
-def pod_labels(work_id: int, priority: str) -> dict[str, str]:
+def pod_labels(work_id: int, queue: str) -> dict[str, str]:
+    # ``queue`` is the Redis list the id came from; it is how a dispatcher
+    # finds its own Jobs again, so several can run side by side.
     return {
         "app.kubernetes.io/name": APP_NAME,
         "app.kubernetes.io/part-of": "posda",
         WORK_ID_LABEL: str(work_id),
-        PRIORITY_LABEL: priority,
+        QUEUE_LABEL: queue,
     }
 
 
-def job_labels(work_id: int, priority: str, settings: DispatchSettings) -> dict:
+def job_labels(work_id: int, queue: str, settings: DispatchSettings) -> dict:
     # The Kueue labels go on the Job only; Kueue manages the Job, not its pods.
     labels = {KUEUE_QUEUE_LABEL: settings.kueue_queue}
     if settings.kueue_priority_class:
         labels[KUEUE_PRIORITY_LABEL] = settings.kueue_priority_class
-    labels.update(pod_labels(work_id, priority))
+    labels.update(pod_labels(work_id, queue))
     return labels
 
 
 def build_job_manifest(
-    own_pod: dict, work_id: int, priority: str, settings: DispatchSettings
+    own_pod: dict, work_id: int, queue: str, settings: DispatchSettings
 ) -> dict:
     spec = clone_pod_spec(own_pod["spec"])
     container = worker_container(spec)
@@ -86,7 +88,7 @@ def build_job_manifest(
         "metadata": {
             "name": job_name(work_id),
             "namespace": settings.namespace,
-            "labels": job_labels(work_id, priority, settings),
+            "labels": job_labels(work_id, queue, settings),
         },
         "spec": {
             "parallelism": 1,
@@ -94,7 +96,7 @@ def build_job_manifest(
             "backoffLimit": 0,
             "ttlSecondsAfterFinished": settings.ttl_seconds_after_finished,
             "template": {
-                "metadata": {"labels": pod_labels(work_id, priority)},
+                "metadata": {"labels": pod_labels(work_id, queue)},
                 "spec": spec,
             },
         },

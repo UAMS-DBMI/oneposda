@@ -10,7 +10,7 @@ from posda.worker.k8s import KubernetesApiError
 from posda.worker.settings import DispatchSettings, WorkerSettings
 
 WORKER = WorkerSettings("http://web/papi", "redis", "1", "dispatcher-high-abc12", "tok")
-SELECTOR = "app.kubernetes.io/name=posda-work,posda.io/priority=1"
+SELECTOR = "app.kubernetes.io/name=posda-work,posda.io/queue=work_queue_1"
 
 
 def make_settings(**overrides):
@@ -41,7 +41,18 @@ def run_loop(redis_db, api, k8s, settings, flag):
 
 
 def test_label_selector():
-    assert dispatch.label_selector("1") == SELECTOR
+    assert dispatch.label_selector("work_queue_1") == SELECTOR
+
+
+def test_jobs_are_labelled_with_the_redis_queue_they_came_from():
+    worker = WorkerSettings(
+        "http://web/papi", "redis", "1", "d", "tok", "work_queue_kueue"
+    )
+    k8s = FakeK8s()
+    dispatch.dispatch_one(
+        "7", FakePosdaApi(), k8s, make_own_pod(), worker, make_settings()
+    )
+    assert k8s.created[0]["metadata"]["labels"]["posda.io/queue"] == "work_queue_kueue"
 
 
 class TestJobStatus:
