@@ -22,10 +22,12 @@ api() {
 }
 
 
+# Extra arguments select the worker mode: none for the legacy Redis loop,
+# "dispatch" for the Kueue dispatcher, "run <work_id>" inside a Job pod.
 worker() {
 	echo "Starting Posda Worker node...";
 	cd $APPROOT
-	exec ./worker_start.sh
+	exec ./worker_start.sh "$@"
 }
 
 file_process() {
@@ -92,7 +94,9 @@ help() {
   echo ""
   echo "main -- start the main Posda server"
   echo "api -- start the Posda API Server (python based)"
-	echo "worker -- start a Posda Worker node"
+	echo "worker -- start a Posda Worker node (legacy Redis loop)"
+	echo "worker dispatch -- start the Kueue job dispatcher"
+	echo "worker run <work_id> -- run one work item and exit (Job entrypoint)"
   echo "file-process -- start the Posda File Process Daemon (Perl)"
   echo "backlog-process -- start the Backlog Process Daemon"
   echo ""
@@ -113,7 +117,7 @@ case "$1" in
     ;;
 	worker)
 	  shift
-		worker
+		worker "$@"
 		;;
   file-process)
     shift
