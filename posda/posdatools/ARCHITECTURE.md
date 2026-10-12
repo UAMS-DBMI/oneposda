@@ -430,19 +430,38 @@ almost always this.
 
 ### 8.1 Redis worker queue [LIVE]
 
-`WorkerNode.py` is the single live execution path:
+`WorkerNode.py` is a shim over `python/posda/worker/`; the package has three
+modes, chosen by the command line:
 
-1. `BRPOP` off `work_queue_{priority}` (0 = low, 1 = high) with a 5s timeout
-2. Set status running via the FastAPI; fetch work item + subprocess invocation
-3. Substitute `<?bkgrnd_id?>` into `command_line`
-4. Wrap with `/usr/bin/time -v -o /tmp/<work_id>.time`
-5. Run with stdin from the input file's path, capture stdout/stderr to temp
-   files
-6. Upload both back into Posda as files; set status finished/errored
+| invocation | mode |
+|---|---|
+| `WorkerNode.py` | legacy loop: `BRPOP` from Redis, run the item in this process |
+| `WorkerNode.py dispatch` | `BRPOP` from Redis, create one Kueue-labelled k8s Job per id (`dispatch.py`) |
+| `WorkerNode.py run <work_id>` | the Job pod's entrypoint: run one item, report, exit (`run.py`) |
 
-Configured from `POSDA_INTERNAL_API_URL`, `POSDA_REDIS_HOST`,
+Processing an item (`execute.py`) is the same in every mode:
+
+1. Set status running via the FastAPI; fetch work item + subprocess invocation
+2. Substitute `<?bkgrnd_id?>` into `command_line`
+3. Wrap with `/usr/bin/time -v -o /tmp/<work_id>.time`
+4. Run with stdin from the input file's path, capture stdout/stderr to temp
+   files; reap the child's process group
+5. Upload both back into Posda as files; set status finished/errored
+
+The legacy loop polls `work_queue_{priority}` (0 = low, 1 = high) with a 5s
+timeout. Configured from `POSDA_INTERNAL_API_URL`, `POSDA_REDIS_HOST`,
 `POSDA_WORKER_PRIORITY`, `POSDA_WORKER_NAME`, `POSDA_API_SYSTEM_TOKEN`.
 Compose runs one low- and one high-priority worker; scale via `replicas`.
+
+The dispatcher clones its own pod spec (read through the in-cluster API with
+`POD_NAME`; needs the `posda-scheduler` ServiceAccount) into each Job, with
+`backoffLimit: 0`, resource requests from `POSDA_JOB_*`, and the
+`kueue.x-k8s.io/queue-name` label (`POSDA_KUEUE_QUEUE`). It stops popping
+Redis while `POSDA_DISPATCH_MAX_OPEN_JOBS` Jobs are unfinished, and every
+`POSDA_DISPATCH_RECONCILE_SECONDS` marks the `work` row of any Job that failed
+without reporting (OOMKilled, evicted) as errored. `run` refuses an item whose
+row is already running or closed, so a re-admitted Job cannot execute a
+script twice.
 
 ### 8.2 `Posda::BackgroundProcess` — not a dispatcher, but still a runtime library
 
