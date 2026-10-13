@@ -64,13 +64,30 @@ def make_filename(val):
 
     return digest + ".dcm"
 
-def run_command(item):
-    """Run EDIT_SCRIPT for a single item."""
-    invoc_id, details = item
+def edit_file(invoc_id: int, details: tuple) -> None:
+    """Run EDIT_SCRIPT for a single file, writing to its output_path."""
     file_id, path, output_path, digest, uid_root, offset = details
     cmd = [EDIT_SCRIPT, str(invoc_id), str(file_id), path, output_path, uid_root, str(offset)]
     result = subprocess.run(cmd, capture_output=True, text=True)
-    return item, result.returncode, result.stdout, result.stderr
+    if not os.path.exists(output_path):
+        raise RuntimeError(
+            f"Edit of file {file_id} produced no output "
+            f"(rc={result.returncode}): {result.stderr}"
+        )
+
+def edit_and_import_file(invoc_id: int, import_event_id: int, details: tuple) -> int:
+    """Edit a single file, import the result, and remove the temp file.
+
+    Doing this per file (rather than editing everything first) keeps the
+    temp directory from holding a full edited copy of the activity.
+    """
+    _, _, output_path, from_digest, _, _ = details
+    try:
+        edit_file(invoc_id, details)
+        return insert_file_via_api(import_event_id, output_path, from_digest, invoc_id)
+    finally:
+        if os.path.exists(output_path):
+            os.remove(output_path)
 
 class Editor:
     def __init__(self, tempdir, invoc_id):
@@ -100,20 +117,6 @@ class Editor:
                                    make_filename(str(file_id)))
         self.files.append((file_id, path, output_path, digest, uid_root, offset))
 
-    def edit(self) -> None:
-
-        with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            futures = [executor.submit(run_command, [self.invoc_id, item]) for item in self.files]
-
-            for future in as_completed(futures):
-                item, rc, out, err = future.result()
-                # print(f"Finished {item} (rc={rc})")
-                # if out:
-                #     print("STDOUT:", out)
-                # if err:
-                #     print("STDERR:", err)
-
-
     def count(self) -> int:
         return len(self.files)
 
@@ -125,10 +128,15 @@ class Importer:
 
         self.file_ids = []
 
-    def import_from_editor(self, editor: Editor, invoc_id: int) -> None:
-        for _, _, path, from_digest, _, _ in editor.files:
-            file_id = insert_file_via_api(self.import_event_id, path, from_digest, invoc_id)
-            self.file_ids.append(file_id)
+    def edit_and_import(self, editor: Editor, invoc_id: int) -> None:
+        with ProcessPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = [
+                executor.submit(edit_and_import_file, invoc_id, self.import_event_id, item)
+                for item in editor.files
+            ]
+
+            for future in as_completed(futures):
+                self.file_ids.append(future.result())
 
     def create_timepoint(self, activity_id: int) -> int:
         file_list = self.file_ids
@@ -204,12 +212,9 @@ def main(args):
             # if i == 9: # break at 10
             #     break
 
-        background.set_activity_status("Editing files...")
-        editor.edit()
-
-        background.set_activity_status("Importing files...")
+        background.set_activity_status("Editing and importing files...")
         importer = Importer("Applying private dispositions", editor.count())
-        importer.import_from_editor(editor, args.background_id)
+        importer.edit_and_import(editor, args.background_id)
 
     ## Create a new timepoint from the import_event?
     tp_id = importer.create_timepoint(args.activity_id)
