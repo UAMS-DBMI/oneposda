@@ -6524,8 +6524,10 @@ def build_manifest(destination_abbr: str, series_uids: list, recordset_release_i
         ]
         return ("\n".join(header + series_uids) + "\n").encode("utf-8")
 
-    # The general format, pending a real spec for this destination.
-    return ("\n".join(["series_instance_uid"] + series_uids) + "\n").encode("utf-8")
+    # The general format, pending a real spec for this destination. The header
+    # must be exactly "SeriesInstanceUID": the TCIA Data Retriever matches that
+    # (or "Series UID") case-sensitively and rejects anything else.
+    return ("\n".join(["SeriesInstanceUID"] + series_uids) + "\n").encode("utf-8")
 
 
 @router.post("/transfers/{transfer_id}/recordsets/{recordset_release_id}/manifest/generate")
