@@ -145,11 +145,17 @@ for my $pat (keys %Patients){
       $num_reports += 1;
     }
     #Use the baseline shift if it exists, otherwise use the dateshift
+    my $offset;
     unless($computed_shift){$computed_shift = $date_shift;}
-    unless($computed_shift =~ /^([^\s]+)\s*days$/){
-       print "$pat: No computed shift for patient_id, date will not shift!!!\n";
+    # special case for date_shift of 00:00:00, which means no shift
+    if ($date_shift eq "00:00:00") {
+      $offset = 0;
+    } else {
+      unless($computed_shift =~ /^([^\s]+)\s*days$/){
+        print "$pat: No computed shift for patient_id, date will not shift!!!\n";
+      }
+      $offset = $1;
     }
-    my $offset = $1;
     $PatientMapping{$pat}->{uid_root} = $uid_root;
     $PatientMapping{$pat}->{offset} = $offset;
   }, sub {}, $pat);
