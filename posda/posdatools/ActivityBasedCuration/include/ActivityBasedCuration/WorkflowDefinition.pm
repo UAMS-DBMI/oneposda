@@ -259,6 +259,10 @@ This step should not be needed if your data was imported through CTP",
         caption => "Link RT Data",
         action =>  "LinkRtFromTimepoint",
       },
+      {
+        caption => "Check RT Structure Set ROIs",
+        action =>  "CheckRtStructRois",
+      },
    ],
     queries => [
        {

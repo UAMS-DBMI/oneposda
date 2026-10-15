@@ -7,8 +7,9 @@ and generates repair reports.
 Candidate suggestion and the RTSTRUCT structural relink worklist (Fix script input)
 are not enabled yet — see the comments in run() below.
 
-Future internal-consistency checks (ROI/contour cross-validation) will be added
-to RTLinkageChecker as the Perl CheckStructLinkagesTpId.pl logic is ported.
+Internal-consistency checks within an RTSTRUCT (ROI/contour cross-validation)
+live in CheckRtStructRois.py / posda.rtstruct instead, where the Perl
+CheckStructLinkagesTpId.pl logic is being ported.
 """
 import sys
 import argparse
