@@ -4926,18 +4926,51 @@ sub DownloadTableFromNewQuery{
       $http->queue("\r\n");
     } else { $http->queue(",") };
   }
-  $rows->each(sub {
-    my ($row) = @_;
-    for my $j (0 .. $#{$row}){
-      my $col = $row->[$j];
-      unless(defined $col) { $col = "" }
-      $col =~ s/"/""/g;
-      $http->queue("\"$col\"");
-      if($j == $#{$row}){
-        $http->queue("\r\n");
-      } else { $http->queue(",") }
+  # The rows are streamed through the event loop in chunks, pausing whenever
+  # the client's output queue is full, so a large download neither builds the
+  # whole CSV in memory nor blocks the server (and its heartbeats) while it is
+  # generated. The closure keeps $http alive until the last chunk is queued.
+  my $num_cols = scalar @{$SFQ->{query}->{columns}};
+  Dispatch::Select::Background->new(
+    $self->StreamCsvRows($http, $rows->cursor, $num_cols))->queue;
+}
+my $CSV_ROWS_PER_CHUNK = 1000;
+# Returns a background closure that writes one chunk of CSV rows per call and
+# then either re-queues itself or waits for the output queue to drain.
+sub StreamCsvRows {
+  my ($self, $http, $cursor, $num_cols) = @_;
+  return sub {
+    my ($background) = @_;
+    my $chunk = $cursor->next($CSV_ROWS_PER_CHUNK);
+    unless(defined $chunk){
+      $http->finish;
+      return;
     }
-  });
+    my $text = "";
+    for my $row (@$chunk){
+      $text .= CsvLine($row, $num_cols);
+    }
+    $http->queue($text);
+    if($http->ready_out){
+      $background->queue;
+    } else {
+      $http->wait_output(Dispatch::Select::Event->new($background));
+    }
+  };
+}
+# One CSV record, always with $num_cols cells: rows arrive from the query
+# subprocess with trailing empty columns dropped, and a short record would
+# misalign the file for anything reading it by column.
+sub CsvLine {
+  my ($row, $num_cols) = @_;
+  my @cells;
+  for my $j (0 .. $num_cols - 1){
+    my $col = $row->[$j];
+    unless(defined $col) { $col = "" }
+    $col =~ s/"/""/g;
+    push @cells, "\"$col\"";
+  }
+  return join(",", @cells) . "\r\n";
 }
 sub  DisplaySelectedForegroundQuery{
   my($self, $http, $dyn) = @_;

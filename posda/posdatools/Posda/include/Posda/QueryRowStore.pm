@@ -141,6 +141,14 @@ sub all_rows {
   return \@rows;
 }
 
+# cursor() - a forward-only reader over the rows present when each next()
+# call is made. It has its own file handle, so page reads on the store can
+# go on while a long-running consumer (a CSV download) works through it.
+sub cursor {
+  my ($self) = @_;
+  return Posda::QueryRowStore::Cursor->new($self);
+}
+
 sub _reader_positioned_at {
   my ($self, $index) = @_;
   # Pending writes have to hit the file before a reader can see them.
@@ -173,6 +181,48 @@ sub DESTROY {
       print STDERR "Posda::QueryRowStore: can't remove $self->{path}: $!\n";
     }
   }
+}
+
+package Posda::QueryRowStore::Cursor;
+
+use strict;
+use warnings;
+
+sub new {
+  my ($class, $store) = @_;
+  $store->{wfh}->flush;
+  open my $fh, "<", $store->{path} or die "Can't open $store->{path}: $!";
+  binmode $fh;
+  return bless { store => $store, fh => $fh, next_index => 0 }, $class;
+}
+
+# next($n) - up to $n rows following the last call, or undef once every row
+# the store held at the time of the call has been returned.
+sub next {
+  my ($self, $n) = @_;
+  my $store = $self->{store};
+  my $available = $store->count - $self->{next_index};
+  if ($available <= 0) { return undef }
+  if ($n > $available) { $n = $available }
+  $store->{wfh}->flush;
+  my $fh = $self->{fh};
+  my @rows;
+  local $/ = "\n";
+  for (1 .. $n) {
+    my $line = <$fh>;
+    unless (defined $line) {
+      die "Posda::QueryRowStore: $store->{path} ended before row " .
+        "$self->{next_index} (expected " . $store->count . " rows)";
+    }
+    push @rows, $store->{json}->decode($line);
+    $self->{next_index} += 1;
+  }
+  return \@rows;
+}
+
+sub DESTROY {
+  my ($self) = @_;
+  if (defined $self->{fh}) { close $self->{fh} }
 }
 
 1;
