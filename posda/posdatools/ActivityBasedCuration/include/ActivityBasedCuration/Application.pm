@@ -41,6 +41,7 @@ use Posda::FileViewerChooser;
 
 use ActivityBasedCuration::PopupHelp;
 use Posda::QueryLog;
+use Posda::QueryRowStore;
 
 use Text::Markdown 'markdown';
 
@@ -1625,9 +1626,9 @@ sub OpenNewTableLevelPopup{
   if($self->{FilterSelection}->{$tb_id} eq "filtered"){
     $invocation->{is_filtered} = 1;
     $invocation->{filter_caption} = $self->TextRenderQueryFilter($query->{filter});
-    $invocation->{num_filtered_rows} = @{$query->{filtered_rows}};
+    $invocation->{num_filtered_rows} = $self->FilteredRowStore($query)->count;
   } else {
-    $invocation->{rows} = @{$query->{rows}};
+    $invocation->{rows} = $query->{rows}->count;
   }
   $params->{current_settings}->{notify} = $self->get_user;
   if(defined $self->{ActivitySelected}){
@@ -1637,23 +1638,9 @@ sub OpenNewTableLevelPopup{
       $params->{current_settings}->{activity_timepoint_id} = $row->[0];
     }, sub {}, $self->{ActivitySelected});
   }
-  my $filter_sel = $self->{FilterSelection}->{$tb_id};
-  my $rows_array;
-  if($filter_sel eq "filtered"){
-    $rows_array = $self->{ForegroundQueries}->{$tb_id}->{filtered_rows};
-  } else {
-    $rows_array = $self->{ForegroundQueries}->{$tb_id}->{rows};
-  }
   $params->{cols} = $self->{ForegroundQueries}->{$tb_id}->{query}->{columns};
-  my @rows;
-  for my $r (@{$rows_array}){
-    my $hash;
-    for my $i (0 .. $#{$params->{cols}}){
-      $hash->{$params->{cols}->[$i]} = $r->[$i];
-    }
-    push @rows, $hash;
-  }
-  $params->{rows}= \@rows;
+  $params->{rows} = $self->RowHashesFromStore(
+    $self->WorkingRowStore($tb_id), $params->{cols});
   my $command =
     $self->GetOperationDescription($invocation->{Operation});
   if(defined $command){
@@ -1713,9 +1700,9 @@ sub ChainQueryToSpreadsheet{
   if($self->{FilterSelection}->{$tb_id} eq "filtered"){
     $invocation->{is_filtered} = 1;
     $invocation->{filter_caption} = $self->TextRenderQueryFilter($query->{filter});
-    $invocation->{num_filtered_rows} = @{$query->{filtered_rows}};
+    $invocation->{num_filtered_rows} = $self->FilteredRowStore($query)->count;
   } else {
-    $invocation->{rows} = @{$query->{rows}};
+    $invocation->{rows} = $query->{rows}->count;
   }
   $params->{current_settings}->{notify} = $self->get_user;
   if(defined $self->{ActivitySelected}){
@@ -1725,23 +1712,9 @@ sub ChainQueryToSpreadsheet{
       $params->{current_settings}->{activity_timepoint_id} = $row->[0];
     }, sub {}, $self->{ActivitySelected});
   }
-  my $filter_sel = $self->{FilterSelection}->{$tb_id};
-  my $rows_array;
-  if($filter_sel eq "filtered"){
-    $rows_array = $self->{ForegroundQueries}->{$tb_id}->{filtered_rows};
-  } else {
-    $rows_array = $self->{ForegroundQueries}->{$tb_id}->{rows};
-  }
   $params->{cols} = $self->{ForegroundQueries}->{$tb_id}->{query}->{columns};
-  my @rows;
-  for my $r (@{$rows_array}){
-    my $hash;
-    for my $i (0 .. $#{$params->{cols}}){
-      $hash->{$params->{cols}->[$i]} = $r->[$i];
-    }
-    push @rows, $hash;
-  }
-  $params->{rows}= \@rows;
+  $params->{rows} = $self->RowHashesFromStore(
+    $self->WorkingRowStore($tb_id), $params->{cols});
   my $class = "Posda::ProcessUploadedSpreadsheetWithNoOperation";
   eval "require $class";
   if($@){
@@ -2537,7 +2510,7 @@ sub BuildDicomDefacedSeries{
   my $hash = $self->{NewQueryToDisplay};
   my $cur_query = $self->{ForegroundQueries}->{$hash};
   my $si_id = $cur_query->{args}->[0];
-  my $rows = $cur_query->{filtered_rows};
+  my $rows = $self->FilteredRowStore($cur_query)->all_rows;
   my $params = {
     activity_id => $self->{ActivitySelected},
     user => $self->get_user,
@@ -2565,7 +2538,7 @@ sub AnalyzeSeriesVisualizations{
   my $hash = $self->{NewQueryToDisplay};
   my $cur_query = $self->{ForegroundQueries}->{$hash};
   my $si_id = $cur_query->{args}->[0];
-  my $rows = $cur_query->{filtered_rows};
+  my $rows = $self->FilteredRowStore($cur_query)->all_rows;
   my $params = {
     activity_id => $self->{ActivitySelected},
     user => $self->get_user,
@@ -3634,8 +3607,7 @@ sub NewerProcessPopupFromRow{
   }
   # get params from row as prior_ss_args
   my $cols = $SFQ->{query}->{columns};
-  my $rows = $SFQ->{rows};
-  my $row = $rows->[$dyn->{row}];
+  my $row = $self->WorkingRowStore($self->{NewQueryToDisplay})->row($dyn->{row});
   for my $ci (0 .. $#{$cols}){
     my $cn = $cols->[$ci];
     my $v = $row->[$ci];
@@ -3706,13 +3678,7 @@ print STDERR "###########class: $class\n";
     notify => $self->get_user,
   };
   my $cols = $table->{query}->{columns};
-  my $rows;
-  if($self->{FilterSelection}->{$self->{NewQueryToDisplay}} eq "unfiltered"){
-   $rows = $table->{rows};
-  } else {
-   $rows = $table->{filtered_rows};
-  }
-  my $row = $rows->[$dyn->{row}];
+  my $row = $self->WorkingRowStore($self->{NewQueryToDisplay})->row($dyn->{row});
 
   # build hash for popup constructor
   for my $i (0 .. $#{$row}) {
@@ -3951,7 +3917,7 @@ sub SelectFromCurrentForeground{
     my $e = $self->{ForegroundQueries}->{$k};
     $status_counts{$e->{status}} += 1;
     my $id = $e->{invoked_id};
-    my $num_rows = @{$e->{rows}};
+    my $num_rows = $e->{rows}->count;
     $http->queue("<tr>");
     $http->queue("<td>$e->{invoked_id}</td>");
     $http->queue("<td>$e->{caption}</td>");
@@ -4459,8 +4425,7 @@ $self->{querychaindetails} = $details;
   my $h = {};
 
   my $cols = $SFQ->{query}->{columns};
-  my $rows = $SFQ->{rows};
-  my $row = $rows->[$dyn->{row}];
+  my $row = $self->WorkingRowStore($self->{NewQueryToDisplay})->row($dyn->{row});
 
   # build hash for popup constructor
   for my $i (0 .. $#{$row}) {
@@ -4678,7 +4643,7 @@ sub MakeNewQuery {
     who => $self->get_user,
     args => \@args,
     status => "running",
-    rows => [],
+    rows => Posda::QueryRowStore->new($self->{TempDir}, "query_rows_$guid"),
     invoked_id => $invoked_id
   };
   delete $self->{SelectedNewQuery};
@@ -4687,15 +4652,15 @@ sub MakeNewQuery {
   my $q_pack = $self->{ForegroundQueries}->{$guid};
   $query->RunQuery(
     sub {
-  my ($row) = @_;
-      push @{$q_pack->{rows}}, $row;
+      my ($row) = @_;
+      $q_pack->{rows}->add($row);
     },
     sub {
-  my ($msg) = @_;
+      my ($msg) = @_;
       if($msg =~ /^RESULT:(.*)$/s){
         $q_pack->{status} = "done";
         $q_pack->{completion_msg} = $1;
-        Posda::QueryLog::query_finished($invoked_id, $#{$q_pack->{rows}} + 1);
+        Posda::QueryLog::query_finished($invoked_id, $q_pack->{rows}->count);
       } elsif($msg =~ /^ERROR:(.*)$/s){
         $q_pack->{status} = "error";
         $q_pack->{completion_msg} = $1;
@@ -4718,7 +4683,10 @@ sub RefreshQuery{
   my $invoked_id = Posda::QueryLog::query_invoked($query, $self->get_user);
   $self->{ForegroundQueries}->{$guid}->{when} = $self->now;
   $self->{ForegroundQueries}->{$guid}->{status} = "running";
-  $self->{ForegroundQueries}->{$guid}->{rows} = [];
+  $self->{ForegroundQueries}->{$guid}->{rows} =
+    Posda::QueryRowStore->new($self->{TempDir}, "query_rows_$guid");
+  delete $self->{ForegroundQueries}->{$guid}->{filtered_rows};
+  delete $self->{ForegroundQueries}->{$guid}->{filtered_key};
 
   delete $self->{SelectedNewQuery};
   #$self->{NewQueryToDisplay} = $guid;
@@ -4726,15 +4694,15 @@ sub RefreshQuery{
   my $q_pack = $self->{ForegroundQueries}->{$guid};
   $query->RunQuery(
     sub {
-  my ($row) = @_;
-      push @{$q_pack->{rows}}, $row;
+      my ($row) = @_;
+      $q_pack->{rows}->add($row);
     },
     sub {
-  my ($msg) = @_;
+      my ($msg) = @_;
       if($msg =~ /^RESULT:(.*)$/s){
         $q_pack->{status} = "done";
         $q_pack->{completion_msg} = $1;
-        Posda::QueryLog::query_finished($invoked_id, $#{$q_pack->{rows}} + 1);
+        Posda::QueryLog::query_finished($invoked_id, $q_pack->{rows}->count);
       } elsif($msg =~ /^ERROR:(.*)$/s){
         $q_pack->{status} = "error";
         $q_pack->{completion_msg} = $1;
@@ -4752,8 +4720,8 @@ sub ClearNewQuery{
 sub DisplayNewQueryRunning{
   my($self, $http, $dyn, $SFQ) = @_;
   my $rows = 0;
-  if(exists $SFQ->{rows} && ref($SFQ->{rows}) eq "ARRAY"){
-    $rows = @{$SFQ->{rows}};
+  if(defined $SFQ->{rows}){
+    $rows = $SFQ->{rows}->count;
   }
   $http->queue("Running: $SFQ->{caption}, $rows rows read<br>");
   $self->AutoRefresh;
@@ -4776,8 +4744,8 @@ sub NewQueryPageUp {
   my ($self, $http, $dyn) = @_;
   my $SFQ = $self->{ForegroundQueries}->{$self->{NewQueryToDisplay}};
   my $new_start = $SFQ->{first_row} + $SFQ->{rows_to_show};
-  if($new_start + $SFQ->{rows_to_show} > @{$SFQ->{rows}}){
-    $new_start = @{$SFQ->{rows}} - $SFQ->{rows_to_show};
+  if($new_start + $SFQ->{rows_to_show} > $SFQ->{rows}->count){
+    $new_start = $SFQ->{rows}->count - $SFQ->{rows_to_show};
     if($new_start < 0) { $new_start = 0 }
   }
   $SFQ->{first_row} = $new_start;
@@ -4795,7 +4763,7 @@ sub SetFirstRow {
   my ($self, $http, $dyn) = @_;
   my $SFQ = $self->{ForegroundQueries}->{$self->{NewQueryToDisplay}};
   my $value = $dyn->{value};
-  my $max = @{$SFQ->{rows}} - $SFQ->{rows_to_show};
+  my $max = $SFQ->{rows}->count - $SFQ->{rows_to_show};
   if($value < 0) { $value = 0 }
   if($value > $max) { $value = $max }
   $SFQ->{first_row} = $value;
@@ -4806,31 +4774,87 @@ sub SetRowsToShow {
   my $value = $dyn->{value};
   $SFQ->{rows_to_show} = $value;
 }
+# Apply $sfq->{filter} to every row of the result, streaming the matches
+# into a new Posda::QueryRowStore so the filtered result is not held in
+# memory either.
 sub FilterQueryRows {
   my ($self, $sfq) = @_;
-  # No filtering for now
-  # return $sfq->{rows};
   my %name_to_i;
   for my $i (0 .. $#{$sfq->{query}->{columns}}){
     $name_to_i{$sfq->{query}->{columns}->[$i]} = $i;
   }
-  my @filtered_rows;
-  row:
-  for my $r (@{$sfq->{rows}}){
-    for my $k (keys %{$sfq->{filter}}){
-      #unless($r->[$name_to_i{$k}] =~ /$sfq->{filter}->{$k}/){
-      #  next row;
-      #}
-      $self->{ColValue} = uc $r->[$name_to_i{$k}];
-      $self->{ColFilter} = uc $sfq->{filter}->{$k};
-      unless($self->{ColValue} =~ /$self->{ColFilter}/){
-        next row;
-      }
-
-    }
-    push @filtered_rows, $r;
+  my @tests;
+  for my $k (keys %{$sfq->{filter}}){
+    my $pattern = $sfq->{filter}->{$k};
+    # An empty pattern is no constraint. It must also never reach the regex
+    # match below, because // in Perl reuses the last successful pattern.
+    next unless defined $pattern && $pattern ne "";
+    push @tests, [$name_to_i{$k}, uc $pattern];
   }
-  return \@filtered_rows;
+  my $filtered = Posda::QueryRowStore->new($self->{TempDir},
+    "query_rows_filtered");
+  $sfq->{rows}->each(sub {
+    my ($r) = @_;
+    for my $test (@tests){
+      my ($col, $pattern) = @$test;
+      my $value = defined($r->[$col]) ? uc $r->[$col] : "";
+      unless($value =~ /$pattern/){ return }
+    }
+    $filtered->add($r);
+  });
+  return $filtered;
+}
+# The rows of $SFQ after its current filter, as a Posda::QueryRowStore. With
+# no filter defined this is the full result. The filtered store is cached and
+# rebuilt only when the filter or the number of source rows changes, so paging
+# through filtered results does not rescan the whole result on every redraw.
+sub FilteredRowStore {
+  my ($self, $SFQ) = @_;
+  unless(defined $SFQ->{filter}){
+    delete $SFQ->{filtered_rows};
+    delete $SFQ->{filtered_key};
+    return $SFQ->{rows};
+  }
+  my $key = join("\x1f", $SFQ->{rows}->count,
+    map {
+      my $v = $SFQ->{filter}->{$_};
+      "$_=" . (defined $v ? $v : "")
+    } sort keys %{$SFQ->{filter}});
+  unless(defined($SFQ->{filtered_rows}) && $SFQ->{filtered_key} eq $key){
+    $SFQ->{filtered_rows} = $self->FilterQueryRows($SFQ);
+    $SFQ->{filtered_key} = $key;
+  }
+  return $SFQ->{filtered_rows};
+}
+# The rows the user is looking at for foreground query $index: the filtered
+# rows when the "filtered" radio button is selected, otherwise the full
+# result. Row indexes in button callbacks refer to this store.
+sub WorkingRowStore {
+  my ($self, $index) = @_;
+  my $SFQ = $self->{ForegroundQueries}->{$index};
+  if(
+    defined($self->{FilterSelection}->{$index}) &&
+    $self->{FilterSelection}->{$index} eq "filtered"
+  ){
+    return $self->FilteredRowStore($SFQ);
+  }
+  return $SFQ->{rows};
+}
+# Every row of $store as a hash keyed by column name. This rebuilds the whole
+# result in memory; it exists for the table-level popups, which take the
+# complete row list and have no streaming interface.
+sub RowHashesFromStore {
+  my ($self, $store, $cols) = @_;
+  my @rows;
+  $store->each(sub {
+    my ($r) = @_;
+    my $hash = {};
+    for my $i (0 .. $#{$cols}){
+      $hash->{$cols->[$i]} = $r->[$i];
+    }
+    push @rows, $hash;
+  });
+  return \@rows;
 }
 sub SetEditFilter {
   my ($self, $http, $queue) = @_;
@@ -4870,8 +4894,8 @@ sub DownloadTableFromNewQuery{
   $http->queue("query:,\"$SFQ->{caption}\"\r\n");
   $http->queue("when:,$SFQ->{when}\r\n");
   $http->queue("by:,$SFQ->{who}\r\n");
-  my $num_rows = @{$SFQ->{rows}};
-  my $num_filtered_rows = @{$SFQ->{filtered_rows}};
+  my $num_rows = $SFQ->{rows}->count;
+  my $num_filtered_rows = $self->FilteredRowStore($SFQ)->count;
   if(exists($SFQ->{filter})){
     $http->queue("unfiltered_rows:,$num_rows\r\n");
     $http->queue("filtered_rows:,$num_filtered_rows\r\n");
@@ -4883,7 +4907,7 @@ sub DownloadTableFromNewQuery{
     $http->queue("filter:,\"$text\"\r\n");
     $http->queue("\r\n");
     if($mode eq "filtered"){
-      $rows = $SFQ->{filtered_rows};
+      $rows = $self->FilteredRowStore($SFQ);
       $http->queue("Filtered Query Data:\r\n");
     } else {
       $rows = $SFQ->{rows};
@@ -4902,8 +4926,8 @@ sub DownloadTableFromNewQuery{
       $http->queue("\r\n");
     } else { $http->queue(",") };
   }
-  for my $i (0 .. $#{$rows}){
-    my $row = $rows->[$i];
+  $rows->each(sub {
+    my ($row) = @_;
     for my $j (0 .. $#{$row}){
       my $col = $row->[$j];
       unless(defined $col) { $col = "" }
@@ -4913,7 +4937,7 @@ sub DownloadTableFromNewQuery{
         $http->queue("\r\n");
       } else { $http->queue(",") }
     }
-  }
+  });
 }
 sub  DisplaySelectedForegroundQuery{
   my($self, $http, $dyn) = @_;
@@ -4946,13 +4970,8 @@ sub  DisplayFinishedSelectedForegroundQuery{
   }
   unless(defined $SFQ->{first_row}) { $SFQ->{first_row} = 0 }
   unless(defined $SFQ->{rows_to_show}) { $SFQ->{rows_to_show} = 30 }
-  if(defined $SFQ->{filter}){
-    $SFQ->{filtered_rows} = $self->FilterQueryRows($SFQ);
-  } else {
-    $SFQ->{filtered_rows} = $SFQ->{rows}
-  }
-  my $num_rows = @{$SFQ->{rows}};
-  my $filtered_rows = @{$SFQ->{filtered_rows}};
+  my $num_rows = $SFQ->{rows}->count;
+  my $filtered_rows = $self->FilteredRowStore($SFQ)->count;
   $http->queue(qq{
     <div style="display: flex; flex-direction: column; align-items: flex-beginning; margin-bottom: 5px"
     id='div_QueryRespHead'>});
@@ -4995,7 +5014,6 @@ sub  DisplayFinishedSelectedForegroundQuery{
   $http->queue(qq{
     <div style="display: flex; flex-direction: row; align-items: flex-end; margin-left: 10px">
   });
-  my $rows = keys @{$SFQ->{rows}};
   my $first_row = $SFQ->{first_row};
   $http->queue('First row: ');
   $self->ClasslessBlurEntryBox($http, {
@@ -5042,18 +5060,13 @@ sub  DisplayFinishedSelectedForegroundQuery{
     $http->queue("<th>$i</th>");
   }
   $http->queue("</tr>");
-  my $working_rows;
-  if($self->{FilterSelection}->{$self->{NewQueryToDisplay}} eq "filtered"){
-    $working_rows = $SFQ->{filtered_rows};
-  } else {
-    $working_rows = $SFQ->{rows};
-  }
-  my $num_working_rows = @{$working_rows};
-  my $max_row = $SFQ->{first_row} + $SFQ->{rows_to_show} - 1;
-  if($max_row > $num_working_rows) { $max_row = $#{$working_rows} }
-  for my $i ($SFQ->{first_row} .. $max_row){
+  # Only the rows on this page are read back from the store.
+  my $page = $self->WorkingRowStore($self->{NewQueryToDisplay})->rows(
+    $SFQ->{first_row}, $SFQ->{rows_to_show});
+  for my $page_i (0 .. $#{$page}){
+    my $i = $SFQ->{first_row} + $page_i;
     $http->queue("<tr>");
-    my $row = $working_rows->[$i];
+    my $row = $page->[$page_i];
 $self->{chained_queries} = \@chained_queries;
     if($#chained_queries > -1){
       $http->queue("<td>");
