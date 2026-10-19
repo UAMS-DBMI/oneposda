@@ -372,3 +372,34 @@ Sizes are rough new lines (py / ts). Flagged items: **[schema]**, **[public API]
 - Tests: `uv run pytest` 83, `bun run test` 18. Live checks: runs started,
   paged, filtered, downloaded, paused, resumed, aborted and dismissed through
   nginx and in Chrome; chained query pre-fill verified in Chrome.
+
+### Phase 3 — done 2026-10-18
+
+- API: `/papi/v1/abc/operations` (list, detail, `candidates`, `prepare`,
+  `launch`), `/workflow/categories`, `/uploads` (+ `/{file_id}/sheet`).
+  Modules: `services/operations/{placeholders,resolve,catalog,spreadsheets,
+  launch}.py`, `services/workqueue.py`, `services/files/ingest.py` (the
+  importer's steps, extracted; `routes/importer.py` now delegates to it;
+  `services/files.py` became `services/files/__init__.py`).
+- `papi/util/digest.py` returned the last chunk's length as the file size;
+  fixed (affects in-place imports of files over 8 KiB).
+- Launch is one transaction (spreadsheet record, `subprocess_invocation`,
+  worker input file, `work`) then LPUSH on Redis db 0. Verified: a launch
+  through the API was picked up by the compose worker in under 5 s and
+  finished (work 16, subprocess_invocation 30).
+- Deviations: the launch CSV is real CSV with one column per input field
+  (Perl wrote the whole rendered input line into the first column and left
+  trailing commas), so it re-runs as a named spreadsheet; the "program
+  found" check looks in `$POSDA_POSDATOOLS_ROOT/*/bin` as well as PATH
+  because the API image has no scripts on PATH; zip/tar uploads are not
+  expanded (the Perl `ProcessCompressedFile` path was disabled behind
+  `unless(1)`); workflow buttons whose action is not a defined operation
+  are shown disabled instead of dying server-side; the Upload page's file
+  list lives in the browser's storage per user.
+- Not done: the Perl `InsertListOfAnnotatedFiles` annotation shortcut (no
+  reference found in the ABC code read so far); OpHelp popups (the Perl
+  handler returned early and did nothing).
+- Background query launch (`RunQueryInBackground.pl`) still pending; it is
+  an ordinary operation launch and lands with Phase 4's background list.
+- Tests: `uv run pytest` 104, `bun run test` 21. Chrome: workflow page,
+  launch dialog with provenance and live expanded command.
