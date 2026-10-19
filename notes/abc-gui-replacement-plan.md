@@ -301,3 +301,28 @@ Sizes are rough new lines (py / ts). Flagged items: **[schema]**, **[public API]
 - Phase 2: differential CSV parity test vs Perl fixtures; manual check that Active tab shows a run started in one API worker from a request served by another (hit the API several times; `owner` differs).
 - Phase 3: launch an operation from each source (workflow button, table, row, upload named/unnamed, compare timepoints, background query) and confirm the compose worker runs it (`work.status='finished'`, report appears on the timeline).
 - Phase 6: curator walkthrough of `PARITY.md`; after decommission, `curl -I http://localhost/pa1/` returns 404 and `/posda/` redirects to `/abc/`.
+
+## Status
+
+### Phase 1 — done 2026-10-18 (branch `abc-gui-replacement`)
+
+- API: `POST /papi/auth/login` and `/logout`; `/papi/v1/abc/me`,
+  `/me/bindings`, `/activities` (list, create, patch third-party URL,
+  task-status + dismiss, timeline, timepoints), `/files/{id}/text`.
+  Service layer under `papi/services/`, routers under `papi/routes/abc/`.
+- SPA: `web/abc` (login, activities, activity page with task status and
+  timeline). nginx `location /abc`, `abc-builder` stage in `web/Dockerfile`.
+- Tests: `uv run pytest` in `posda/fastapi` (26), `bun run test` in `web/abc`
+  (10). Live checks done through the compose nginx with a dev user.
+- Migration `20261018_user_variable_binding_unique.sql` is idempotent. On the
+  dev database `./migrate up` refuses because `0047` drifted after it was
+  applied, so it was applied with psql by hand; production should go through
+  `./migrate up posda_files`.
+- Deviations from Perl recorded so far: timeline events claim the first
+  unclaimed timepoint created during the run (Perl's lock-step walk could
+  stall on a stray timepoint); the timeline "resp" button is dropped
+  (`subprocess_lines` is never written any more); the login cookie is
+  HttpOnly with no max-age.
+- Local-only: `docker-compose.yaml` (gitignored) now mounts
+  `./posda/fastapi/app:/fastapi` and `./web/abc/dist:/www/abc`, and runs the
+  worker and file-process services from `registry.dbmi.cloud/posda:1.1.10`.
