@@ -1,7 +1,8 @@
 import { Link } from "react-router-dom";
 import type { QuerySummary } from "../api/types";
+import { EmptyState } from "./ui";
 
-/** The name / params / columns / make-query table the Perl lists used. */
+/** The name / params / columns table the Perl lists used; the name opens the form. */
 export function QueryListTable({
   caption,
   queries,
@@ -12,44 +13,39 @@ export function QueryListTable({
   emptyText?: string;
 }) {
   return (
-    <table className="table-grid mb-4">
-      <caption className="py-1 text-left text-sm font-semibold">{caption}</caption>
-      <thead>
-        <tr>
-          <th>name</th>
-          <th>params</th>
-          <th>columns returned</th>
-          <th>make query</th>
-        </tr>
-      </thead>
-      <tbody>
-        {queries.length === 0 && (
+    <div className="table-wrap mb-4">
+      <table className="table-grid">
+        <caption>{caption}</caption>
+        <thead>
           <tr>
-            <td colSpan={4} className="text-gray-500">
-              {emptyText}
-            </td>
+            <th>name</th>
+            <th>arguments</th>
+            <th>columns returned</th>
+            <th></th>
           </tr>
-        )}
-        {queries.map((q) => (
-          <tr key={q.name}>
-            <td className="whitespace-nowrap">{q.name}</td>
-            <td>{q.args.join(", ")}</td>
-            <td>{q.columns.join(", ")}</td>
-            <td className="whitespace-nowrap">
-              <Link className="btn" to={`/queries/${encodeURIComponent(q.name)}`}>
-                foreground
-              </Link>{" "}
-              <Link
-                className="btn"
-                to={`/queries/${encodeURIComponent(q.name)}?background=1`}
-                title="Open the argument form and queue the query in the background"
-              >
-                background
-              </Link>
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {queries.map((q) => (
+            <tr key={q.name}>
+              <td className="whitespace-nowrap font-medium">
+                <Link className="link" to={`/queries/${encodeURIComponent(q.name)}`}>
+                  {q.name}
+                </Link>
+              </td>
+              <td className="text-slate-600">{q.args.join(", ")}</td>
+              <td className="max-w-xl truncate text-slate-600" title={q.columns.join(", ")}>
+                {q.columns.join(", ")}
+              </td>
+              <td className="whitespace-nowrap text-right">
+                <Link className="btn btn-sm" to={`/queries/${encodeURIComponent(q.name)}`}>
+                  Open
+                </Link>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {queries.length === 0 && <EmptyState>{emptyText}</EmptyState>}
+    </div>
   );
 }
