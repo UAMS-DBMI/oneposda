@@ -17,6 +17,7 @@ dependencies = [
     "python-multipart",
     "chardet",
     "pandas",
+    "aiomysql>=0.3.2",
 ]
 
 [dependency-groups]
