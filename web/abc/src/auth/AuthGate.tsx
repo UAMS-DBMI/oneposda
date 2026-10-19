@@ -4,6 +4,7 @@ import useSWR from "swr";
 import { ForbiddenError, UnauthorizedError } from "../api/client";
 import { paths } from "../api/abc";
 import type { Me } from "../api/types";
+import { Loading } from "../components/ui";
 
 const MeContext = createContext<Me | null>(null);
 
@@ -20,19 +21,19 @@ export function AuthGate({ children }: { children: ReactNode }) {
     shouldRetryOnError: false,
   });
 
-  if (isLoading) return <p className="p-4 text-gray-500">Loading…</p>;
+  if (isLoading) return <div className="p-4"><Loading /></div>;
   if (error instanceof UnauthorizedError) {
     return <Navigate to="/login" replace state={{ from: location }} />;
   }
   if (error instanceof ForbiddenError) {
     return (
-      <p className="p-4 text-red-700">
+      <p className="notice notice-danger m-4">
         Your account may not use Activity Based Curation. {error.detail}
       </p>
     );
   }
   if (error || !data) {
-    return <p className="p-4 text-red-700">Could not load your account: {String(error)}</p>;
+    return <p className="notice notice-danger m-4">Could not load your account: {String(error)}</p>;
   }
   return <MeContext.Provider value={data}>{children}</MeContext.Provider>;
 }

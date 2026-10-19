@@ -1,84 +1,126 @@
-import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import useSWR from "swr";
 import { paths } from "../api/abc";
 import type { BackgroundJobs } from "../api/types";
+import { Badge, EmptyState, ErrorMessage, Loading, PageHeader, SegmentedControl, TimeWindowPicker, jobStatusTone } from "../components/ui";
 import { formatDuration, formatTimestamp } from "../lib/format";
+import { parseTimeWindow, type TimeWindow } from "../lib/timeWindow";
 
-const MODES = ["all", "running", "errored", "finished"] as const;
+const MODES = [
+  { value: "all", label: "All" },
+  { value: "running", label: "Running" },
+  { value: "errored", label: "Errored" },
+  { value: "finished", label: "Finished" },
+] as const;
+
+type Mode = (typeof MODES)[number]["value"];
+
+const REFRESH_MS = 10000;
+
+function parseMode(raw: string | null): Mode {
+  return MODES.some((m) => m.value === raw) ? (raw as Mode) : "all";
+}
 
 function FileLink({ fileId, label }: { fileId: number | null; label: string }) {
-  if (fileId === null) return null;
+  if (fileId === null) return <span className="text-slate-300">–</span>;
   return (
-    <a className="btn" href={paths.fileData(fileId)} target="_blank" rel="noreferrer" title={label}>
+    <a className="link tabular-nums" href={paths.fileData(fileId)} target="_blank" rel="noreferrer" title={`${label} (file ${fileId})`}>
       {fileId}
     </a>
   );
 }
 
-/** Port of Posda::BackgroundList. */
+/** Port of Posda::BackgroundList; the list refreshes itself every 10 s. */
 export function BackgroundJobsPage() {
-  const [mode, setMode] = useState<(typeof MODES)[number]>("all");
-  const [useWindow, setUseWindow] = useState(true);
-  const [inLast, setInLast] = useState("12 hours");
-  const [refresh, setRefresh] = useState(false);
-  const { data, error } = useSWR<BackgroundJobs>(paths.backgroundJobs(mode, useWindow ? inLast : ""), {
-    refreshInterval: refresh ? 10000 : 0,
+  const [params, setParams] = useSearchParams();
+  const mode = parseMode(params.get("mode"));
+  const window = parseTimeWindow(params.get("in_last"));
+  const { data, error, isValidating } = useSWR<BackgroundJobs>(paths.backgroundJobs(mode, window), {
+    refreshInterval: REFRESH_MS,
+    keepPreviousData: true,
   });
+
+  function update(next: { mode?: Mode; in_last?: TimeWindow }) {
+    const merged = { mode, in_last: window, ...next };
+    const entries: [string, string][] = [];
+    if (merged.mode !== "all") entries.push(["mode", merged.mode]);
+    if (merged.in_last !== "12 hours") entries.push(["in_last", merged.in_last]);
+    setParams(entries, { replace: true });
+  }
 
   return (
     <div>
-      <h1 className="text-xl font-semibold">Background Process Lister</h1>
-      <div className="my-3 flex flex-wrap items-center gap-3 text-sm">
-        {MODES.map((m) => (
-          <label key={m} className="flex items-center gap-1">
-            <input type="radio" name="mode" checked={mode === m} onChange={() => setMode(m)} />
-            {m}
-          </label>
-        ))}
-        <label className="flex items-center gap-1">
-          <input type="checkbox" checked={useWindow} onChange={(e) => setUseWindow(e.target.checked)} />
-          In last:
-        </label>
-        <input className="input w-32" value={inLast} disabled={!useWindow} onChange={(e) => setInLast(e.target.value)} />
-        <label className="flex items-center gap-1">
-          <input type="checkbox" checked={refresh} onChange={(e) => setRefresh(e.target.checked)} />
-          Refresh
-        </label>
-      </div>
-      {error && <p className="text-red-700">{String(error)}</p>}
-      <div className="overflow-x-auto">
-        <table className="table-grid">
-          <thead>
-            <tr>
-              <th>sid</th><th>wid</th><th>bid</th><th>aid</th><th>status</th><th>input</th><th>stdout</th><th>stderr</th>
-              <th>invoker</th><th>since</th><th>command_line</th><th>invoked</th><th>notify</th><th>node_hostname</th><th>queue</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(data?.jobs ?? []).map((job) => (
-              <tr key={job.subprocess_invocation_id}>
-                <td>{job.subprocess_invocation_id}</td>
-                <td>{job.work_id}</td>
-                <td>{job.background_subprocess_id}</td>
-                <td>{job.activity_id}</td>
-                <td className={job.status === "errored" ? "text-red-700" : ""}>{job.status}</td>
-                <td><FileLink fileId={job.input_file_id} label="Input" /></td>
-                <td><FileLink fileId={job.stdout_file_id} label="Stdout" /></td>
-                <td><FileLink fileId={job.stderr_file_id} label="Stderr" /></td>
-                <td>{job.invoking_user}</td>
-                <td className="whitespace-nowrap">{formatDuration(job.since_invocation)}</td>
-                <td className="font-mono text-xs">{job.command_line}</td>
-                <td className="whitespace-nowrap">{formatTimestamp(job.when_invoked)}</td>
-                <td>{job.user_to_notify}</td>
-                <td>{job.node_hostname}</td>
-                <td>{job.background_queue_name}</td>
+      <PageHeader
+        title="Background processes"
+        subtitle={
+          <>
+            Every operation launched through Posda, newest first. Refreshes every {REFRESH_MS / 1000} s
+            {isValidating && <span className="ml-1 text-blue-700">· updating…</span>}
+          </>
+        }
+        actions={
+          <>
+            <SegmentedControl label="Status" options={MODES} value={mode} onChange={(m) => update({ mode: m })} />
+            <span className="text-slate-500">started in the last</span>
+            <TimeWindowPicker value={window} onChange={(w) => update({ in_last: w })} />
+          </>
+        }
+      />
+      {error && <ErrorMessage error={error} />}
+      {!data && !error && <Loading />}
+      {data && (
+        <div className="table-wrap">
+          <table className="table-grid">
+            <thead>
+              <tr>
+                <th className="num" title="subprocess_invocation_id">sid</th>
+                <th className="num" title="work_id">wid</th>
+                <th className="num" title="background_subprocess_id">bid</th>
+                <th className="num" title="activity_id">activity</th>
+                <th>status</th>
+                <th>input</th>
+                <th>stdout</th>
+                <th>stderr</th>
+                <th>invoker</th>
+                <th>since</th>
+                <th>invoked</th>
+                <th>command</th>
+                <th>notify</th>
+                <th>node</th>
+                <th>queue</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {data && data.total > data.jobs.length && (
-        <p className="mt-2 text-sm text-gray-600">Only {data.jobs.length} of {data.total} printed</p>
+            </thead>
+            <tbody>
+              {data.jobs.map((job) => (
+                <tr key={job.subprocess_invocation_id}>
+                  <td className="num">{job.subprocess_invocation_id}</td>
+                  <td className="num">{job.work_id}</td>
+                  <td className="num">{job.background_subprocess_id}</td>
+                  <td className="num">{job.activity_id}</td>
+                  <td>
+                    {job.status ? <Badge tone={jobStatusTone(job.status)}>{job.status}</Badge> : <span className="text-slate-400">queued</span>}
+                  </td>
+                  <td className="num"><FileLink fileId={job.input_file_id} label="Input" /></td>
+                  <td className="num"><FileLink fileId={job.stdout_file_id} label="Stdout" /></td>
+                  <td className="num"><FileLink fileId={job.stderr_file_id} label="Stderr" /></td>
+                  <td>{job.invoking_user}</td>
+                  <td className="whitespace-nowrap tabular-nums">{formatDuration(job.since_invocation)}</td>
+                  <td className="whitespace-nowrap tabular-nums">{formatTimestamp(job.when_invoked)}</td>
+                  <td className="mono max-w-xl truncate" title={job.command_line ?? ""}>{job.command_line}</td>
+                  <td>{job.user_to_notify}</td>
+                  <td className="mono">{job.node_hostname}</td>
+                  <td className="mono">{job.background_queue_name}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {data.jobs.length === 0 && <EmptyState>No background processes match.</EmptyState>}
+          {data.total > data.jobs.length && (
+            <p className="border-t border-slate-200 px-3 py-2 text-xs text-slate-500">
+              Showing the newest {data.jobs.length} of {data.total}. Narrow the status or time window to see the rest.
+            </p>
+          )}
+        </div>
       )}
     </div>
   );

@@ -4,30 +4,176 @@
 
 @layer base {
   body {
-    @apply bg-white text-gray-900;
+    @apply bg-slate-50 text-slate-900 antialiased;
+  }
+  h1 {
+    @apply text-xl font-semibold tracking-tight text-slate-900;
+  }
+  h2 {
+    @apply text-base font-semibold text-slate-900;
+  }
+  h3 {
+    @apply text-sm font-semibold text-slate-700;
+  }
+  code {
+    @apply rounded bg-slate-100 px-1 py-0.5 font-mono text-[0.85em] text-slate-800;
   }
 }
 
 @layer components {
+  /* Buttons ------------------------------------------------------------ */
   .btn {
-    @apply inline-flex items-center rounded border border-gray-400 bg-gray-100 px-2 py-0.5 text-sm hover:bg-gray-200 disabled:cursor-not-allowed disabled:opacity-50;
+    @apply inline-flex items-center justify-center gap-1 whitespace-nowrap rounded-md border border-slate-300 bg-white px-2.5 py-1 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-white;
   }
   .btn-primary {
-    @apply btn border-blue-700 bg-blue-600 text-white hover:bg-blue-700;
+    @apply btn border-blue-700 bg-blue-600 text-white hover:bg-blue-700 hover:text-white disabled:hover:bg-blue-600;
   }
+  .btn-danger {
+    @apply btn border-red-300 text-red-700 hover:border-red-400 hover:bg-red-50 hover:text-red-800;
+  }
+  .btn-ghost {
+    @apply btn border-transparent bg-transparent shadow-none hover:bg-slate-100;
+  }
+  .btn-sm {
+    @apply px-2 py-0.5 text-xs;
+  }
+  .link {
+    @apply text-blue-700 hover:underline;
+  }
+
+  /* Inputs ------------------------------------------------------------- */
   .input {
-    @apply rounded border border-gray-400 px-2 py-1 text-sm;
+    @apply rounded-md border border-slate-300 bg-white px-2 py-1 text-sm text-slate-900 shadow-sm placeholder:text-slate-400 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500;
+  }
+  .field {
+    @apply flex flex-col gap-1 text-sm;
+  }
+  .field > span {
+    @apply text-xs font-medium text-slate-600;
+  }
+
+  /* Containers --------------------------------------------------------- */
+  .card {
+    @apply rounded-lg border border-slate-200 bg-white p-4 shadow-sm;
+  }
+  .card-title {
+    @apply mb-2 text-sm font-semibold text-slate-700;
+  }
+  .toolbar {
+    @apply flex flex-wrap items-center gap-2 text-sm;
+  }
+
+  /* Tables ------------------------------------------------------------- */
+  .table-wrap {
+    @apply overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm;
   }
   .table-grid {
     @apply w-full border-collapse text-sm;
   }
+  .table-grid caption {
+    @apply bg-slate-50 px-3 py-2 text-left text-sm font-semibold text-slate-700;
+  }
   .table-grid th {
-    @apply border-b border-gray-300 bg-gray-100 px-2 py-1 text-left font-semibold;
+    @apply sticky top-0 z-[1] whitespace-nowrap border-b border-slate-200 bg-slate-50 px-3 py-1.5 text-left text-xs font-semibold text-slate-600;
   }
   .table-grid td {
-    @apply border-b border-gray-200 px-2 py-1 align-top;
+    @apply border-b border-slate-100 px-3 py-1.5 align-top;
   }
-  .table-grid tr:nth-child(even) td {
-    @apply bg-gray-50;
+  .table-grid tbody tr:last-child td {
+    @apply border-b-0;
+  }
+  .table-grid tbody tr:hover td {
+    @apply bg-blue-50/60;
+  }
+  .table-grid tr.is-selected td {
+    @apply bg-blue-50;
+  }
+  .table-grid td.num,
+  .table-grid th.num {
+    @apply text-right tabular-nums;
+  }
+  .table-grid td.mono {
+    @apply font-mono text-xs;
+  }
+  .table-grid .row-link {
+    @apply cursor-pointer;
+  }
+
+  /* Badges ------------------------------------------------------------- */
+  .badge {
+    @apply inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-medium;
+  }
+  .badge-neutral {
+    @apply border-slate-200 bg-slate-100 text-slate-700;
+  }
+  .badge-info {
+    @apply border-blue-200 bg-blue-50 text-blue-800;
+  }
+  .badge-success {
+    @apply border-green-200 bg-green-50 text-green-800;
+  }
+  .badge-warning {
+    @apply border-amber-200 bg-amber-50 text-amber-800;
+  }
+  .badge-danger {
+    @apply border-red-200 bg-red-50 text-red-800;
+  }
+  .badge-running {
+    @apply border-blue-200 bg-blue-50 text-blue-800;
+  }
+  .badge-running::before {
+    content: "";
+    @apply h-1.5 w-1.5 animate-pulse rounded-full bg-blue-600;
+  }
+
+  /* Tabs and segmented controls --------------------------------------- */
+  .tabs {
+    @apply flex flex-wrap gap-1 border-b border-slate-200;
+  }
+  .tab {
+    @apply -mb-px inline-flex items-center gap-1.5 border-b-2 border-transparent px-3 py-2 text-sm font-medium text-slate-600 hover:border-slate-300 hover:text-slate-900 focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500;
+  }
+  .tab[aria-selected="true"] {
+    @apply border-blue-600 text-blue-700;
+  }
+  .seg {
+    @apply inline-flex overflow-hidden rounded-md border border-slate-300 bg-white text-sm shadow-sm;
+  }
+  .seg > button {
+    @apply border-r border-slate-300 px-2.5 py-1 font-medium text-slate-600 last:border-r-0 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500;
+  }
+  .seg > button[aria-pressed="true"] {
+    @apply bg-blue-600 text-white hover:bg-blue-600;
+  }
+  .seg-sm > button {
+    @apply px-2 py-0.5 text-xs;
+  }
+
+  /* Messages ----------------------------------------------------------- */
+  .notice {
+    @apply rounded-md border px-3 py-2 text-sm;
+  }
+  .notice-info {
+    @apply border-blue-200 bg-blue-50 text-blue-900;
+  }
+  .notice-success {
+    @apply border-green-200 bg-green-50 text-green-900;
+  }
+  .notice-warning {
+    @apply border-amber-200 bg-amber-50 text-amber-900;
+  }
+  .notice-danger {
+    @apply border-red-200 bg-red-50 text-red-900;
+  }
+
+  /* Misc --------------------------------------------------------------- */
+  .dropzone {
+    @apply flex cursor-pointer items-center justify-center rounded-lg border-2 border-dashed border-slate-300 bg-white text-sm text-slate-500 transition-colors hover:border-blue-400 hover:bg-blue-50/40 hover:text-slate-700;
+  }
+  .pre-block {
+    @apply overflow-auto rounded-md border border-slate-200 bg-slate-50 p-3 font-mono text-xs leading-relaxed text-slate-800;
+  }
+  .kbd {
+    @apply rounded border border-slate-300 bg-slate-100 px-1 font-mono text-[0.7rem] text-slate-600;
   }
 }

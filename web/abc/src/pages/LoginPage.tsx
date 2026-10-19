@@ -31,34 +31,48 @@ export function LoginPage() {
   }
 
   return (
-    <main className="mx-auto mt-16 max-w-sm rounded border border-gray-300 p-6">
-      <h1 className="mb-4 text-xl font-semibold">Activity Based Curation</h1>
-      <form onSubmit={submit} className="flex flex-col gap-3">
-        <label className="flex flex-col text-sm">
-          Username
-          <input
-            className="input"
-            autoComplete="username"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            autoFocus
-          />
-        </label>
-        <label className="flex flex-col text-sm">
-          Password
-          <input
-            className="input"
-            type="password"
-            autoComplete="current-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-        </label>
-        {error && <p className="text-sm text-red-700">{error}</p>}
-        <button type="submit" className="btn-primary self-start" disabled={busy}>
-          Sign in
-        </button>
-      </form>
+    <main className="flex min-h-screen items-center justify-center p-4">
+      <div className="card w-full max-w-sm p-6">
+        <div className="mb-5 flex items-center gap-3">
+          <span className="inline-flex h-9 w-9 items-center justify-center rounded-md bg-blue-600 text-sm font-bold text-white">
+            ABC
+          </span>
+          <div>
+            <h1 className="text-lg">Activity Based Curation</h1>
+            <p className="text-xs text-slate-500">Sign in with your Posda account</p>
+          </div>
+        </div>
+        <form onSubmit={submit} className="flex flex-col gap-3">
+          <label className="field">
+            <span>Username</span>
+            <input
+              className="input"
+              autoComplete="username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              autoFocus
+            />
+          </label>
+          <label className="field">
+            <span>Password</span>
+            <input
+              className="input"
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          </label>
+          {error && (
+            <p className="notice notice-danger" role="alert">
+              {error}
+            </p>
+          )}
+          <button type="submit" className="btn-primary mt-1 justify-center py-1.5" disabled={busy || !username || !password}>
+            {busy ? "Signing in…" : "Sign in"}
+          </button>
+        </form>
+      </div>
     </main>
   );
 }
