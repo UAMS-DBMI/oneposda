@@ -425,3 +425,22 @@ Sizes are rough new lines (py / ts). Flagged items: **[schema]**, **[public API]
   passwords into stderr files that the background list links to (seen in
   work 17's stderr on dev).
 - Tests: `uv run pytest` 112, `bun run test` 21.
+
+### Phase 5 — done 2026-10-18
+
+- API: `/papi/v1/abc/admin/{users,permissions}` (gated on UserAdmin
+  launch via `require_app`), `/papi/v1/abc/status`. `services/users_admin.py`.
+- Hardening: `auth.py` no longer logs the system token and every request's
+  token; failed sign-ins per username are counted in Redis and refused with
+  429 past `POSDA_LOGIN_FAILURE_LIMIT` (10) within
+  `POSDA_LOGIN_FAILURE_WINDOW` seconds (300). Verified live: the 11th bad
+  attempt returns 429.
+- No permission seed migration was needed: prod has the
+  `ActivityBasedCuration` and `UserAdmin` app rows with `launch`.
+- Deviations: deleting a user referenced by dataset/QC records returns 409
+  with advice to disable instead (Perl would have failed on the FK);
+  usernames are still lower-cased; a password is required on creation
+  (Perl fell back to the literal `no_pass`); LDAP messaging is gone.
+- SPA: Admin page (accounts, permissions, password, enable/disable, delete).
+  All nav entries now have real pages; the placeholder page is removed.
+- Tests: `uv run pytest` 115, `bun run test` 22.
