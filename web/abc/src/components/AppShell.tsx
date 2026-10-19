@@ -1,6 +1,6 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { useSWRConfig } from "swr";
-import { logout } from "../api/abc";
+import useSWR, { useSWRConfig } from "swr";
+import { logout, paths } from "../api/abc";
 import { useMe } from "../auth/AuthGate";
 
 const NAV = [
@@ -18,6 +18,8 @@ export function AppShell() {
   const me = useMe();
   const navigate = useNavigate();
   const { mutate } = useSWRConfig();
+  const unread = useSWR<{ unread: number }>(paths.inboxUnread, { refreshInterval: 10000 });
+  const unreadCount = unread.data?.unread ?? 0;
 
   async function signOut() {
     await logout();
@@ -39,6 +41,11 @@ export function AppShell() {
               }
             >
               {label}
+              {to === "/inbox" && unreadCount > 0 && (
+                <span className="ml-1 rounded bg-red-600 px-1.5 text-xs font-semibold text-white">
+                  {unreadCount}
+                </span>
+              )}
             </NavLink>
           ))}
           {me.launchable_apps.includes("UserAdmin") && (

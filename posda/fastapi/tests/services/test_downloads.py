@@ -38,7 +38,8 @@ async def test_tar_stream_follows_symlinks(tmp_path: Path) -> None:
     (directory / "link.txt").symlink_to(target)
     data = b"".join([chunk async for chunk in downloads.tar_stream(directory)])
     with tarfile.open(fileobj=io.BytesIO(data)) as tar:
-        names = sorted(m.name for m in tar.getmembers())
+        # macOS bsdtar may add AppleDouble "._" entries; production is GNU tar.
+        names = sorted(m.name for m in tar.getmembers() if "._" not in m.name)
         assert names == [".", "./a.txt", "./link.txt"]
         linked = tar.extractfile("./link.txt")
         assert linked is not None and linked.read() == b"linked"

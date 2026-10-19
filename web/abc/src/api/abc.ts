@@ -45,6 +45,15 @@ export const paths = {
   candidatesForFile: (fileId: number) => `/v1/abc/operations/candidates?file_id=${fileId}`,
   workflowCategories: "/v1/abc/workflow/categories",
   sheet: (fileId: number) => `/v1/abc/uploads/${fileId}/sheet`,
+  inbox: (includeDismissed = false) => `/v1/abc/inbox?include_dismissed=${includeDismissed}`,
+  inboxUnread: "/v1/abc/inbox/unread-count",
+  inboxUsers: "/v1/abc/inbox/users",
+  inboxItem: (id: number) => `/v1/abc/inbox/${id}`,
+  backgroundJobs: (mode: string, inLast: string) =>
+    `/v1/abc/background-jobs?mode=${mode}&in_last=${encodeURIComponent(inLast)}`,
+  downloads: "/v1/abc/downloads",
+  downloadTar: (name: string) => `${API_BASE}/v1/abc/downloads/${encodeURIComponent(name)}/tar`,
+  fileData: (fileId: number) => `${API_BASE}/v1/files/${fileId}/data`,
 };
 
 export function login(username: string, password: string): Promise<void> {
@@ -142,6 +151,47 @@ export async function uploadFiles(files: File[]): Promise<Uploaded[]> {
   const body = new FormData();
   for (const file of files) body.append("files", file, file.name);
   const response = await fetch(`${API_BASE}/v1/abc/uploads`, {
+    method: "POST",
+    body,
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`${response.status}: ${detail || response.statusText}`);
+  }
+  return (await response.json()) as Uploaded[];
+}
+
+export function dismissInboxItem(id: number): Promise<void> {
+  return api.post<void>(`${paths.inboxItem(id)}/dismiss`);
+}
+
+export function fileInboxItem(id: number, activityId: number): Promise<void> {
+  return api.post<void>(`${paths.inboxItem(id)}/file`, { activity_id: activityId });
+}
+
+export function forwardInboxItem(id: number, username: string): Promise<void> {
+  return api.post<void>(`${paths.inboxItem(id)}/forward`, { username });
+}
+
+export function deleteDownload(name: string): Promise<void> {
+  return api.delete<void>(`/v1/abc/downloads/${encodeURIComponent(name)}`);
+}
+
+export function createImportEvent(comment: string): Promise<number> {
+  return api
+    .post<{ import_event_id: number }>("/v1/abc/uploads/import-events", { comment })
+    .then((r) => r.import_event_id);
+}
+
+export function closeImportEvent(id: number): Promise<void> {
+  return api.post<void>(`/v1/abc/uploads/import-events/${id}/close`);
+}
+
+export async function uploadFilesToEvent(files: File[], importEventId: number): Promise<Uploaded[]> {
+  const body = new FormData();
+  for (const file of files) body.append("files", file, file.name);
+  const response = await fetch(`${API_BASE}/v1/abc/uploads?import_event_id=${importEventId}`, {
     method: "POST",
     body,
     credentials: "same-origin",

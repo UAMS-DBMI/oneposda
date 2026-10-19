@@ -274,3 +274,64 @@ export interface Sheet {
   first_row: Record<string, string> | null;
   named_operation: string | null;
 }
+
+// --- inbox, background jobs, downloads ------------------------------------
+
+export interface InboxItem {
+  user_inbox_content_id: number;
+  background_subprocess_report_id: number | null;
+  current_status: string | null;
+  date_entered: string | null;
+  date_dismissed: string | null;
+  operation_name: string | null;
+  report_name: string | null;
+}
+
+export interface InboxOperation {
+  operation_type: string | null;
+  when_occurred: string | null;
+  invoking_user: string | null;
+  how_invoked: string | null;
+}
+
+export interface InboxItemDetail extends InboxItem {
+  file_id: number | null;
+  subprocess_invocation_id: number | null;
+  command_line: string | null;
+  invoking_user: string | null;
+  filed_activity_id: number | null;
+  text: string | null;
+  text_truncated: boolean;
+  operations: InboxOperation[];
+}
+
+export interface BackgroundJob {
+  subprocess_invocation_id: number;
+  work_id: number | null;
+  background_subprocess_id: number | null;
+  activity_id: number | null;
+  status: string | null;
+  input_file_id: number | null;
+  stdout_file_id: number | null;
+  stderr_file_id: number | null;
+  invoking_user: string | null;
+  /** ISO 8601 duration */
+  since_invocation: string | null;
+  command_line: string | null;
+  when_invoked: string | null;
+  user_to_notify: string | null;
+  node_hostname: string | null;
+  background_queue_name: string | null;
+}
+
+export interface BackgroundJobs {
+  jobs: BackgroundJob[];
+  total: number;
+  limit: number;
+}
+
+export interface DownloadDir {
+  name: string;
+  modified: string;
+  entries: number;
+}

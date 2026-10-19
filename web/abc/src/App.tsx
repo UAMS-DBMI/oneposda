@@ -3,6 +3,10 @@ import { AuthGate } from "./auth/AuthGate";
 import { AppShell } from "./components/AppShell";
 import { ActivitiesPage } from "./pages/ActivitiesPage";
 import { ActivityPage } from "./pages/ActivityPage";
+import { BackgroundJobsPage } from "./pages/BackgroundJobsPage";
+import { DownloadsPage } from "./pages/DownloadsPage";
+import { InboxItemPage } from "./pages/InboxItemPage";
+import { InboxPage } from "./pages/InboxPage";
 import { HomeRedirect } from "./pages/HomeRedirect";
 import { LoginPage } from "./pages/LoginPage";
 import { NotYetPage } from "./pages/NotYetPage";
@@ -10,6 +14,7 @@ import { QueriesPage } from "./pages/QueriesPage";
 import { QueryPage } from "./pages/QueryPage";
 import { RunPage } from "./pages/RunPage";
 import { UploadPage } from "./pages/UploadPage";
+import { UploadToEventPage } from "./pages/UploadToEventPage";
 import { WorkflowPage } from "./pages/WorkflowPage";
 
 export function App() {
@@ -30,17 +35,12 @@ export function App() {
         <Route path="/queries" element={<QueriesPage />} />
         <Route path="/queries/:name" element={<QueryPage />} />
         <Route path="/runs/:runId" element={<RunPage />} />
-        <Route path="/inbox" element={<NotYetPage title="Inbox" phase={4} />} />
+        <Route path="/inbox" element={<InboxPage />} />
+        <Route path="/inbox/:itemId" element={<InboxItemPage />} />
         <Route path="/upload" element={<UploadPage />} />
-        <Route
-          path="/upload-to-event"
-          element={<NotYetPage title="Upload To Event" phase={4} />}
-        />
-        <Route path="/download" element={<NotYetPage title="Download" phase={4} />} />
-        <Route
-          path="/background"
-          element={<NotYetPage title="Background" phase={4} />}
-        />
+        <Route path="/upload-to-event" element={<UploadToEventPage />} />
+        <Route path="/download" element={<DownloadsPage />} />
+        <Route path="/background" element={<BackgroundJobsPage />} />
         <Route path="/admin" element={<NotYetPage title="Admin" phase={5} />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
