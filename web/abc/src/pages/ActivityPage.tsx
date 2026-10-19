@@ -1,7 +1,8 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import useSWR from "swr";
 import { paths } from "../api/abc";
+import { ApiError } from "../api/client";
 import type { Activity, TimelineEvent } from "../api/types";
 import { TaskStatusPanel } from "../components/TaskStatusPanel";
 import { ThirdPartyControls } from "../components/ThirdPartyControls";
@@ -12,7 +13,7 @@ export function ActivityPage() {
   const navigate = useNavigate();
   const params = useParams<{ activityId: string }>();
   const activityId = Number(params.activityId);
-  const { activityId: selectedId, select } = useCurrentActivity();
+  const { activityId: selectedId, select, isLoading: bindingsLoading } = useCurrentActivity();
   const { data: activity, error, mutate } = useSWR<Activity>(
     Number.isInteger(activityId) ? paths.activity(activityId) : null,
   );
@@ -27,12 +28,31 @@ export function ActivityPage() {
     }
   }, [activity, selectedId, select]);
 
+  // A bound activity can vanish (closed, deleted, or a binding copied from
+  // another database); drop the binding rather than trapping the user here.
+  const missing = error instanceof ApiError && error.status === 404;
+  const handledMissing = useRef(false);
+  useEffect(() => {
+    // Wait for the bindings: on a direct page load the 404 can arrive first,
+    // and deciding then would leave the dangling binding in place.
+    if (!missing || bindingsLoading || handledMissing.current) return;
+    handledMissing.current = true;
+    const forget = selectedId === activityId ? select(null) : Promise.resolve();
+    void forget.then(() =>
+      navigate("/activities", {
+        replace: true,
+        state: { notice: `Activity ${activityId} no longer exists.` },
+      }),
+    );
+  }, [missing, bindingsLoading, selectedId, activityId, select, navigate]);
+
   async function chooseAnother() {
     await select(null);
     navigate("/activities");
   }
 
   if (!Number.isInteger(activityId)) return <p>Bad activity id.</p>;
+  if (missing) return <p className="text-gray-500">Activity {activityId} not found…</p>;
   if (error) return <p className="text-red-700">{String(error)}</p>;
   if (!activity) return <p className="text-gray-500">Loading…</p>;
 

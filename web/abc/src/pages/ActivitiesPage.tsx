@@ -1,5 +1,5 @@
 import { useMemo, useState, type FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import useSWR from "swr";
 import { createActivity, paths } from "../api/abc";
 import { ApiError } from "../api/client";
@@ -18,6 +18,7 @@ export function matchesFilter(description: string, filter: string): boolean {
 
 export function ActivitiesPage() {
   const navigate = useNavigate();
+  const notice = (useLocation().state as { notice?: string } | null)?.notice;
   const { select } = useCurrentActivity();
   const { data: activities, error, mutate } = useSWR<Activity[]>(paths.activities());
   const [filter, setFilter] = useState("");
@@ -50,6 +51,7 @@ export function ActivitiesPage() {
   return (
     <div>
       <h1 className="text-xl font-semibold">Activities</h1>
+      {notice && <p className="my-2 text-amber-800">{notice}</p>}
       <div className="my-3 flex items-end gap-3">
         <label className="text-sm">
           Filter:{" "}
