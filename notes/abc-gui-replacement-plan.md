@@ -403,3 +403,25 @@ Sizes are rough new lines (py / ts). Flagged items: **[schema]**, **[public API]
   an ordinary operation launch and lands with Phase 4's background list.
 - Tests: `uv run pytest` 104, `bun run test` 21. Chrome: workflow page,
   launch dialog with provenance and live expanded command.
+
+### Phase 4 — done 2026-10-18
+
+- API: `/papi/v1/abc/inbox` (list, unread-count, users, item with report
+  text and read-on-view, dismiss, file, forward), `/background-jobs`
+  (mode + "in last" window, 100-row cap with total), `/downloads` (list,
+  `/{name}/tar` streamed from `tar -chf`, delete), and
+  `/uploads/import-events` (+ `/close`) with `/uploads?import_event_id=`
+  so Upload To Event needs no client-side digest. Modules:
+  `services/{inbox,background_jobs,downloads}.py`.
+- SPA: Inbox (nav badge polls unread every 10 s), message page, Background
+  Process Lister, Download, Upload To Event.
+- Deviations: the real-email notification on forward (`mail` via
+  `POSDA_REAL_EMAIL`) is not sent by the API; a user without a
+  `user_inbox` row gets 404 on forward instead of a silent null insert
+  (dev DB had two orphaned inbox rows from reports sent to a user without
+  an inbox; they were attached to `abc-dev` by hand). UserAdmin (Phase 5)
+  should create the `user_inbox` row with the user.
+- Security note for Phase 5: Perl scripts print DBI connect strings with
+  passwords into stderr files that the background list links to (seen in
+  work 17's stderr on dev).
+- Tests: `uv run pytest` 112, `bun run test` 21.
