@@ -47,6 +47,7 @@ from papi.routes import activities
 from papi.routes import visualreviews
 from papi.routes import distribution
 from papi.routes import manager
+from papi.routes import abc
 
 # configure importer
 importer.FILE_STORAGE_PATH = os.environ.get(
@@ -145,6 +146,7 @@ router_v1.include_router(activities.router, prefix="/activities")
 router_v1.include_router(visualreviews.router, prefix="/visualreviews")
 router_v1.include_router(distribution.router, prefix="/distribution")
 router_v1.include_router(manager.router, prefix="/manager")
+router_v1.include_router(abc.router, prefix="/abc")
 
 app.include_router(auth.router, prefix="/auth")
 app.include_router(router_v1, prefix="/v1")
