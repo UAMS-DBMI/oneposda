@@ -6,6 +6,7 @@ import type { Candidates, LaunchSource, Sheet, Uploaded } from "../api/types";
 import { useMe } from "../auth/AuthGate";
 import { CandidateOperationsTable } from "../components/CandidateOperationsTable";
 import { LaunchDialog } from "../components/LaunchDialog";
+import { Badge, EmptyState, ErrorMessage, Notice, PageHeader, errorText } from "../components/ui";
 
 interface Entry extends Uploaded {
   description: string;
@@ -33,6 +34,12 @@ function saveEntries(username: string, entries: Entry[]): void {
   }
 }
 
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 /** The Upload page: drop files in, see what was imported, chain spreadsheets. */
 export function UploadPage() {
   const me = useMe();
@@ -40,6 +47,7 @@ export function UploadPage() {
   const requestedOperation = params.get("operation");
   const [entries, setEntries] = useState<Entry[]>(() => loadEntries(me.username));
   const [busy, setBusy] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [chaining, setChaining] = useState<{ fileId: number; candidates: Candidates } | null>(null);
   const [source, setSource] = useState<LaunchSource | null>(null);
@@ -54,11 +62,11 @@ export function UploadPage() {
     try {
       const uploaded = await uploadFiles(files);
       setEntries((current) => [
-        ...current,
         ...uploaded.map((u) => ({ ...u, description: u.mime_type ?? "", selected: false })),
+        ...current,
       ]);
     } catch (err) {
-      setError(String(err));
+      setError(errorText(err));
     } finally {
       setBusy(false);
     }
@@ -71,6 +79,7 @@ export function UploadPage() {
 
   function onDrop(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
+    setDragging(false);
     void send(Array.from(event.dataTransfer.files));
   }
 
@@ -86,7 +95,7 @@ export function UploadPage() {
       const candidates = await api.get<Candidates>(paths.candidatesForFile(entry.file_id));
       setChaining({ fileId: entry.file_id, candidates });
     } catch (err) {
-      setError(String(err));
+      setError(errorText(err));
     }
   }
 
@@ -94,91 +103,121 @@ export function UploadPage() {
     setEntries(entries.map((e, i) => (i === index ? { ...e, ...patch } : e)));
   }
 
+  const selectedCount = entries.filter((e) => e.selected).length;
+
   return (
-    <div>
-      <h1 className="text-xl font-semibold">Upload</h1>
+    <div className="max-w-6xl">
+      <PageHeader
+        title="Upload"
+        subtitle="Upload spreadsheets (CSV or XLSX) and send them to an operation. A spreadsheet with an Operation column picks its own."
+      />
       {requestedOperation && (
-        <p className="my-2 text-sm text-orange-700">
-          Upload a spreadsheet for <b>{requestedOperation}</b>, then press chain on it.
-        </p>
+        <Notice tone="info">
+          Upload a spreadsheet for <b>{requestedOperation}</b>, then press <b>Process</b> on it.
+        </Notice>
       )}
       <div
-        className="my-3 flex h-28 max-w-3xl cursor-pointer items-center justify-center rounded border-2 border-dashed border-gray-400 text-sm text-gray-600"
+        className={`dropzone my-3 h-28 ${dragging ? "border-blue-500 bg-blue-50" : ""}`}
         onClick={() => inputRef.current?.click()}
-        onDragOver={(e) => e.preventDefault()}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragging(true);
+        }}
+        onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
         role="button"
         tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") inputRef.current?.click();
+        }}
       >
         {busy ? "Uploading…" : "Drop files here or click to choose"}
         <input ref={inputRef} type="file" multiple className="hidden" onChange={onPick} data-testid="file-input" />
       </div>
-      {error && <p className="text-sm text-red-700">{error}</p>}
-      {entries.length === 0 ? (
-        <p className="text-sm text-gray-500">No files have been uploaded</p>
-      ) : (
-        <table className="table-grid max-w-5xl">
+      {error && <ErrorMessage>{error}</ErrorMessage>}
+      <div className="table-wrap">
+        <table className="table-grid">
           <thead>
             <tr>
-              <th>file_name</th>
-              <th>size</th>
-              <th>mime_type</th>
-              <th>description</th>
-              <th>
+              <th className="w-6">
+                <input
+                  type="checkbox"
+                  aria-label="select all"
+                  checked={entries.length > 0 && selectedCount === entries.length}
+                  onChange={(e) => setEntries(entries.map((entry) => ({ ...entry, selected: e.target.checked })))}
+                />
+              </th>
+              <th>file</th>
+              <th className="num">size</th>
+              <th>type</th>
+              <th>note</th>
+              <th className="num">file id</th>
+              <th className="text-right">
                 <button
                   type="button"
-                  className="btn-primary"
+                  className="btn btn-sm"
+                  disabled={selectedCount === 0}
                   onClick={() => setEntries(entries.filter((e) => !e.selected))}
+                  title="Remove the selected rows from this list (the files stay in Posda)"
                 >
-                  Dismiss
+                  Remove selected
                 </button>
               </th>
-              <th>file_id</th>
             </tr>
           </thead>
           <tbody>
             {entries.map((entry, index) => (
-              <tr key={`${entry.file_id}-${index}`}>
-                <td>{entry.name}</td>
-                <td>{entry.size}</td>
-                <td>
-                  {entry.mime_type}{" "}
-                  {entry.is_spreadsheet && (
-                    <button type="button" className="btn-primary ml-1" onClick={() => chain(entry)}>
-                      chain
-                    </button>
-                  )}
-                </td>
-                <td>
-                  <input
-                    className="input w-64"
-                    value={entry.description}
-                    onChange={(e) => update(index, { description: e.target.value })}
-                  />
-                </td>
+              <tr key={`${entry.file_id}-${index}`} className={entry.selected ? "is-selected" : ""}>
                 <td>
                   <input
                     type="checkbox"
+                    aria-label={`select ${entry.name}`}
                     checked={entry.selected}
                     onChange={(e) => update(index, { selected: e.target.checked })}
                   />
                 </td>
+                <td className="font-medium">{entry.name}</td>
+                <td className="num whitespace-nowrap">{formatSize(entry.size)}</td>
                 <td>
-                  <a className="text-blue-700" href={`/papi/v1/files/${entry.file_id}/data`} target="_blank" rel="noreferrer">
+                  {entry.is_spreadsheet ? <Badge tone="info">spreadsheet</Badge> : <span className="text-slate-500">{entry.mime_type}</span>}
+                </td>
+                <td>
+                  <input
+                    className="input w-56 py-0.5"
+                    value={entry.description}
+                    onChange={(e) => update(index, { description: e.target.value })}
+                    aria-label={`note for ${entry.name}`}
+                  />
+                </td>
+                <td className="num">
+                  <a className="link" href={paths.fileData(entry.file_id)} target="_blank" rel="noreferrer">
                     {entry.file_id}
                   </a>
+                </td>
+                <td className="text-right">
+                  {entry.is_spreadsheet && (
+                    <button type="button" className="btn-primary btn-sm" onClick={() => chain(entry)} title="Send this spreadsheet to an operation">
+                      Process
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
-      )}
+        {entries.length === 0 && <EmptyState>No files have been uploaded in this browser yet.</EmptyState>}
+      </div>
       {chaining && (
-        <div className="mt-4">
-          <h2 className="font-semibold">This Spreadsheet Has No Operation</h2>
-          <p className="mb-2 text-sm">
-            Columns: {chaining.candidates.columns.join(", ")} ({chaining.candidates.row_count} rows). Choose one from the table below.
-          </p>
+        <section className="card mt-4">
+          <div className="mb-2 flex items-start justify-between gap-3">
+            <div>
+              <h2>This spreadsheet names no operation</h2>
+              <p className="text-sm text-slate-600">
+                Columns: {chaining.candidates.columns.join(", ")} ({chaining.candidates.row_count} rows). Choose an operation that takes them.
+              </p>
+            </div>
+            <button type="button" className="btn btn-sm" onClick={() => setChaining(null)}>Close</button>
+          </div>
           <CandidateOperationsTable
             candidates={chaining.candidates.candidates}
             onChoose={(name) => {
@@ -186,7 +225,7 @@ export function UploadPage() {
               setChaining(null);
             }}
           />
-        </div>
+        </section>
       )}
       {source && <LaunchDialog source={source} onClose={() => setSource(null)} />}
     </div>
