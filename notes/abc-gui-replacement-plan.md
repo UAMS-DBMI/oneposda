@@ -326,3 +326,49 @@ Sizes are rough new lines (py / ts). Flagged items: **[schema]**, **[public API]
 - Local-only: `docker-compose.yaml` (gitignored) now mounts
   `./posda/fastapi/app:/fastapi` and `./web/abc/dist:/www/abc`, and runs the
   worker and file-process services from `registry.dbmi.cloud/posda:1.1.10`.
+
+### Phase 2 — done 2026-10-18 except background launch
+
+- API: `/papi/v1/abc/queries/{recent,search,workflow-groups,{name}}` and
+  `/papi/v1/abc/query-runs` (start, list, detail, rows, filter, pause,
+  resume, abort, dismiss, rerun, csv). Modules: `services/db_pools.py`,
+  `services/abc_definitions.py` (+ `papi/data/abc_definitions.json`, the
+  Perl Button/Workflow definitions exported with the command in the module
+  docstring), `services/queries/{params,codecs,rowstore,filters,csv_export,
+  log,catalog,runner,janitor}.py`. `aiomysql` added for MySQL aliases.
+- Migration `20261018_query_run.sql` (applied to dev by hand, same reason as
+  Phase 1). Schema change flagged.
+- Parameters: every argument is sent as text and cast server-side
+  (`$n::text::<inferred type>`), which is what DBI did; result cells of
+  numeric/date/time/interval/float/bool types are read as their Postgres text
+  form (bool as 1/0) so the UI and CSV match DBD::Pg.
+- Runner: one task per run in the receiving API process; state, row count
+  and heartbeat on the row; rows spooled under
+  `$POSDA_CACHE_ROOT/query_runs/<id>/`. Abort cancels the backend
+  statement. Pause takes effect at the next control check (each batch or
+  one second), so it is not instantaneous as the Perl pipe-based pause was;
+  "resume" while a pause is pending withdraws it. Janitor marks runs with a
+  stale heartbeat `lost` and removes spools after `ABC_RUN_RETENTION_DAYS`.
+  SIGTERM cancels the process's runs, which record "API process shut
+  down", then hands shutdown to uvicorn.
+- SPA: Queries page (active/recent/search/workflow), argument form with the
+  DrawNewQuery pre-fill order and from/to quick options, run page with
+  filter editor, paging, CSV, controls, chained-query buttons (apply
+  `arg_map` to bindings, open target form) and Mirabelle/Kohlrabi viewer
+  links (built client-side in `lib/viewerLinks.ts` from the Perl URL rules,
+  same host as the SPA rather than `external_hostname`). Column buttons that
+  were in-process Perl popups are not rendered.
+- Deferred to Phase 3: `POST /queries/{name}/background` and the
+  "background" buttons (need `operations/launch.py`); table-level
+  processing buttons on the run page.
+- Deferred to Phase 6: differential CSV check against Perl-produced
+  fixtures (the layout is ported line for line and unit-tested; fixtures
+  need a Perl GUI session to capture).
+- Deviations: `with` CTEs and queries preceded by comments count as selects
+  (Perl ran them as DML and showed only a row count); search is
+  parameterised; `is_select` non-selects still run behind a confirm dialog.
+- Dev database has a dev-only saved query `AbcDevSlowCount(count)` for
+  pause/abort testing; drop it before sharing a dump.
+- Tests: `uv run pytest` 83, `bun run test` 18. Live checks: runs started,
+  paged, filtered, downloaded, paused, resumed, aborted and dismissed through
+  nginx and in Chrome; chained query pre-fill verified in Chrome.
