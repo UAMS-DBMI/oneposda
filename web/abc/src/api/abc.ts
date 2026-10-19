@@ -118,6 +118,17 @@ export function startRun(
     .then((started) => started.query_run_id);
 }
 
+export function runQueryInBackground(
+  queryName: string,
+  args: Record<string, string | null>,
+  activityId: number | null,
+): Promise<Launched> {
+  return api.post<Launched>(`${paths.query(queryName)}/background`, {
+    args,
+    activity_id: activityId,
+  });
+}
+
 export function rerun(runId: number): Promise<number> {
   return api
     .post<{ query_run_id: number }>(`${paths.run(runId)}/rerun`)

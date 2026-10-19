@@ -39,14 +39,13 @@ export function QueryListTable({
               <Link className="btn" to={`/queries/${encodeURIComponent(q.name)}`}>
                 foreground
               </Link>{" "}
-              <button
-                type="button"
+              <Link
                 className="btn"
-                disabled
-                title="Background queries arrive with operations (Phase 3)"
+                to={`/queries/${encodeURIComponent(q.name)}?background=1`}
+                title="Open the argument form and queue the query in the background"
               >
                 background
-              </button>
+              </Link>
             </td>
           </tr>
         ))}

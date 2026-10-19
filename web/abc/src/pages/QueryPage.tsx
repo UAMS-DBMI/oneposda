@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import useSWR from "swr";
-import { paths, startRun } from "../api/abc";
+import { paths, runQueryInBackground, startRun } from "../api/abc";
 import { ApiError } from "../api/client";
-import type { Bindings, QueryDetail, Timepoint } from "../api/types";
+import type { Bindings, Launched, QueryDetail, Timepoint } from "../api/types";
 import { useMe } from "../auth/AuthGate";
 import { useCurrentActivity } from "../hooks/useCurrentActivity";
 import { hasFromTo, prefillArgs, quickDateRange, type QuickRange } from "../lib/queryArgs";
@@ -31,6 +31,7 @@ export function QueryPage() {
   const [values, setValues] = useState<Record<string, string> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [queued, setQueued] = useState<Launched | null>(null);
 
   const latestTimepointId = useMemo(() => {
     const ids = (timepoints.data ?? []).map((t) => t.activity_timepoint_id);
@@ -82,6 +83,19 @@ export function QueryPage() {
     }
   }
 
+  async function runInBackground() {
+    setBusy(true);
+    setError(null);
+    try {
+      setQueued(await runQueryInBackground(detail.name, values ?? {}, activityId));
+      await bindings.mutate();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.detail : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function clear() {
     setValues(Object.fromEntries(detail.args.map((a) => [a, ""])));
   }
@@ -96,6 +110,9 @@ export function QueryPage() {
         <button type="button" className="btn-primary" onClick={run} disabled={busy || !detail.runnable}>
           query
         </button>
+        <button type="button" className="btn" onClick={runInBackground} disabled={busy || !detail.runnable} title="Run RunQueryInBackground.pl; the results arrive in your inbox">
+          query in background
+        </button>
         <button type="button" className="btn" onClick={clear}>
           clear
         </button>
@@ -107,6 +124,12 @@ export function QueryPage() {
         <p className="mb-2 text-sm text-red-700">Cannot run here: {detail.not_runnable_reason}</p>
       )}
       {error && <p className="mb-2 text-sm text-red-700">{error}</p>}
+      {queued && (
+        <p className="mb-2 rounded border border-green-300 bg-green-50 p-2 text-sm">
+          Queued background query as worker {queued.work_id} ({queued.pending_work} items in the worker queue).
+          The results will arrive in your <Link to="/inbox" className="text-blue-700">inbox</Link>.
+        </p>
+      )}
       <p className="text-sm">
         <strong>Query name:</strong> {detail.name}{" "}
         <span className="text-gray-500">({detail.schema_name})</span>
