@@ -1,9 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import useSWR from "swr";
 import { paths, rerun, runAction, setBinding, setRunFilter } from "../api/abc";
-import { api } from "../api/client";
-import { ApiError } from "../api/client";
+import { ApiError, api } from "../api/client";
 import {
   ACTIVE_RUN_STATES,
   type Candidates,
@@ -17,6 +16,7 @@ import {
 } from "../api/types";
 import { CandidateOperationsTable } from "../components/CandidateOperationsTable";
 import { LaunchDialog } from "../components/LaunchDialog";
+import { Badge, EmptyState, ErrorMessage, Loading, Pagination, SegmentedControl, errorText, runStateTone } from "../components/ui";
 import { formatTimestamp } from "../lib/format";
 import { isViewerButton, viewerUrl } from "../lib/viewerLinks";
 
@@ -28,6 +28,39 @@ function cellText(cell: Cell): string {
   if (cell === null) return "";
   if (Array.isArray(cell)) return "{" + cell.map(cellText).join(",") + "}";
   return String(cell);
+}
+
+/** Columns whose loaded values are all numbers (or null), for right alignment. */
+function numericColumnSet(columns: string[], rows: Cell[][]): Set<string> {
+  const numeric = new Set<string>();
+  columns.forEach((column, index) => {
+    const values = rows.map((row) => row[index]).filter((v) => v !== null && v !== undefined);
+    if (values.length > 0 && values.every((v) => typeof v === "number")) numeric.add(column);
+  });
+  return numeric;
+}
+
+function stateLabel(state: string): string {
+  switch (state) {
+    case "done":
+      return "Complete";
+    case "running":
+      return "Running";
+    case "queued":
+      return "Queued";
+    case "paused":
+      return "Paused";
+    case "aborted":
+      return "Aborted";
+    case "ended":
+      return "Ended early";
+    case "lost":
+      return "Lost (worker stopped reporting)";
+    case "error":
+      return "Failed";
+    default:
+      return state;
+  }
 }
 
 /** One foreground query run: status, filter, paging, rows and controls. */
@@ -53,24 +86,28 @@ export function RunPage() {
     run.data && run.data.is_select !== false
       ? paths.runRows(runId, first, rowsToShow, useFilter)
       : null,
-    { refreshInterval: run.data && ACTIVE_RUN_STATES.includes(run.data.state) ? 2000 : 0 },
+    {
+      refreshInterval: run.data && ACTIVE_RUN_STATES.includes(run.data.state) ? 2000 : 0,
+      keepPreviousData: true,
+    },
   );
 
   useEffect(() => setFirst(0), [useFilter]);
 
-  if (!Number.isInteger(runId)) return <p>Bad run id.</p>;
+  if (!Number.isInteger(runId)) return <ErrorMessage>Bad run id.</ErrorMessage>;
   if (run.error instanceof ApiError && (run.error.status === 404 || run.error.status === 410)) {
     return (
-      <p className="text-red-700">
-        {run.error.detail} <Link to="/queries?tab=active" className="text-blue-700">All queries</Link>
-      </p>
+      <ErrorMessage>
+        {run.error.detail} <Link to="/queries?tab=active" className="link">All results</Link>
+      </ErrorMessage>
     );
   }
-  if (run.error) return <p className="text-red-700">{String(run.error)}</p>;
-  if (!run.data) return <p className="text-gray-500">Loading…</p>;
+  if (run.error) return <ErrorMessage error={run.error} />;
+  if (!run.data) return <Loading />;
   const detail = run.data;
   const active = ACTIVE_RUN_STATES.includes(detail.state);
   const total = useFilter ? (detail.filtered_count ?? 0) : detail.row_count;
+  const filterEntries = Object.entries(detail.filter ?? {}).filter(([, v]) => v !== "");
 
   async function act(action: "pause" | "resume" | "abort" | "dismiss") {
     setError(null);
@@ -79,7 +116,7 @@ export function RunPage() {
       await run.mutate();
       if (action === "dismiss") navigate("/queries?tab=active");
     } catch (err) {
-      setError(err instanceof ApiError ? err.detail : String(err));
+      setError(errorText(err));
     }
   }
 
@@ -88,7 +125,8 @@ export function RunPage() {
     navigate(`/runs/${id}`);
   }
 
-  async function applyFilter() {
+  async function applyFilter(event?: FormEvent) {
+    event?.preventDefault();
     if (editing === null) return;
     setError(null);
     try {
@@ -98,7 +136,7 @@ export function RunPage() {
       await run.mutate();
       await rows.mutate();
     } catch (err) {
-      setError(err instanceof ApiError ? err.detail : String(err));
+      setError(errorText(err));
     }
   }
 
@@ -107,13 +145,6 @@ export function RunPage() {
     setEditing(null);
     setViewFiltered(false);
     await run.mutate();
-  }
-
-  function page(delta: number) {
-    let next = first + delta;
-    if (next + rowsToShow > total) next = total - rowsToShow;
-    if (next < 0) next = 0;
-    setFirst(next);
   }
 
   async function openChained(chain: ChainedQuery, row: Cell[]) {
@@ -131,120 +162,155 @@ export function RunPage() {
     (b) => b.obj === LAUNCHER_OBJ && b.operation,
   );
   const processingButtons = query.data?.processing_buttons ?? [];
+  const numericColumns = numericColumnSet(detail.columns, rows.data?.rows ?? []);
 
   async function chainToOperation() {
     setError(null);
     try {
       setCandidates(await api.get<Candidates>(paths.candidatesForRun(runId, useFilter)));
     } catch (err) {
-      setError(err instanceof ApiError ? err.detail : String(err));
+      setError(errorText(err));
     }
   }
 
+  const viewOptions = [
+    { value: "all", label: `All rows (${detail.row_count})` },
+    {
+      value: "filtered",
+      label: `Filtered (${detail.filter ? (detail.filtered_count ?? "…") : "none"})`,
+      title: detail.filter ? "Rows matching the filter" : "No filter is defined yet",
+    },
+  ] as const;
+
   return (
     <div>
-      <div className="mb-2 flex flex-wrap items-center gap-2 text-sm">
-        <span>
-          <em>
-            <b>{detail.state === "done" ? "Full" : `Partial (${detail.state})`} Results for:</b>
-          </em>{" "}
-          {detail.caption}
-        </span>
-        <span className="text-gray-500">started {formatTimestamp(detail.started_at ?? detail.created_at)}</span>
-        {detail.requested_action && <span className="text-gray-500">({detail.requested_action} requested)</span>}
-        <span className="ml-auto space-x-1">
-          {detail.state === "running" && detail.requested_action !== "pause" && (
-            <button type="button" className="btn" onClick={() => act("pause")}>pause</button>
-          )}
-          {detail.state === "running" && detail.requested_action === "pause" && (
-            <button type="button" className="btn" onClick={() => act("resume")}>cancel pause</button>
-          )}
-          {detail.state === "paused" && (
-            <button type="button" className="btn" onClick={() => act("resume")}>resume</button>
-          )}
-          {active && (
-            <button type="button" className="btn" onClick={() => act("abort")}>
-              {detail.state === "paused" ? "end" : "abort"}
-            </button>
-          )}
-          {!active && (
-            <button type="button" className="btn" onClick={again}>re-run</button>
-          )}
-          {!active && (
-            <button type="button" className="btn" onClick={() => act("dismiss")}>dismiss</button>
-          )}
-          <Link to="/queries?tab=active" className="btn">all queries</Link>
-        </span>
+      <p className="mb-1 text-sm">
+        <Link to="/queries" className="link">Queries</Link>
+        <span className="mx-1 text-slate-400">/</span>
+        <Link to="/queries?tab=active" className="link">Results</Link>
+        <span className="mx-1 text-slate-400">/</span>
+        <span className="text-slate-600">run {runId}</span>
+      </p>
+      <div className="card mb-3 py-3">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <div className="min-w-0 flex-1">
+            <h1 className="truncate" title={detail.caption}>
+              {detail.caption}
+            </h1>
+            <p className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-500">
+              <Badge tone={runStateTone(detail.state)}>{stateLabel(detail.state)}</Badge>
+              {detail.requested_action && <span className="text-amber-700">{detail.requested_action} requested…</span>}
+              <span>started {formatTimestamp(detail.started_at ?? detail.created_at)}</span>
+              {detail.is_select !== false && (
+                <span className="tabular-nums">
+                  {detail.row_count} rows{active ? " so far" : ""}
+                </span>
+              )}
+              <Link to={`/queries/${encodeURIComponent(detail.query_name)}`} className="link" title="Open the argument form for this query">
+                edit arguments
+              </Link>
+            </p>
+          </div>
+          <div className="toolbar">
+            {detail.state === "running" && detail.requested_action !== "pause" && (
+              <button type="button" className="btn" onClick={() => act("pause")}>Pause</button>
+            )}
+            {detail.state === "running" && detail.requested_action === "pause" && (
+              <button type="button" className="btn" onClick={() => act("resume")}>Cancel pause</button>
+            )}
+            {detail.state === "paused" && (
+              <button type="button" className="btn-primary" onClick={() => act("resume")}>Resume</button>
+            )}
+            {active && (
+              <button type="button" className="btn-danger" onClick={() => act("abort")}>
+                {detail.state === "paused" ? "End" : "Abort"}
+              </button>
+            )}
+            {!active && (
+              <button type="button" className="btn" onClick={again} title="Run the same query with the same arguments again">Re-run</button>
+            )}
+            {detail.is_select !== false && (
+              <a className="btn" href={paths.runCsv(runId, useFilter)} title={useFilter ? "Download the filtered rows as CSV" : "Download all rows as CSV"}>
+                Download CSV
+              </a>
+            )}
+            {!active && (
+              <button type="button" className="btn" onClick={() => act("dismiss")} title="Forget this result">Dismiss</button>
+            )}
+          </div>
+        </div>
       </div>
       {detail.error_text && (
-        <pre className="mb-2 whitespace-pre-wrap rounded border border-red-300 bg-red-50 p-2 text-xs text-red-800">{detail.error_text}</pre>
+        <pre className="notice notice-danger mb-3 whitespace-pre-wrap font-mono text-xs">{detail.error_text}</pre>
       )}
-      {error && <p className="mb-2 text-sm text-red-700">{error}</p>}
+      {error && <ErrorMessage>{error}</ErrorMessage>}
       {detail.is_select === false ? (
-        <p className="text-sm">
+        <p className="card text-sm">
           {detail.state === "done"
-            ? `Query affected ${detail.rows_affected ?? 0} rows.`
-            : `Query ${detail.state}.`}
+            ? `The statement affected ${detail.rows_affected ?? 0} rows.`
+            : `Statement ${stateLabel(detail.state).toLowerCase()}.`}
         </p>
       ) : (
         <>
-          <div className="mb-2 flex flex-wrap items-center gap-4 text-sm">
-            <label className="flex items-center gap-1">
-              <input type="radio" checked={!filtered} onChange={() => setViewFiltered(false)} />
-              Unfiltered rows: {detail.row_count}
-            </label>
-            <label className="flex items-center gap-1">
-              <input type="radio" checked={filtered} onChange={() => setViewFiltered(true)} disabled={!detail.filter} />
-              Filtered rows: {detail.filter ? (detail.filtered_count ?? "…") : "–"}
-            </label>
-            <span>
-              {detail.filter ? (
-                <>
-                  Query Filter:{" "}
-                  {Object.entries(detail.filter).map(([k, v]) => (
-                    <code key={k} className="mr-2">{k} contains "{v}"</code>
-                  ))}
-                  <button type="button" className="btn ml-1" onClick={clearFilter}>clear</button>
-                </>
-              ) : (
-                <span className="text-gray-500">No filter currently defined</span>
-              )}
-              <button
-                type="button"
-                className="btn ml-1"
-                onClick={() => setEditing(editing ?? { ...(detail.filter ?? {}) })}
-              >
-                edit filter
+          <div className="toolbar mb-2">
+            <SegmentedControl
+              label="Rows to show"
+              options={viewOptions}
+              value={useFilter ? "filtered" : "all"}
+              onChange={(v) => {
+                if (v === "filtered" && !detail.filter) setEditing({ ...(detail.filter ?? {}) });
+                else setViewFiltered(v === "filtered");
+              }}
+            />
+            {filterEntries.length > 0 && !editing && (
+              <span className="flex flex-wrap items-center gap-1">
+                {filterEntries.map(([k, v]) => (
+                  <span key={k} className="badge badge-neutral font-normal" title={`${k} matches /${v}/i`}>
+                    <span className="font-medium">{k}</span> ~ <code className="bg-transparent px-0">{v}</code>
+                  </span>
+                ))}
+                <button type="button" className="btn-ghost btn-sm" onClick={clearFilter}>clear</button>
+              </span>
+            )}
+            {editing ? (
+              <>
+                <button type="button" className="btn-primary btn-sm" onClick={() => applyFilter()}>Apply filter</button>
+                <button type="button" className="btn btn-sm" onClick={() => setEditing(null)}>Cancel</button>
+                <span className="text-xs text-slate-500">Type a pattern under each column; rows must match every one.</span>
+              </>
+            ) : (
+              <button type="button" className="btn btn-sm" onClick={() => setEditing({ ...(detail.filter ?? {}) })}>
+                {detail.filter ? "Edit filter" : "Filter rows…"}
               </button>
-            </span>
-            <a className="btn" href={paths.runCsv(runId, useFilter)}>download csv</a>
-          </div>
-          {!active && (
-            <div className="mb-2 flex flex-wrap items-center gap-2 text-sm">
-              {processingButtons.map((button) => (
-                <button
-                  key={button.operation}
-                  type="button"
-                  className="btn"
-                  title={button.operation}
-                  onClick={() =>
-                    setLaunch({
-                      type: "table",
-                      query_run_id: runId,
-                      filtered: useFilter,
-                      operation: button.operation,
-                      caption: button.caption,
-                    })
-                  }
-                >
-                  {button.caption}
+            )}
+            {!active && (
+              <span className="ml-auto flex flex-wrap items-center gap-1">
+                <span className="text-xs text-slate-500">Send {useFilter ? "filtered" : "all"} rows to:</span>
+                {processingButtons.map((button) => (
+                  <button
+                    key={button.operation}
+                    type="button"
+                    className="btn btn-sm"
+                    title={button.operation}
+                    onClick={() =>
+                      setLaunch({
+                        type: "table",
+                        query_run_id: runId,
+                        filtered: useFilter,
+                        operation: button.operation,
+                        caption: button.caption,
+                      })
+                    }
+                  >
+                    {button.caption}
+                  </button>
+                ))}
+                <button type="button" className="btn btn-sm" onClick={chainToOperation} title="Pick any operation that takes these columns">
+                  Any operation…
                 </button>
-              ))}
-              <button type="button" className="btn" onClick={chainToOperation} title="Pick any operation that takes these columns">
-                Chain
-              </button>
-            </div>
-          )}
+              </span>
+            )}
+          </div>
           {candidates && (
             <div className="mb-3">
               <CandidateOperationsTable
@@ -254,57 +320,53 @@ export function RunPage() {
                   setLaunch({ type: "table", query_run_id: runId, filtered: useFilter, operation: name, caption: name });
                 }}
               />
-              <button type="button" className="btn mt-1" onClick={() => setCandidates(null)}>close</button>
+              <button type="button" className="btn btn-sm mt-1" onClick={() => setCandidates(null)}>Close</button>
             </div>
           )}
-          {editing && (
-            <div className="mb-2 flex flex-wrap items-end gap-2 rounded border border-gray-300 p-2 text-sm">
-              {detail.columns.map((column) => (
-                <label key={column} className="flex flex-col">
-                  {column}
-                  <input
-                    className="input"
-                    value={editing[column] ?? ""}
-                    onChange={(e) => setEditing({ ...editing, [column]: e.target.value })}
-                    placeholder="regex"
-                  />
-                </label>
-              ))}
-              <button type="button" className="btn-primary" onClick={applyFilter}>apply</button>
-              <button type="button" className="btn" onClick={() => setEditing(null)}>cancel</button>
-            </div>
-          )}
-          <div className="mb-2 flex items-center gap-2 text-sm">
-            First row:{" "}
-            <input
-              className="input w-20"
-              value={first}
-              onChange={(e) => setFirst(Math.max(0, Number(e.target.value) || 0))}
+          <div className="mb-2">
+            <Pagination
+              first={first}
+              pageSize={rowsToShow}
+              total={total}
+              partial={rows.data?.partial}
+              onFirstChange={setFirst}
+              onPageSizeChange={(n) => {
+                setRowsToShow(n);
+                setFirst(0);
+              }}
             />
-            Show:{" "}
-            <input
-              className="input w-20"
-              value={rowsToShow}
-              onChange={(e) => setRowsToShow(Math.min(1000, Math.max(1, Number(e.target.value) || 1)))}
-            />
-            <button type="button" className="btn-primary" onClick={() => page(-rowsToShow)}>pg-up</button>
-            <button type="button" className="btn-primary" onClick={() => page(rowsToShow)}>pg-dn</button>
-            <span className="text-gray-500">
-              {total === 0 ? "no rows" : `rows ${first + 1}–${Math.min(first + rowsToShow, total)} of ${total}`}
-              {rows.data?.partial && " (more arriving)"}
-            </span>
           </div>
-          {rows.error && <p className="text-red-700">{String(rows.error)}</p>}
-          <div className="overflow-x-auto">
+          {rows.error && <ErrorMessage error={rows.error} />}
+          <form onSubmit={applyFilter} className="table-wrap max-h-[calc(100vh-16rem)] overflow-auto">
             <table className="table-grid">
               <thead>
                 <tr>
                   {chains.length > 0 && <th>chain</th>}
                   {rowLaunchers.length > 0 && <th>run</th>}
                   {detail.columns.map((c) => (
-                    <th key={c}>{c}</th>
+                    <th key={c} className={numericColumns.has(c) ? "num" : ""}>
+                      {c}
+                    </th>
                   ))}
                 </tr>
+                {editing && (
+                  <tr>
+                    {chains.length > 0 && <th className="top-7" />}
+                    {rowLaunchers.length > 0 && <th className="top-7" />}
+                    {detail.columns.map((column, i) => (
+                      <th key={column} className="top-7 py-1">
+                        <input
+                          className="input w-full min-w-[6rem] py-0.5 font-normal"
+                          value={editing[column] ?? ""}
+                          onChange={(e) => setEditing({ ...editing, [column]: e.target.value })}
+                          placeholder="regex"
+                          aria-label={`filter ${column}`}
+                          autoFocus={i === 0}
+                        />
+                      </th>
+                    ))}
+                  </tr>
+                )}
               </thead>
               <tbody>
                 {(rows.data?.rows ?? []).map((row, i) => {
@@ -317,7 +379,8 @@ export function RunPage() {
                             <button
                               key={chain.chained_query_id}
                               type="button"
-                              className="btn"
+                              className="btn btn-sm"
+                              title={`Open ${chain.to_query} with this row's values`}
                               onClick={() => openChained(chain, row)}
                             >
                               {chain.caption}
@@ -331,7 +394,7 @@ export function RunPage() {
                             <button
                               key={button.button_id}
                               type="button"
-                              className="btn"
+                              className="btn btn-sm"
                               title={button.operation ?? ""}
                               onClick={() =>
                                 setLaunch({
@@ -352,11 +415,12 @@ export function RunPage() {
                       {detail.columns.map((column, j) => {
                         const button = viewerByColumn.get(column);
                         const url = button ? viewerUrl(button, byColumn) : null;
+                        const value = row[j] ?? null;
                         return (
-                          <td key={column}>
-                            {cellText(row[j] ?? null)}
+                          <td key={column} className={numericColumns.has(column) ? "num" : ""}>
+                            {cellText(value)}
                             {button && url && (
-                              <a className="btn ml-1" href={url} target="_blank" rel="noreferrer">
+                              <a className="btn btn-sm ml-1" href={url} target="_blank" rel="noreferrer">
                                 {button.caption}
                               </a>
                             )}
@@ -368,7 +432,10 @@ export function RunPage() {
                 })}
               </tbody>
             </table>
-          </div>
+            {total === 0 && !active && <EmptyState>{useFilter ? "No rows match the filter." : "The query returned no rows."}</EmptyState>}
+            {total === 0 && active && <Loading>Waiting for the first rows…</Loading>}
+            <button type="submit" className="hidden" aria-hidden="true" tabIndex={-1} />
+          </form>
         </>
       )}
       {launch && <LaunchDialog source={launch} onClose={() => setLaunch(null)} />}
