@@ -399,8 +399,9 @@ Sizes are rough new lines (py / ts). Flagged items: **[schema]**, **[public API]
 - Not done: the Perl `InsertListOfAnnotatedFiles` annotation shortcut (no
   reference found in the ABC code read so far); OpHelp popups (the Perl
   handler returned early and did nothing).
-- Background query launch (`RunQueryInBackground.pl`) still pending; it is
-  an ordinary operation launch and lands with Phase 4's background list.
+- Background query launch: done after Phase 5 as
+  `POST /queries/{name}/background`, a synthetic operation through the
+  launch path (verified: worker finished and the report reached the inbox).
 - Tests: `uv run pytest` 104, `bun run test` 21. Chrome: workflow page,
   launch dialog with provenance and live expanded command.
 
@@ -444,3 +445,18 @@ Sizes are rough new lines (py / ts). Flagged items: **[schema]**, **[public API]
 - SPA: Admin page (accounts, permissions, password, enable/disable, delete).
   All nav entries now have real pages; the placeholder page is removed.
 - Tests: `uv run pytest` 115, `bun run test` 22.
+
+### Phase 6 — parity checklist written 2026-10-18; cutover awaits sign-off
+
+- `web/abc/docs/PARITY.md` is the curator walkthrough. Everything the
+  checklist covers has been exercised once by the author through the API
+  and in Chrome on the dev stack, but the side-by-side comparison with the
+  Perl GUI on real data is the gate for the rest of this phase.
+- Not applied yet, by design: the Perl post-login landing redirect to
+  `/abc/`, the nginx `/pa1/…/pa15/` removal and `/posda/` redirect, the
+  `posda_start.sh` / k8s port changes, and the deletion of the Perl GUI
+  code. Each is a one-commit change once the walkthrough passes.
+- Deployment prerequisites for the API image: `aiomysql` (now in
+  `requirements.txt`), the two migrations (`user_variable_binding` unique
+  index, `query_run`), `POSDA_CACHE_ROOT` on the shared volume for every
+  API pod, and the SPA built into the web image (`abc-builder` stage).
