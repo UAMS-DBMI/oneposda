@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends
 
 from . import (
     activities,
+    admin_users,
     background,
     downloads,
     files,
@@ -16,6 +17,7 @@ from . import (
     operations,
     queries,
     query_runs,
+    status,
     uploads,
     workflow,
 )
@@ -40,3 +42,5 @@ router.include_router(uploads.router, prefix="/uploads")
 router.include_router(inbox.router, prefix="/inbox")
 router.include_router(background.router, prefix="/background-jobs")
 router.include_router(downloads.router, prefix="/downloads")
+router.include_router(admin_users.router, prefix="/admin")
+router.include_router(status.router, prefix="/status")

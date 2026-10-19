@@ -29,6 +29,10 @@ class FakeRedis:
     def delete(self, key: str) -> None:
         self.store.pop(key, None)
 
+    def incr(self, key: str) -> int:
+        self.store[key] = str(int(self.store.get(key, "0")) + 1)
+        return int(self.store[key])
+
 
 class FakeDatabase:
     async def fetch_one(self, query: str, parameters: list[object]) -> dict | list:
@@ -111,3 +115,18 @@ def test_cookie_authenticates_and_logout_revokes(
     assert redis.store == {}
     assert 'logintoken=""' in response.headers["set-cookie"]
     assert http.get("/auth/users/me").status_code == 401
+
+
+def test_repeated_failures_lock_the_username(
+    client: tuple[TestClient, FakeRedis], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    http, redis = client
+    monkeypatch.setattr(auth, "LOGIN_FAILURE_LIMIT", 3)
+    for _ in range(3):
+        assert http.post("/auth/login", json={"username": "alice", "password": "no"}).status_code == 400
+    locked = http.post("/auth/login", json={"username": "alice", "password": PASSWORD})
+    assert locked.status_code == 429
+
+    redis.store.pop("login_failures:alice")  # the window expired
+    assert http.post("/auth/login", json={"username": "alice", "password": PASSWORD}).status_code == 204
+    assert "login_failures:alice" not in redis.store

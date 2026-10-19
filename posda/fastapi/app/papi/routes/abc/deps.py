@@ -51,6 +51,20 @@ async def current_abc_user(
     )
 
 
+def require_app(app: str, permission: str = LAUNCH):
+    """A dependency that rejects users without ``permission`` on ``app``."""
+
+    async def check(user: AbcUser = Depends(current_abc_user)) -> AbcUser:
+        if not user.can(app, permission):
+            raise HTTPException(
+                status_code=HTTP_403_FORBIDDEN,
+                detail=f"{user.username} may not {permission} {app}",
+            )
+        return user
+
+    return check
+
+
 Conn = Annotated[asyncpg.Connection, Depends(acquire_connection)]
 CurrentUser = Annotated[AbcUser, Depends(current_abc_user)]
 Pools = Annotated[PoolRegistry, Depends(get_pools)]

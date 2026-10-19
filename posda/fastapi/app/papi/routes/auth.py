@@ -24,6 +24,13 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/papi/auth/token",
 
 TOKEN_EXPIRE=(1 * 60 * 60) # 1 hour
 
+logger = logging.getLogger(__name__)
+
+# Failed sign-ins per username are counted in Redis; past the limit within
+# the window the account is refused until the window passes.
+LOGIN_FAILURE_LIMIT = int(os.environ.get("POSDA_LOGIN_FAILURE_LIMIT", "10"))
+LOGIN_FAILURE_WINDOW = int(os.environ.get("POSDA_LOGIN_FAILURE_WINDOW", "300"))
+
 # The Perl GUI sets this cookie from JavaScript; /login sets it server-side.
 COOKIE_NAME = "logintoken"
 
@@ -54,9 +61,6 @@ async def decode_token(db, token):
 
     redis_db = get_redis_connection()
 
-    
-    print(f"System token: {API_SYSTEM_TOKEN}")
-    print(f"supplied token: {token}")
     if token == API_SYSTEM_TOKEN:
         return await get_user(db, "system")
     
@@ -76,11 +80,8 @@ async def get_current_user(request: Request,
 
     # If the token wasn't supplied via header...
     if token is None:
-        print("No bearer token supplied, checking cookie...")
         # maybe it was supplied via cookie instead?
         token = request.cookies.get(COOKIE_NAME)
-
-    print(f"Token is now: {token}")
 
     user = await decode_token(db, token)
     if not user:
@@ -111,21 +112,44 @@ async def get_user_from_database(db: Database, username: str):
 
     return await db.fetch_one(query, [username])
 
+def _failure_key(username: str) -> str:
+    return f"login_failures:{username.lower()}"
+
+
+def _refuse_if_locked(username: str) -> None:
+    failures = get_redis_connection().get(_failure_key(username))
+    if failures is not None and int(failures) >= LOGIN_FAILURE_LIMIT:
+        logger.warning("sign-in refused for %s: too many failures", username)
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed sign-in attempts; try again later",
+        )
+
+
+def _record_failure(username: str) -> None:
+    redis_db = get_redis_connection()
+    key = _failure_key(username)
+    if redis_db.incr(key) == 1:
+        redis_db.expire(key, LOGIN_FAILURE_WINDOW)
+
+
 async def authenticate_user(db: Database, username: str, password: str) -> UserInDB:
     """Return the user when the password matches, else 400.
 
     The same message is used for an unknown user and a wrong password so the
-    response does not reveal which usernames exist.
+    response does not reveal which usernames exist. Repeated failures for a
+    username are refused with 429 for LOGIN_FAILURE_WINDOW seconds.
     """
+    _refuse_if_locked(username)
     user_dict = await get_user_from_database(db, username)
-    if not user_dict:
-        raise HTTPException(status_code=400, detail="Incorrect username or password")
-
-    user = UserInDB(**user_dict)
-    if not is_valid(user.hashed_password, password):
-        raise HTTPException(status_code=400,
-                            detail="Incorrect username or password")
-    return user
+    if user_dict:
+        user = UserInDB(**user_dict)
+        if is_valid(user.hashed_password, password):
+            get_redis_connection().delete(_failure_key(username))
+            return user
+    _record_failure(username)
+    logger.info("failed sign-in for %s", username)
+    raise HTTPException(status_code=400, detail="Incorrect username or password")
 
 
 def issue_token(username: str) -> str:
