@@ -1,7 +1,7 @@
 /** Typed calls for the ABC endpoints. Paths double as SWR keys. */
 
-import { api } from "./client";
-import type { Activity, FileText } from "./types";
+import { API_BASE, api } from "./client";
+import type { Activity, FileText, Run, RunDetail } from "./types";
 
 export const paths = {
   me: "/v1/abc/me",
@@ -13,6 +13,22 @@ export const paths = {
   timeline: (id: number) => `/v1/abc/activities/${id}/timeline`,
   timepoints: (id: number) => `/v1/abc/activities/${id}/timepoints`,
   fileText: (fileId: number) => `/v1/abc/files/${fileId}/text`,
+  queriesRecent: "/v1/abc/queries/recent",
+  queriesSearch: (params: Record<string, string>) => {
+    const query = new URLSearchParams(
+      Object.entries(params).filter(([, v]) => v.trim() !== ""),
+    ).toString();
+    return query ? `/v1/abc/queries/search?${query}` : null;
+  },
+  workflowGroups: "/v1/abc/queries/workflow-groups",
+  query: (name: string) => `/v1/abc/queries/${encodeURIComponent(name)}`,
+  runs: (includeDismissed = false) =>
+    `/v1/abc/query-runs?include_dismissed=${includeDismissed}`,
+  run: (id: number) => `/v1/abc/query-runs/${id}`,
+  runRows: (id: number, first: number, n: number, filtered: boolean) =>
+    `/v1/abc/query-runs/${id}/rows?first=${first}&n=${n}&filtered=${filtered}`,
+  runCsv: (id: number, filtered: boolean) =>
+    `${API_BASE}/v1/abc/query-runs/${id}/csv?filtered=${filtered}`,
 };
 
 export function login(username: string, password: string): Promise<void> {
@@ -58,3 +74,38 @@ export function fetchFileText(fileId: number): Promise<FileText> {
 }
 
 export type { Activity };
+
+export function startRun(
+  queryName: string,
+  args: Record<string, string | null>,
+): Promise<number> {
+  return api
+    .post<{ query_run_id: number }>("/v1/abc/query-runs", {
+      query_name: queryName,
+      args,
+    })
+    .then((started) => started.query_run_id);
+}
+
+export function rerun(runId: number): Promise<number> {
+  return api
+    .post<{ query_run_id: number }>(`${paths.run(runId)}/rerun`)
+    .then((started) => started.query_run_id);
+}
+
+export type RunAction = "pause" | "resume" | "abort" | "dismiss";
+
+export function runAction(runId: number, action: RunAction): Promise<Run> {
+  return api.post<Run>(`${paths.run(runId)}/${action}`);
+}
+
+export function setRunFilter(
+  runId: number,
+  filter: Record<string, string> | null,
+  viewFiltered: boolean,
+): Promise<RunDetail> {
+  return api.put<RunDetail>(`${paths.run(runId)}/filter`, {
+    filter,
+    view_filtered: viewFiltered,
+  });
+}

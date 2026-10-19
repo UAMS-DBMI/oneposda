@@ -6,6 +6,9 @@ import { ActivityPage } from "./pages/ActivityPage";
 import { HomeRedirect } from "./pages/HomeRedirect";
 import { LoginPage } from "./pages/LoginPage";
 import { NotYetPage } from "./pages/NotYetPage";
+import { QueriesPage } from "./pages/QueriesPage";
+import { QueryPage } from "./pages/QueryPage";
+import { RunPage } from "./pages/RunPage";
 
 export function App() {
   return (
@@ -22,7 +25,9 @@ export function App() {
         <Route path="/activities" element={<ActivitiesPage />} />
         <Route path="/activities/:activityId" element={<ActivityPage />} />
         <Route path="/workflow" element={<NotYetPage title="Workflow" phase={3} />} />
-        <Route path="/queries" element={<NotYetPage title="Queries" phase={2} />} />
+        <Route path="/queries" element={<QueriesPage />} />
+        <Route path="/queries/:name" element={<QueryPage />} />
+        <Route path="/runs/:runId" element={<RunPage />} />
         <Route path="/inbox" element={<NotYetPage title="Inbox" phase={4} />} />
         <Route path="/upload" element={<NotYetPage title="Upload" phase={3} />} />
         <Route

@@ -62,3 +62,113 @@ export interface FileText {
   truncated: boolean;
   size: number;
 }
+
+// --- saved queries ---------------------------------------------------------
+
+export interface QuerySummary {
+  name: string;
+  args: string[];
+  columns: string[];
+  schema_name: string;
+  tags: string[];
+}
+
+export interface QueryLists {
+  recent: QuerySummary[];
+  frequent: QuerySummary[];
+}
+
+export interface ChainedQuery {
+  chained_query_id: string;
+  caption: string;
+  to_query: string;
+  /** from column name -> to parameter name */
+  arg_map: Record<string, string>;
+}
+
+export interface ProcessingButton {
+  caption: string;
+  operation: string;
+}
+
+export interface ColumnButton {
+  button_id: string;
+  caption: string;
+  column: string;
+  /** The Perl popup class; only the Mirabelle/Kohlrabi ones become links. */
+  obj: string;
+  col_to_param: Record<string, string>;
+  operation: string | null;
+}
+
+export interface QueryDetail extends QuerySummary {
+  description: string;
+  query: string;
+  is_select: boolean;
+  runnable: boolean;
+  not_runnable_reason: string | null;
+  chained_queries: ChainedQuery[];
+  processing_buttons: ProcessingButton[];
+  column_buttons: ColumnButton[];
+}
+
+export interface WorkflowGroupEntry {
+  caption: string;
+  query_name: string;
+  query: QuerySummary | null;
+}
+
+export interface WorkflowGroup {
+  name: string;
+  title: string;
+  queries: WorkflowGroupEntry[];
+}
+
+// --- query runs ------------------------------------------------------------
+
+export type RunState =
+  | "queued"
+  | "running"
+  | "paused"
+  | "done"
+  | "ended"
+  | "aborted"
+  | "error"
+  | "lost";
+
+export const ACTIVE_RUN_STATES: RunState[] = ["queued", "running", "paused"];
+
+export interface Run {
+  query_run_id: number;
+  query_name: string;
+  args: Record<string, string | null>;
+  caption: string;
+  state: RunState;
+  requested_action: "pause" | "resume" | "abort" | null;
+  is_select: boolean | null;
+  row_count: number;
+  rows_affected: number | null;
+  error_text: string | null;
+  filter: Record<string, string> | null;
+  view_filtered: boolean;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  dismissed_at: string | null;
+  owner: string | null;
+}
+
+export interface RunDetail extends Run {
+  columns: string[];
+  filtered_count: number | null;
+}
+
+export type Cell = string | number | boolean | null | Cell[];
+
+export interface RowsPage {
+  first: number;
+  rows: Cell[][];
+  total: number;
+  filtered: boolean;
+  partial: boolean;
+}
