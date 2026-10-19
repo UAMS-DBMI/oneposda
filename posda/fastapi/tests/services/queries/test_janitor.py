@@ -9,6 +9,10 @@ def settings(tmp_path: Path) -> Settings:
     return Settings(
         cache_root=tmp_path,
         database_config=tmp_path / "databases.json",
+        posdatools_root=tmp_path,
+        storage_root_id=3,
+        storage_root_path=tmp_path / "created",
+        temp_path=tmp_path / "temp",
         redis_host="redis",
         run_retention_days=7,
         query_timeout_ms=0,

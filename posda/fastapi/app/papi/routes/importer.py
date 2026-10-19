@@ -7,6 +7,8 @@ from starlette.requests import Request
 
 from ..util import Database
 from ..util.digest import md5sum_file
+from ..services.files import ingest
+from pathlib import Path
 
 import hashlib
 import tempfile
@@ -283,110 +285,35 @@ async def import_file_in_place(
 
 
 async def create_import_event(conn, comment, origin=None, expected_count=None):
-    record = await conn.fetchrow(
-        """\
-        insert into import_event
-        (import_type, import_comment, import_time, import_origin, import_expected_count)
-        values
-        ($1, $2, now(), $3, $4)
-        returning import_event_id
-    """,
-        *["posda-api import", comment, origin, expected_count],
-    )
-
-    return record["import_event_id"]
+    return await ingest.create_import_event(conn, comment, origin, expected_count)
 
 
 async def copy_file_into_place(filename: str, digest: str):
     # figure out what file_storage_root_id is
     root_id = FILE_STORAGE_ROOT
     root = FILE_STORAGE_PATH
-    path = os.path.join(digest[:2], digest[2:4], digest[4:6])
-
-    rel_path = os.path.join(path, digest)
-
-    # The full path on disk, exlcuding the actual filename
-    real_path = os.path.join(root, path)
-    if not os.path.exists(real_path):
-        os.makedirs(real_path)
-
-    os.rename(filename, os.path.join(root, rel_path))
+    storage = ingest.Storage(root_id=root_id, root_path=Path(root))
+    rel_path = ingest.copy_into_storage(Path(filename), digest, storage)
     return root_id, root, rel_path
 
 
 async def make_ready_to_process(file_id: int, conn):
-    await conn.fetch(
-        """\
-        update file
-        set ready_to_process = true
-        where file_id = $1
-    """,
-        *[file_id],
-    )
+    await ingest.set_ready_to_process(conn, file_id, True)
 
 
 async def make_not_ready_to_process(file_id: int, conn):
-    await conn.fetch(
-        """\
-        update file
-        set ready_to_process = false
-        where file_id = $1
-    """,
-        *[file_id],
-    )
+    await ingest.set_ready_to_process(conn, file_id, False)
 
 
 async def create_file_location(file_id, root_id, rel_path, conn):
-    await conn.fetch(
-        """\
-        insert into file_location
-        (file_id, file_storage_root_id, rel_path)
-        values
-        ($1, $2, $3)
-    """,
-        *[file_id, root_id, rel_path],
-    )
+    await ingest.create_file_location(conn, file_id, root_id, rel_path)
 
 
 async def create_file_import(
     file_id: int, import_event_id: int, localpath: str, conn
 ):
-    await conn.fetch(
-        """\
-        insert into file_import
-        values
-        ($1, $2, $3, $4, $5, now())
-    """,
-        *[import_event_id, file_id, None, None, localpath],
-    )
+    await ingest.create_file_import(conn, file_id, import_event_id, localpath)
 
 
 async def create_or_get_file_id(digest: str, size: int, conn):
-    created = True
-    record = await conn.fetchrow(
-        """\
-        insert into file
-        (digest, size, processing_priority)
-        values
-        ($1, $2, 1)
-        on conflict do nothing
-        returning file_id
-    """,
-        *[digest, size],
-    )
-
-    if record is None:
-        # the file already exists, so get the file_id
-        record = await conn.fetchrow(
-            """\
-            select file_id
-            from file
-            where digest = $1
-        """,
-            *[digest],
-        )
-        created = False
-
-    file_id = record["file_id"]
-
-    return (created, file_id)
+    return await ingest.create_or_get_file_id(conn, digest, size)

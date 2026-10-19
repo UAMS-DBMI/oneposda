@@ -10,6 +10,10 @@ from pathlib import Path
 class Settings:
     cache_root: Path
     database_config: Path
+    posdatools_root: Path
+    storage_root_id: int
+    storage_root_path: Path
+    temp_path: Path
     redis_host: str
     run_retention_days: int
     query_timeout_ms: int
@@ -36,6 +40,15 @@ def get_settings() -> Settings:
                 "/home/posda/posdatools/Config/databases.json",
             )
         ),
+        posdatools_root=Path(
+            os.environ.get("POSDA_POSDATOOLS_ROOT", "/home/posda/posdatools")
+        ),
+        # Same defaults as main.py gives routes/importer.py.
+        storage_root_id=_int_env("FILE_STORAGE_ROOT", 3),
+        storage_root_path=Path(
+            os.environ.get("FILE_STORAGE_PATH", "/home/posda/cache/created")
+        ),
+        temp_path=Path(os.environ.get("TEMP_STORAGE_PATH", "/home/posda/cache/temp")),
         redis_host=os.environ.get("POSDA_REDIS_HOST", "redis"),
         run_retention_days=_int_env("ABC_RUN_RETENTION_DAYS", 7),
         query_timeout_ms=_int_env("ABC_QUERY_TIMEOUT_MS", 0),
