@@ -22,6 +22,7 @@ from typing import Any, Literal
 
 import asyncpg
 
+from .queries.codecs import install_text_codecs
 from .settings import get_settings
 
 Driver = Literal["postgres", "mysql"]
@@ -128,6 +129,7 @@ class PoolRegistry:
                 password=alias.password,
                 min_size=0,
                 max_size=self._max_size,
+                init=install_text_codecs,
             )
         import aiomysql  # optional dependency; see unavailable_reason()
 

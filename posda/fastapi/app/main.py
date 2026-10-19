@@ -48,6 +48,9 @@ from papi.routes import visualreviews
 from papi.routes import distribution
 from papi.routes import manager
 from papi.routes import abc
+from papi.services.queries import janitor as query_janitor
+from papi.services.queries import runner as query_runner
+from papi.services.settings import get_settings
 
 # configure importer
 importer.FILE_STORAGE_PATH = os.environ.get(
@@ -101,17 +104,26 @@ app = FastAPI(
 app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=9)
 
 
+async def shutdown_after_cancelling_runs():
+    """Mark this process's foreground query runs aborted, then let uvicorn exit."""
+    try:
+        await asyncio.wait_for(query_runner.cancel_all_runs(), timeout=10)
+    except (asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001 - exit regardless
+        print(f"could not cancel query runs cleanly: {exc!r}")
+    # uvicorn's own SIGINT handler performs its normal graceful shutdown.
+    signal.raise_signal(signal.SIGINT)
+
+
 def handle_sigterm(*_):
     print("SIGTERM received, shutting down...")
-    # Exit immediately.
-    # TODO: Do some nice cleanup, like disconnect from DB at least
-    sys.exit(0)
+    asyncio.ensure_future(shutdown_after_cancelling_runs())
 
 @app.on_event("startup")
 async def startup_event():
     print(20*"#", "database connecting")
     await db.setup(database='posda_files')
     print(20*"#", "database connected")
+    asyncio.create_task(query_janitor.run_forever(get_settings()), name="query_run_janitor")
 
     # hook SIGTERM so we can shutdown quickly
     loop = asyncio.get_event_loop()
