@@ -4,6 +4,7 @@ import useSWR, { useSWRConfig } from "swr";
 import { dismissInboxItem, fileInboxItem, forwardInboxItem, paths } from "../api/abc";
 import { ApiError } from "../api/client";
 import type { InboxItemDetail } from "../api/types";
+import { Badge, ErrorMessage, Loading, Notice, errorText, inboxStatusTone } from "../components/ui";
 import { useCurrentActivity } from "../hooks/useCurrentActivity";
 import { formatTimestamp } from "../lib/format";
 
@@ -13,7 +14,7 @@ const ANCHOR_PATTERN = /<a\s+href="([^"]+)"[^>]*>([^<]*)<\/a>/gi;
 function urlLinks(text: string, keyBase: string) {
   return text.split(URL_PATTERN).map((part, i) =>
     /^https?:\/\//.test(part) ? (
-      <a key={`${keyBase}-${i}`} href={part} className="text-blue-700 underline" target="_blank" rel="noreferrer">
+      <a key={`${keyBase}-${i}`} href={part} className="link underline" target="_blank" rel="noreferrer">
         {part}
       </a>
     ) : (
@@ -34,7 +35,7 @@ export function Linkified({ text }: { text: string }) {
     const index = match.index ?? 0;
     nodes.push(...urlLinks(text.slice(last, index), `t${index}`));
     nodes.push(
-      <a key={`a${index}`} href={match[1]} className="text-blue-700 underline" target="_blank" rel="noreferrer">
+      <a key={`a${index}`} href={match[1]} className="link underline" target="_blank" rel="noreferrer">
         {match[2] || match[1]}
       </a>,
     );
@@ -56,9 +57,9 @@ export function InboxItemPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
 
-  if (error instanceof ApiError && error.status === 404) return <p className="text-red-700">No inbox item {itemId}.</p>;
-  if (error) return <p className="text-red-700">{String(error)}</p>;
-  if (!data) return <p className="text-gray-500">Loading…</p>;
+  if (error instanceof ApiError && error.status === 404) return <ErrorMessage>No inbox item {itemId}.</ErrorMessage>;
+  if (error) return <ErrorMessage error={error} />;
+  if (!data) return <Loading />;
 
   async function run(action: () => Promise<void>, done: string, back = false) {
     setFailure(null);
@@ -68,115 +69,118 @@ export function InboxItemPage() {
       await mutate();
       await mutateGlobal(paths.inboxUnread);
       await mutateGlobal(paths.inbox());
+      await mutateGlobal(paths.inbox(true));
       if (back) navigate("/inbox");
     } catch (err) {
-      setFailure(err instanceof ApiError ? err.detail : String(err));
+      setFailure(errorText(err));
     }
   }
 
+  const open = data.date_dismissed === null;
+
   return (
-    <div>
-      <p className="mb-2 text-sm">
-        <Link to="/inbox" className="text-blue-700">Inbox</Link> / message {id}
-        {data.operation_name && <span className="text-gray-600"> ({data.operation_name})</span>}
+    <div className="max-w-6xl">
+      <p className="mb-1 text-sm">
+        <Link to="/inbox" className="link">Inbox</Link>
+        <span className="mx-1 text-slate-400">/</span>
+        <span className="text-slate-600">message {id}</span>
       </p>
-      <table className="table-grid max-w-2xl">
-        <thead>
-          <tr>
-            <th>Status</th>
-            <th>Date Entered</th>
-            <th>Date Dismissed</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>{data.current_status}</td>
-            <td>{formatTimestamp(data.date_entered)}</td>
-            <td>{formatTimestamp(data.date_dismissed)}</td>
-          </tr>
-        </tbody>
-      </table>
-      <pre className="my-3 max-h-[60vh] overflow-auto whitespace-pre-wrap rounded bg-gray-50 p-3 font-mono text-xs">
+      <div className="card mb-3 py-3">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <div className="min-w-0 flex-1">
+            <h1 className="truncate">{data.operation_name ?? `Message ${id}`}</h1>
+            <p className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-500">
+              <Badge tone={inboxStatusTone(data.current_status)}>{data.current_status ?? "unknown"}</Badge>
+              <span>received {formatTimestamp(data.date_entered)}</span>
+              {data.date_dismissed && <span>dismissed {formatTimestamp(data.date_dismissed)}</span>}
+              {data.filed_activity_id !== null && (
+                <Link to={`/activities/${data.filed_activity_id}`} className="link">
+                  filed under activity {data.filed_activity_id}
+                </Link>
+              )}
+              {data.file_id !== null && (
+                <a className="link" href={paths.fileData(data.file_id)} target="_blank" rel="noreferrer">
+                  download report (file {data.file_id})
+                </a>
+              )}
+            </p>
+          </div>
+          <div className="toolbar">
+            {open && data.filed_activity_id === null && (
+              <button
+                type="button"
+                className="btn"
+                disabled={activityId === null}
+                title={activityId === null ? "Select an activity first" : `Attach this report to activity ${activityId}'s timeline and dismiss it`}
+                onClick={() => activityId !== null && run(() => fileInboxItem(id, activityId), `Filed under activity ${activityId}.`, true)}
+              >
+                File under activity{activityId !== null ? ` #${activityId}` : ""}
+              </button>
+            )}
+            {forwardTo === null ? (
+              <button type="button" className="btn" onClick={() => setForwardTo(users.data?.[0] ?? "")}>
+                Forward…
+              </button>
+            ) : (
+              <span className="flex items-center gap-1 rounded-md border border-blue-200 bg-blue-50 p-1 text-sm">
+                <span className="px-1">to</span>
+                <select className="input py-0.5" value={forwardTo} onChange={(e) => setForwardTo(e.target.value)} aria-label="Forward to">
+                  {(users.data ?? []).map((u) => (
+                    <option key={u} value={u}>{u}</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="btn-primary btn-sm"
+                  disabled={!forwardTo}
+                  onClick={() => run(() => forwardInboxItem(id, forwardTo), `Forwarded to ${forwardTo}.`).then(() => setForwardTo(null))}
+                >
+                  Send
+                </button>
+                <button type="button" className="btn btn-sm" onClick={() => setForwardTo(null)}>Cancel</button>
+              </span>
+            )}
+            {open && (
+              <button type="button" className="btn" onClick={() => run(() => dismissInboxItem(id), "Dismissed.", true)}>
+                Dismiss
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+      {message && <Notice tone="success" onDismiss={() => setMessage(null)}>{message}</Notice>}
+      {failure && <ErrorMessage>{failure}</ErrorMessage>}
+      <pre className="pre-block mb-4 max-h-[60vh] whitespace-pre-wrap bg-white">
         {data.text !== null ? <Linkified text={data.text} /> : "(no report text)"}
         {data.text_truncated && "\n… (truncated)"}
       </pre>
-      {data.file_id !== null && (
-        <p className="mb-2 text-sm">
-          <a className="text-blue-700" href={paths.fileData(data.file_id)} target="_blank" rel="noreferrer">
-            download report (file {data.file_id})
-          </a>
-        </p>
-      )}
-      {message && <p className="mb-2 text-sm text-green-800">{message}</p>}
-      {failure && <p className="mb-2 text-sm text-red-700">{failure}</p>}
-      <div className="flex flex-wrap items-center gap-2 text-sm">
-        {data.date_dismissed === null && (
-          <button type="button" className="btn" onClick={() => run(() => dismissInboxItem(id), "Dismissed.", true)}>
-            Dismiss this message
-          </button>
-        )}
-        {forwardTo === null ? (
-          <button type="button" className="btn" onClick={() => setForwardTo(users.data?.[0] ?? "")}>
-            Forward this message
-          </button>
-        ) : (
-          <span className="flex items-center gap-1 rounded border border-blue-300 bg-blue-50 p-1">
-            Forward this message to:
-            <select className="input" value={forwardTo} onChange={(e) => setForwardTo(e.target.value)}>
-              {(users.data ?? []).map((u) => (
-                <option key={u} value={u}>{u}</option>
+      <details>
+        <summary className="cursor-pointer text-sm font-medium text-slate-600 hover:text-slate-900">
+          History ({data.operations.length})
+        </summary>
+        <div className="table-wrap mt-2 max-w-3xl">
+          <table className="table-grid">
+            <thead>
+              <tr>
+                <th>what</th>
+                <th>when</th>
+                <th>who</th>
+                <th>how</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.operations.map((op, i) => (
+                <tr key={i}>
+                  <td>{op.operation_type}</td>
+                  <td className="whitespace-nowrap tabular-nums">{formatTimestamp(op.when_occurred)}</td>
+                  <td>{op.invoking_user}</td>
+                  <td>{op.how_invoked}</td>
+                </tr>
               ))}
-            </select>
-            <button
-              type="button"
-              className="btn-primary"
-              disabled={!forwardTo}
-              onClick={() => run(() => forwardInboxItem(id, forwardTo), `Forwarded to ${forwardTo}.`).then(() => setForwardTo(null))}
-            >
-              Do it
-            </button>
-            <button type="button" className="btn" onClick={() => setForwardTo(null)}>cancel</button>
-          </span>
-        )}
-        {data.filed_activity_id !== null ? (
-          <span className="rounded bg-green-100 px-2 py-1 text-green-900">
-            This message has already been filed (activity {data.filed_activity_id}).
-          </span>
-        ) : (
-          data.date_dismissed === null && (
-            <button
-              type="button"
-              className="btn"
-              disabled={activityId === null}
-              title={activityId === null ? "Select an activity first" : `File under activity ${activityId}`}
-              onClick={() => activityId !== null && run(() => fileInboxItem(id, activityId), `Filed under activity ${activityId}.`, true)}
-            >
-              File this message{activityId !== null ? ` (activity ${activityId})` : ""}
-            </button>
-          )
-        )}
-      </div>
-      <h2 className="mt-4 font-semibold">Recent operations on this message</h2>
-      <table className="table-grid max-w-3xl">
-        <thead>
-          <tr>
-            <th>What</th>
-            <th>When</th>
-            <th>Who</th>
-            <th>How</th>
-          </tr>
-        </thead>
-        <tbody>
-          {data.operations.map((op, i) => (
-            <tr key={i}>
-              <td>{op.operation_type}</td>
-              <td className="whitespace-nowrap">{formatTimestamp(op.when_occurred)}</td>
-              <td>{op.invoking_user}</td>
-              <td>{op.how_invoked}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+            </tbody>
+          </table>
+        </div>
+      </details>
     </div>
   );
 }

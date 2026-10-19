@@ -49,7 +49,7 @@ export function jobStatusTone(status: string | null): Tone {
 }
 
 /** Tone for an inbox message status. */
-export function inboxStatusTone(status: string): Tone {
+export function inboxStatusTone(status: string | null): Tone {
   switch (status) {
     case "new":
     case "entered":

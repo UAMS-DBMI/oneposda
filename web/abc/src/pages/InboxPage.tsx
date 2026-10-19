@@ -1,51 +1,71 @@
-import { Link } from "react-router-dom";
+import { useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
 import useSWR from "swr";
 import { paths } from "../api/abc";
 import type { InboxItem } from "../api/types";
 import { useMe } from "../auth/AuthGate";
+import { Badge, EmptyState, ErrorMessage, Loading, PageHeader, inboxStatusTone } from "../components/ui";
 import { formatTimestamp } from "../lib/format";
+
+function isUnread(item: InboxItem): boolean {
+  return item.current_status === "entered" || item.current_status === "new";
+}
 
 export function InboxPage() {
   const me = useMe();
-  const { data, error } = useSWR<InboxItem[]>(paths.inbox(), { refreshInterval: 10000 });
-  if (error) return <p className="text-red-700">{String(error)}</p>;
-  if (!data) return <p className="text-gray-500">Loading…</p>;
+  const navigate = useNavigate();
+  const [includeDismissed, setIncludeDismissed] = useState(false);
+  const { data, error } = useSWR<InboxItem[]>(paths.inbox(includeDismissed), { refreshInterval: 10000 });
+  const unread = data?.filter(isUnread).length ?? 0;
   return (
-    <div>
-      <h1 className="text-xl font-semibold">Message Inbox for {me.username}</h1>
-      <table className="table-grid mt-3 max-w-4xl">
-        <thead>
-          <tr>
-            <th>Message ID</th>
-            <th>Operation</th>
-            <th>Status</th>
-            <th>Created Date</th>
-          </tr>
-        </thead>
-        <tbody>
-          {data.length === 0 && (
-            <tr>
-              <td colSpan={4} className="text-gray-500">
-                No messages.
-              </td>
-            </tr>
-          )}
-          {data.map((item) => (
-            <tr key={item.user_inbox_content_id}>
-              <td>
-                <Link className="btn" to={`/inbox/${item.user_inbox_content_id}`}>
-                  {item.user_inbox_content_id}
-                </Link>
-              </td>
-              <td>{item.operation_name}</td>
-              <td className={item.current_status === "entered" || item.current_status === "new" ? "font-semibold" : ""}>
-                {item.current_status}
-              </td>
-              <td className="whitespace-nowrap">{formatTimestamp(item.date_entered)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="max-w-5xl">
+      <PageHeader
+        title="Inbox"
+        subtitle={`Reports sent to ${me.username}${data ? ` · ${unread} unread` : ""}`}
+        actions={
+          <label className="flex items-center gap-1 text-slate-600">
+            <input type="checkbox" checked={includeDismissed} onChange={(e) => setIncludeDismissed(e.target.checked)} />
+            show dismissed
+          </label>
+        }
+      />
+      {error && <ErrorMessage error={error} />}
+      {!data && !error && <Loading />}
+      {data && (
+        <div className="table-wrap">
+          <table className="table-grid">
+            <thead>
+              <tr>
+                <th className="num">message</th>
+                <th>operation</th>
+                <th>status</th>
+                <th>received</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((item) => (
+                <tr
+                  key={item.user_inbox_content_id}
+                  className={`row-link ${isUnread(item) ? "font-semibold" : "text-slate-600"}`}
+                  onClick={() => navigate(`/inbox/${item.user_inbox_content_id}`)}
+                >
+                  <td className="num">
+                    <Link className="link" to={`/inbox/${item.user_inbox_content_id}`} onClick={(e) => e.stopPropagation()}>
+                      {item.user_inbox_content_id}
+                    </Link>
+                  </td>
+                  <td>{item.operation_name}</td>
+                  <td>
+                    <Badge tone={inboxStatusTone(item.current_status)}>{item.current_status ?? "unknown"}</Badge>
+                  </td>
+                  <td className="whitespace-nowrap tabular-nums">{formatTimestamp(item.date_entered)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {data.length === 0 && <EmptyState>No messages. Reports from background operations arrive here.</EmptyState>}
+        </div>
+      )}
     </div>
   );
 }
