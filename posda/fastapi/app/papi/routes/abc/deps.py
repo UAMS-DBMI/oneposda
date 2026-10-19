@@ -8,6 +8,7 @@ import asyncpg
 from fastapi import Depends, HTTPException
 from starlette.status import HTTP_403_FORBIDDEN
 
+from ...services.db_pools import PoolRegistry, get_pools
 from ...services.permissions import (
     ABC_APP,
     LAUNCH,
@@ -52,3 +53,4 @@ async def current_abc_user(
 
 Conn = Annotated[asyncpg.Connection, Depends(acquire_connection)]
 CurrentUser = Annotated[AbcUser, Depends(current_abc_user)]
+Pools = Annotated[PoolRegistry, Depends(get_pools)]

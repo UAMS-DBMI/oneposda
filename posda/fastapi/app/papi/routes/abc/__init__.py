@@ -6,7 +6,7 @@ Every route requires a signed-in user with the ``launch`` permission on the
 
 from fastapi import APIRouter, Depends
 
-from . import activities, files, me
+from . import activities, files, me, queries
 from .deps import current_abc_user
 
 router = APIRouter(
@@ -20,3 +20,4 @@ router = APIRouter(
 router.include_router(me.router, prefix="/me")
 router.include_router(activities.router, prefix="/activities")
 router.include_router(files.router, prefix="/files")
+router.include_router(queries.router, prefix="/queries")

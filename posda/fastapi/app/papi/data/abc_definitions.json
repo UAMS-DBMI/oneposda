@@ -1,0 +1,2023 @@
+{
+ "ActivityCategories": [
+  {
+   "description": "Curation workflow tasks performed on a collection are grouped together into an Activity Timepoint to allow for better management and analysis.  This step is tying the data to the Activity.",
+   "id": "1_associate",
+   "name": "Create and Manage Activity Timepoints",
+   "note": "You must first Import Data into Posda and create an Activity!",
+   "operations": [
+    {
+     "action": "FilesInTpNotInPublic",
+     "caption": "Find files In Timepoint Not In Public",
+     "operation": "FilesInTpNotInPublic"
+    },
+    {
+     "action": "CreateTimepointFromImportEventId",
+     "caption": "Create Timepoint From Import Event Id",
+     "operation": "InvokeNewOperation"
+    }
+   ],
+   "queries": [
+    {
+     "caption": "Suggested Queries for Creating a Timepoint from Import Event IDs",
+     "operation": "SelectQueryGroup",
+     "query_list_name": "FindImportEvents"
+    },
+    {
+     "caption": "Suggested Queries for Creating a Timepoint from Date Range for CTP data",
+     "operation": "SelectQueryGroup",
+     "query_list_name": "CTPImports"
+    }
+   ]
+  },
+  {
+   "description": "Maps each patient to a new identifier that does not contain PHI. (e.g. Pat_030)",
+   "id": "2_pmap",
+   "name": "Patient Mapping",
+   "note": "\nThis step should not be needed if your data was imported through CTP",
+   "operations": [
+    {
+     "action": "ImportPatientMapping",
+     "caption": "Import Patient Mappings For Timepoint",
+     "operation": "InvokeNewOperation",
+     "special": "spreadsheetRequest"
+    }
+   ],
+   "queries": [
+    {
+     "caption": "Suggested Queries for DICOM Patient Mapping",
+     "operation": "SelectQueryGroup",
+     "query_list_name": "patient_mapping"
+    }
+   ]
+  },
+  {
+   "description": "Once the mapping is in place, we can run the initial anonymization step. Again, this step can often be skipped if the data is already initially de-identified, such as when it was sent from CTP(A tool some sites use that sends and partially de-identifies data).",
+   "id": "3_ianon",
+   "name": "Initial Anonymization",
+   "note": "\nThis step should not be needed if your data was imported through CTP",
+   "operations": [
+    {
+     "action": "InitialAnonymizerCommandsTp",
+     "caption": "Produce Initial Anonymizer for Timepoint",
+     "operation": "InvokeNewOperation"
+    },
+    {
+     "action": "ProduceInitialAnonCmdsFromDeidRecipeTP",
+     "caption": "Produce Initial Anonymizer from DEID Recipe",
+     "operation": "InvokeNewOperation"
+    }
+   ]
+  },
+  {
+   "description": "Verification of the number of files sent to confirm with the sending site that everything arrived as expected.",
+   "id": "4_count",
+   "name": "Run Count Checks",
+   "queries": [
+    {
+     "caption": "Suggested Queries for Count Checks",
+     "operation": "SelectQueryGroup",
+     "query_list_name": "RunCountChecks"
+    }
+   ]
+  },
+  {
+   "description": "This process builds a report to alert you to duplicated data or data where multiple entities are using the same identifiers.",
+   "id": "5_dupes",
+   "name": "Check for Duplicates",
+   "operations": [
+    {
+     "action": "CompareDupSopsInTimepoint",
+     "caption": "Compare Duplicate Sops in Timepoint",
+     "operation": "InvokeNewOperation"
+    },
+    {
+     "action": "CompareDupSeries",
+     "caption": "Compare Duplicate Series in System",
+     "operation": "InvokeNewOperation"
+    }
+   ],
+   "queries": [
+    {
+     "caption": "Suggested Queries for Duplicate SOPs",
+     "operation": "SelectQueryGroup",
+     "query_list_name": "DupeSops"
+    }
+   ]
+  },
+  {
+   "description": "Verification that the series data is consistent.",
+   "id": "6_concheck",
+   "name": "Run Consistency Checks",
+   "operations": [
+    {
+     "action": "ConsistencyFromTimePoint",
+     "caption": "Check Consistency",
+     "operation": "InvokeNewOperation"
+    },
+    {
+     "action": "CheckLinkages",
+     "caption": "Check ALL Linkages (Preview)",
+     "operation": "InvokeNewOperation"
+    },
+    {
+     "action": "CheckSegLinkages",
+     "caption": "Check SEG Linkages (Preview)",
+     "operation": "InvokeNewOperation"
+    },
+    {
+     "action": "CheckRtLinkages",
+     "caption": "Check RT Linkages (Preview)",
+     "operation": "InvokeNewOperation"
+    },
+    {
+     "action": "VolumeGeometryReport",
+     "caption": "Check Volume Geometry"
+    }
+   ]
+  },
+  {
+   "description": "Verify the IOD is correct for DICOM standard.",
+   "id": "7_dciodvfy",
+   "name": "Verify DICOM IOD (Dciodvfy)",
+   "operations": [
+    {
+     "action": "BackgroundDciodvfyTp",
+     "caption": "Dciodvfy"
+    }
+   ]
+  },
+  {
+   "description": "Examine the pixel data for Personal Health Information.",
+   "id": "8_vr",
+   "name": "Visual Review",
+   "operations": [
+    {
+     "action": "VisualReviewFromTimepoint",
+     "caption": "Schedule Visual Review",
+     "operation": "InvokeNewOperation"
+    },
+    {
+     "action": "Path_SVS_VisualReview",
+     "caption": "Pathology Schedule Visual Review",
+     "operation": "InvokeNewOperation"
+    }
+   ],
+   "queries": [
+    {
+     "caption": "Suggested Queries for Visual Review Status",
+     "operation": "SelectQueryGroup",
+     "query_list_name": "VisualReviewStatus"
+    },
+    {
+     "caption": "Suggested Queries for Masking",
+     "operation": "SelectQueryGroup",
+     "query_list_name": "MaskingStatus"
+    }
+   ]
+  },
+  {
+   "description": "",
+   "id": "9_masking",
+   "name": "Masking",
+   "note": "Operations and queries related to masking",
+   "operations": [
+    {
+     "action": "FlagVRForMasking",
+     "caption": "Flag VR for Masking"
+    },
+    {
+     "action": "NewApplyMasks",
+     "caption": "New Finalize Masking"
+    }
+   ],
+   "queries": [
+    {
+     "caption": "Suggested Queries for Masking",
+     "operation": "SelectQueryGroup",
+     "query_list_name": "MaskingStatus"
+    }
+   ]
+  },
+  {
+   "description": "This will create a report. Any PHI found should be edited in the report and the report should be uploaded and processed.",
+   "id": "9_phirev",
+   "name": "PHI Review",
+   "operations": [
+    {
+     "action": "PhiReviewFromTimepoint",
+     "caption": "Schedule PHI Scan"
+    },
+    {
+     "action": "SRPhiScanOp",
+     "caption": "Schedule Structured Report PHI Scan"
+    }
+   ]
+  },
+  {
+   "description": "Verify that the ROIs are properly linked to the image files and pixel data.",
+   "id": "10_structlinkcheck",
+   "name": "Radiation Therapy",
+   "note": "RT = Radiation Therapy Data only",
+   "operations": [
+    {
+     "action": "CheckStructLinkagesTp",
+     "caption": "Check RT Structure Set Linkage"
+    },
+    {
+     "action": "LinkRtFromTimepoint",
+     "caption": "Link RT Data"
+    }
+   ],
+   "queries": [
+    {
+     "caption": "Series Linked to RtStructs",
+     "operation": "SelectQueryGroup",
+     "query_list_name": "LinkedRtStructs"
+    }
+   ]
+  },
+  {
+   "description": "Confirm data is fully cleaned and ready to be sent to the publicly accessibly server and send the data.",
+   "id": "12_send",
+   "name": "Send to Server (NBIA)",
+   "operations": [
+    {
+     "action": "BackgroundPrivateDispositionsTp",
+     "caption": "Apply Background Dispositions to Timepoint (non baseline date)"
+    },
+    {
+     "action": "BackgroundPrivateDispositionsTpBaseline",
+     "caption": "Apply Background Dispositions to Timepoint (baseline date)"
+    },
+    {
+     "action": "BackgroundPrivateDispositionsTpDual",
+     "caption": "Apply Background Dispositions by Patient Mapping (Baseline or Date Shift)"
+    },
+    {
+     "action": "ExportTimepoint",
+     "caption": "Queue An Export of All Files in Timepoint"
+    }
+   ],
+   "queries": [
+    {
+     "caption": "Suggested Queries For Export Events By Activity",
+     "operation": "SelectQueryGroup",
+     "query_list_name": "ExportEventsByActivity"
+    },
+    {
+     "caption": "Suggested Queries For Export Events",
+     "operation": "SelectQueryGroup",
+     "query_list_name": "ExportEvents"
+    }
+   ]
+  },
+  {
+   "description": "Ensure all the files sent to the public server properly",
+   "id": "13_compare",
+   "name": "Compare data to Server (NBIA)",
+   "operations": [
+    {
+     "action": "PhiPublicScanTp",
+     "caption": "Public Phi Scan Based on Current TP by Activity"
+    },
+    {
+     "action": "PhiVaPublicScanTp",
+     "caption": "VA Phi 'Public' Scan Based on ImportEventId"
+    },
+    {
+     "action": "PhiVaPublicScanDD",
+     "caption": "VA Phi 'Public' Scan Based on Download Dir"
+    },
+    {
+     "action": "ImportDownloadableDirectory",
+     "caption": "VA Import Download Dir"
+    },
+    {
+     "action": "FilesInTpNotInPublic",
+     "caption": "Find Files in Tp, not in Public"
+    }
+   ]
+  },
+  {
+   "description": "Create an activity report.",
+   "id": "14_report",
+   "name": "Produce Activity Report",
+   "operations": [
+    {
+     "action": "CondensedActivityTimepointReport",
+     "caption": "Produce Condensed Activity Timepoint Report"
+    }
+   ],
+   "queries": [
+    {
+     "caption": "Activity Report Queries",
+     "operation": "SelectQueryGroup",
+     "query_list_name": "ActivityReports"
+    }
+   ]
+  },
+  {
+   "description": "Sometimes in order to solve an unusual issue you will want to make a second copy of the Timepoint You may also want to merge Timepoints together.",
+   "id": "15_copyTP",
+   "name": "Copy or Consolidate Timepoints",
+   "note": "These operations require uploading a Spreadsheet",
+   "operations": [
+    {
+     "action": "CopyPriorTimepoint",
+     "caption": "Copy Prior Timepoint",
+     "operation": "CopyPriorTimepoint"
+    },
+    {
+     "action": "CopyPriorTimepointExcludingFiles",
+     "caption": "Copy Prior Timepoint Excluding Files",
+     "operation": "CopyPriorTimepointExcludingFiles",
+     "special": "spreadsheetRequest"
+    },
+    {
+     "action": "ConsolidateTimepoints",
+     "caption": "Consolidate Timepoints",
+     "operation": "ConsolidateTimepoints",
+     "special": "spreadsheetRequest"
+    },
+    {
+     "action": "ConsolidateActivities",
+     "caption": "Consolidate Activities",
+     "operation": "ConsolidateActivities",
+     "special": "spreadsheetRequest"
+    }
+   ],
+   "queries": [
+    {
+     "caption": "Copy Files",
+     "operation": "SelectQueryGroup",
+     "query_list_name": "CopyFiles"
+    }
+   ]
+  },
+  {
+   "description": "Pathology workflow items",
+   "id": "16_Pathology",
+   "name": "Pathology",
+   "note": "These operations are PATHOLOGY specific",
+   "operations": [
+    {
+     "action": "ImportFromFaspex",
+     "caption": "Import from Faspex package",
+     "operation": "InvokeNewOperation"
+    },
+    {
+     "action": "Path_Patient_Mapping",
+     "caption": "Patient Mapping",
+     "operation": "InvokeNewOperation",
+     "special": "spreadsheetRequest"
+    },
+    {
+     "action": "Path_PHI_Scan",
+     "caption": "Schedule PHI Scan"
+    },
+    {
+     "action": "PathologyImageAnalysis",
+     "caption": "Save Image MetaData",
+     "operation": "InvokeNewOperation"
+    },
+    {
+     "action": "Path_SVS_VisualReview",
+     "caption": "Create Visual Review",
+     "operation": "InvokeNewOperation"
+    },
+    {
+     "action": "Path_Commit_Edits",
+     "caption": "Commit Queued Edits",
+     "operation": "InvokeNewOperation"
+    },
+    {
+     "action": "",
+     "caption": "Placeholder for New VR Launcher",
+     "operation": "Placeholder"
+    }
+   ],
+   "queries": [
+    {
+     "caption": "Create Timepoint from Import",
+     "operation": "SelectQueryGroup",
+     "query_list_name": "PathImportEvents"
+    },
+    {
+     "caption": "View PHI Scan",
+     "operation": "SelectQueryGroup",
+     "query_list_name": "Display_TiffPHI_Report"
+    },
+    {
+     "caption": "Visual Review and Status",
+     "operation": "SelectQueryGroup",
+     "query_list_name": "PathVisualReviewStatus"
+    },
+    {
+     "caption": "Exports",
+     "operation": "SelectQueryGroup",
+     "query_list_name": "PathologyExportQueries"
+    }
+   ]
+  },
+  {
+   "description": "",
+   "id": "17_Nifti",
+   "name": "NIfTI",
+   "note": "These operations are NIfTI specific",
+   "operations": [
+    {
+     "action": "PopulateFileNiftiTp",
+     "caption": "Find and Parse NIfTI Files In Timepoint"
+    },
+    {
+     "action": "NiftiPhiScan",
+     "caption": "Schedule NIfTI PHI Scan"
+    },
+    {
+     "action": "NiftiScheduleVisualReview",
+     "caption": "Create NIfTI Visual Review"
+    }
+   ],
+   "queries": [
+    {
+     "caption": "Copy Files",
+     "operation": "SelectQueryGroup",
+     "query_list_name": "CopyFiles"
+    },
+    {
+     "caption": "View Nifti PHI Scan",
+     "operation": "SelectQueryGroup",
+     "query_list_name": "DisplayNiftiPHIReport"
+    },
+    {
+     "caption": "Nifti Visual Review and Status",
+     "operation": "SelectQueryGroup",
+     "query_list_name": "NiftiVisualReviewStatus"
+    },
+    {
+     "caption": "Queries for count verification",
+     "operation": "SelectQueryGroup",
+     "query_list_name": "NiftiCountQueries"
+    }
+   ]
+  },
+  {
+   "description": "Miscellaneous operations",
+   "id": "18_other",
+   "name": "Other",
+   "operations": [
+    {
+     "action": "MakeDownloadableDirectoryTp",
+     "caption": "Make a Downloadable Directory"
+    },
+    {
+     "action": "CreateDownloadableDirectoryAllTp",
+     "caption": "Make a Downloadable Directory with non-dicom files"
+    },
+    {
+     "action": "ImportDownloadableDirectory",
+     "caption": "Import Downloadable Directory"
+    },
+    {
+     "action": "FixReallyBadDicomFilesInTimepoint",
+     "caption": "Copy SOP Class and SOP instance from Meta-header"
+    },
+    {
+     "action": "MakeWeeklyFilesReport",
+     "caption": "Generate List of Weekly Uploads By File Type"
+    },
+    {
+     "action": "DispositionNeededWorksheet",
+     "caption": "Make Worksheet For Dispositions Needed"
+    },
+    {
+     "action": "PrivateTagReports",
+     "caption": "Create Private Tag VR and Disposition Reports"
+    },
+    {
+     "action": "CopyPriorTimepoint",
+     "caption": "Create New Timepoint from Old Timepoint Id"
+    },
+    {
+     "action": "TomosynthesisConverterTP",
+     "caption": "Correct Tomosynthesis Files"
+    },
+    {
+     "action": "MakeUIDMap",
+     "caption": "Make a hashed UID mapping spreadsheet"
+    },
+    {
+     "action": "MakeDownloadableNonDicomTp",
+     "caption": "Make a Downloadable Directory (including Non-Dicom)"
+    },
+    {
+     "action": "BackgroundSwapDicomPixelsData",
+     "caption": "Byte Swap Dicom Pixel Data"
+    },
+    {
+     "action": "ConvertBigEndianToLittle",
+     "caption": "Big Endian -> Little Endian"
+    },
+    {
+     "action": "ProposeUIDchangeEdits",
+     "caption": "Shift UIDs for new version",
+     "operation": "ProposeUIDchangeEdits"
+    },
+    {
+     "action": "PopulateSegBitmaps",
+     "caption": "Populate Segmentation Bitmaps"
+    },
+    {
+     "action": "ImportInPlaceFromPublic",
+     "caption": "Import a full collection from Public"
+    },
+    {
+     "action": "ExportPrivateTagData",
+     "caption": "Export Private Tag data"
+    },
+    {
+     "action": "ApplyPrivateDispositions",
+     "caption": "Experimental Apply Private Dispositions in Timepoint"
+    }
+   ]
+  },
+  {
+   "description": "Open the Process Operation Popup for any operation defined in the system.  Start typing to filter the list, or pick an operation from the dropdown, then click Launch.",
+   "id": "99_any_operation",
+   "name": "Launch Any Operation",
+   "note": "Use this when the operation you need does not have a dedicated button in one of the sections above.",
+   "operation_picker": 1
+  }
+ ],
+ "QueryChainColumnButtons": {
+  "DupSopsInSeries": {
+   "caption": "Duplicate Sops Analysis",
+   "col_name": "series_instance_uid",
+   "obj": "Posda::NewerProcessPopup",
+   "operation": "CompareDupSopsInTimepointSeries",
+   "query": "SeriesWithDupSopsInTimepoint",
+   "spreadsheet_operation": "CompareDupSopsInTimepointSeries",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_ImagesInEquivClass": {
+   "caption": "view",
+   "col_name": "image_equivalence_class_id",
+   "obj": "Posda::ImageDisplayer::KaleidoscopeSub",
+   "query": "VisualReviewStatusDetails",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_ImagesInEquivClass_2": {
+   "caption": "view",
+   "col_name": "image_equivalence_class_id",
+   "obj": "Posda::ImageDisplayer::KaleidoscopeSub",
+   "query": "VisualReviewStatusDetailsByPatient",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_c_2": {
+   "caption": "View",
+   "col_name": "file_id",
+   "obj": "Posda::PopupImageViewer",
+   "query": "SopsDupsInDifferentSeriesByCollectionSite",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_22": {
+   "caption": "view",
+   "col_name": "series_instance_uid",
+   "obj": "Posda::SeriesVisualizer",
+   "query_pat": "%",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_3": {
+   "caption": "Compare",
+   "col_name": "sop_instance_uid",
+   "obj": "Posda::PopupCompare",
+   "query": "SopsDupsInDifferentSeriesByCollectionSite",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_4": {
+   "caption": "Compare",
+   "col_name": "sop_instance_uid",
+   "obj": "Posda::PopupCompare",
+   "query": "DupSopsByCollectionSiteDateRange",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_5": {
+   "caption": "Compare",
+   "col_name": "sop_instance_uid",
+   "obj": "Posda::PopupCompare",
+   "query": "DuplicateFilesBySop",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_51": {
+   "caption": "view",
+   "col_name": "to_file_id",
+   "col_to_param": {
+    "to_file_id": "file_id"
+   },
+   "obj": "choose_from_file_type",
+   "query": "GeFromToFilesFromNonDicomEditCompare",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_52": {
+   "caption": "view",
+   "col_name": "from_file_id",
+   "col_to_param": {
+    "from_file_id": "file_id"
+   },
+   "obj": "choose_from_file_type",
+   "query": "GeFromToFilesFromNonDicomEditCompare",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_54": {
+   "caption": "view",
+   "col_name": "spreadsheet_file_id",
+   "col_to_param": {
+    "spreadsheet_file_id": "file_id"
+   },
+   "obj": "choose_from_file_type",
+   "query": "InboxContentByActivityId",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_6": {
+   "caption": "Compare",
+   "col_name": "sop_instance_uid",
+   "obj": "Posda::PopupCompare",
+   "query": "DuplicateFilesBySop",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_63": {
+   "caption": "view",
+   "col_name": "sub_id",
+   "obj": "DbIf::ShowSubprocessLines",
+   "query": "InboxContentByActivityId",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_67": {
+   "caption": "Create Activity Timepoint",
+   "col_name": "fubar",
+   "obj": "Posda::NewerProcessPopup",
+   "query": "VisualReviewScanInstances",
+   "spreadsheet_operation": "CreateActivityTimepoint",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_7": {
+   "caption": "Compare",
+   "col_name": "sop_instance_uid",
+   "obj": "Posda::PopupCompare",
+   "query": "DuplicateFilesBySop",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_70": {
+   "caption": "view",
+   "col_name": "dicom_file_uri",
+   "obj": "DbIf::ShowSr",
+   "query": "ListSrPublic",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_71": {
+   "caption": "view",
+   "col_name": "file_path",
+   "obj": "DbIf::ShowSr",
+   "query": "ListSrPosda",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_72_1": {
+   "caption": "view",
+   "col_name": "file_path",
+   "obj": "DbIf::ShowSr",
+   "query": "ListSrTimepoint",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_73": {
+   "caption": "test",
+   "col_name": "id",
+   "obj": "Posda::TestPopup",
+   "query": "foo",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_74": {
+   "caption": "review",
+   "col_name": "id",
+   "obj": "Posda::TestRedirectPopup",
+   "query": "VisualReviewStatusById",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_75": {
+   "caption": "info",
+   "col_name": "id",
+   "obj": "DbIf::EditStatus",
+   "query": "GetEditStatusByDisposition",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_76": {
+   "caption": "start",
+   "col_name": "export_event_id",
+   "obj": "Posda::NewerProcessPopup",
+   "operation": "StartExportEvent",
+   "query": "PendingExportRequestsByActivity",
+   "type": "ChainColumnToSubprocess"
+  },
+  "qc_cc_77": {
+   "caption": "start",
+   "col_name": "export_event_id",
+   "obj": "Posda::NewerProcessPopup",
+   "operation": "StartExportEvent",
+   "query": "PendingExportRequests",
+   "type": "ChainColumnToSubprocess"
+  },
+  "qc_cc_78": {
+   "caption": "close",
+   "col_name": "export_event_id",
+   "obj": "Posda::NewerProcessPopup",
+   "operation": "CloseExportEvent",
+   "query": "ExportEventsAwaitingClosure",
+   "type": "ChainColumnToSubprocess"
+  },
+  "qc_cc_79": {
+   "caption": "close",
+   "col_name": "export_event_id",
+   "obj": "Posda::NewerProcessPopup",
+   "operation": "CloseExportEvent",
+   "query": "ExportEventsAwaitingClosureByActivity",
+   "type": "ChainColumnToSubprocess"
+  },
+  "qc_cc_8": {
+   "caption": "view",
+   "col_name": "file_id",
+   "obj": "Posda::FileVisualizer",
+   "query_pat": "%",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_80": {
+   "caption": "Launch Visual Reviewer",
+   "col_name": "pathology_visual_review_instance_id",
+   "obj": "Posda::PathologyViewer",
+   "query_pat": "%",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_81": {
+   "caption": "Mask",
+   "col_name": "image_equivalence_class_id",
+   "col_to_param": {
+    "image_equivalence_class_id": "image_equivalence_class_id",
+    "visual_review_instance_id": "visual_review_instance_id"
+   },
+   "obj": "MirabelleMaskVR",
+   "query": "MaskingStatus",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_83": {
+   "caption": "Review Mask",
+   "col_name": "image_equivalence_class_id",
+   "col_to_param": {
+    "image_equivalence_class_id": "image_equivalence_class_id",
+    "visual_review_instance_id": "visual_review_instance_id"
+   },
+   "obj": "MirabelleMaskReviewVR",
+   "query": "MaskingReview",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_84": {
+   "caption": "review",
+   "col_name": "nifti_review_file_id",
+   "col_to_param": {
+    "nifti_review_file_id": "nifti_review_file_id",
+    "nifti_visual_review_instance_id": "nifti_visual_review_instance_id"
+   },
+   "obj": "MirabelleReviewNiftiVR",
+   "query": "ViewNiftiVisualReviewFiles",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_85": {
+   "caption": "Mirabelle",
+   "col_name": "processing_status",
+   "obj": "MirabelleReviewDICOMIEC",
+   "query": "VisualReviewStatusDetails",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_85_1": {
+   "caption": "Mirabelle",
+   "col_name": "processing_status",
+   "obj": "MirabelleReviewDICOMVR",
+   "query": "VisualReviewStatusById",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_87": {
+   "caption": "Mirabelle",
+   "col_name": "processing_status",
+   "obj": "MirabelleReviewDICOMIEC",
+   "query": "VisualReviewStatusDetailsByPatient",
+   "type": "ChainColumnToPopup"
+  },
+  "qc_cc_88": {
+   "caption": "review",
+   "col_name": "nifti_visual_review_instance_id",
+   "col_to_param": {
+    "nifti_visual_review_instance_id": "nifti_visual_review_instance_id"
+   },
+   "obj": "MirabelleReviewNiftiVR",
+   "query": "ViewNiftiVisualReviewInstances",
+   "type": "ChainColumnToPopup"
+  }
+ },
+ "QueryChaining": {
+  "d_series_2_nifti": {
+   "arg_map": {
+    "dicom_to_nifti_conversion_id": "dicom_to_nifti_conversion_id"
+   },
+   "caption": "files",
+   "chained_query_id": "d_series_2_nifti",
+   "from_query": "ListNiftiConversionsForActivity",
+   "to_query": "ListNiftiFileFromSeriesByNiftiConversion"
+  },
+  "qc_1": {
+   "arg_map": {
+    "bits_allocated": "bits_allocated",
+    "bits_stored": "bits_stored",
+    "high_bit": "high_bit",
+    "photometric_interpretation": "photometric_interpretation",
+    "pixel_representation": "pixel_representation",
+    "planar_configuration": "planar_configuration",
+    "samples_per_pixel": "samples_per_pixel"
+   },
+   "caption": "files",
+   "chained_query_id": "qc_1",
+   "from_query": "PixelTypes",
+   "to_query": "FileIdByPixelType"
+  },
+  "qc_10": {
+   "arg_map": {
+    "dicom_file_type": "dicom_file_type",
+    "id": "visual_review_instance_id",
+    "processing_status": "processing_status",
+    "review_status": "review_status"
+   },
+   "caption": "Details",
+   "chained_query_id": "qc_10",
+   "from_query": "VisualReviewStatusById",
+   "to_query": "VisualReviewStatusDetails"
+  },
+  "qc_11": {
+   "arg_map": {
+    "activity_id": "activity_id"
+   },
+   "caption": "Details",
+   "chained_query_id": "qc_11",
+   "from_query": "ListOpenActivities",
+   "to_query": "InboxContentByActivityId"
+  },
+  "qc_12": {
+   "arg_map": {
+    "activity_id": "activity_id"
+   },
+   "caption": "close",
+   "chained_query_id": "qc_12",
+   "from_query": "ListOpenActivities",
+   "to_query": "CloseActivity"
+  },
+  "qc_13": {
+   "arg_map": {
+    "activity_id": "activity_id"
+   },
+   "caption": "Details",
+   "chained_query_id": "qc_13",
+   "from_query": "ListOpenActivitiesWithItems",
+   "to_query": "InboxContentByActivityId"
+  },
+  "qc_14": {
+   "arg_map": {
+    "activity_id": "activity_id"
+   },
+   "caption": "close",
+   "chained_query_id": "qc_14",
+   "from_query": "ListOpenActivitiesWithItems",
+   "to_query": "CloseActivity"
+  },
+  "qc_15": {
+   "arg_map": {
+    "activity_id": "activity_id"
+   },
+   "caption": "Details",
+   "chained_query_id": "qc_15",
+   "from_query": "ListClosedActivities",
+   "to_query": "InboxContentByActivityId"
+  },
+  "qc_16": {
+   "arg_map": {
+    "activity_id": "activity_id"
+   },
+   "caption": "re-open",
+   "chained_query_id": "qc_16",
+   "from_query": "ListClosedActivitiesWithItems",
+   "to_query": "ReOpenActivity"
+  },
+  "qc_17": {
+   "arg_map": {
+    "activity_id": "activity_id"
+   },
+   "caption": "Details",
+   "chained_query_id": "qc_17",
+   "from_query": "ListClosedActivitiesWithItems",
+   "to_query": "InboxContentByActivityId"
+  },
+  "qc_18": {
+   "arg_map": {
+    "activity_id": "activity_id"
+   },
+   "caption": "re-open",
+   "chained_query_id": "qc_18",
+   "from_query": "ListClosedActivities",
+   "to_query": "ReOpenActivity"
+  },
+  "qc_19": {
+   "arg_map": {
+    "export_event_id": "export_event_id"
+   },
+   "caption": "dismiss",
+   "chained_query_id": "qc_19",
+   "from_query": "PendingExportRequests",
+   "to_query": "DismissExportEvent"
+  },
+  "qc_2": {
+   "arg_map": {
+    "reason_for": "reason_for",
+    "user_name": "user_name",
+    "when_done": "day_of_change"
+   },
+   "caption": "Info",
+   "chained_query_id": "qc_2",
+   "from_query": "HideEvents",
+   "to_query": "HideEventInfo"
+  },
+  "qc_20": {
+   "arg_map": {
+    "export_event_id": "export_event_id"
+   },
+   "caption": "dismiss",
+   "chained_query_id": "qc_20",
+   "from_query": "PendingExportRequestsByActivity",
+   "to_query": "DismissExportEvent"
+  },
+  "qc_21": {
+   "arg_map": {
+    "export_event_id": "export_event_id"
+   },
+   "caption": "dismiss",
+   "chained_query_id": "qc_21",
+   "from_query": "ExportEventStatusSummary",
+   "to_query": "DismissExportEvent"
+  },
+  "qc_22": {
+   "arg_map": {
+    "export_event_id": "export_event_id"
+   },
+   "caption": "dismiss",
+   "chained_query_id": "qc_22",
+   "from_query": "ExportEventStatusSummaryByActivity",
+   "to_query": "DismissExportEvent"
+  },
+  "qc_23": {
+   "arg_map": {
+    "export_event_id": "export_event_id"
+   },
+   "caption": "undismiss",
+   "chained_query_id": "qc_23",
+   "from_query": "DismissedExportEventStatusSummary",
+   "to_query": "UnDismissExportEvent"
+  },
+  "qc_24": {
+   "arg_map": {
+    "visual_review_instance_id": "id"
+   },
+   "caption": "chain",
+   "chained_query_id": "qc_24",
+   "from_query": "GetVisualReviewByActivityId",
+   "to_query": "VisualReviewStatusById"
+  },
+  "qc_25": {
+   "arg_map": {
+    "nifti_visual_review_instance_id": "nifti_visual_review_instance_id"
+   },
+   "caption": "chain",
+   "chained_query_id": "qc_25",
+   "from_query": "ViewNiftiVisualReviewInstances",
+   "to_query": "ViewNiftiVisualReviewFiles"
+  },
+  "qc_4": {
+   "arg_map": {
+    "series_instance_uid": "series_instance_uid"
+   },
+   "caption": "Image Data Consistent?",
+   "chained_query_id": "qc_4",
+   "from_query": "CtSeriesWithCtImageInfoByCollection",
+   "to_query": "CtImageDataConsistencyAcrossSeries"
+  },
+  "qc_5": {
+   "arg_map": {
+    "series_instance_uid": "series_instance_uid"
+   },
+   "caption": "rpt",
+   "chained_query_id": "qc_5",
+   "from_query": "CtSeriesWithCtImageInfoByCollection",
+   "to_query": "SeriesReport"
+  },
+  "qc_6": {
+   "arg_map": {
+    "pid": "pid"
+   },
+   "caption": "drill",
+   "chained_query_id": "qc_6",
+   "from_query": "QueriesRunning",
+   "to_query": "GetQuery"
+  },
+  "qc_7": {
+   "arg_map": {
+    "collection": "project_name",
+    "site": "site_name"
+   },
+   "caption": "GetSeries",
+   "chained_query_id": "qc_7",
+   "from_query": "VisibleColSiteWithCtpLikeSite",
+   "to_query": "DistinctSeriesByCollectionSite"
+  },
+  "qc_8": {
+   "arg_map": {
+    "id": "id"
+   },
+   "caption": "Details",
+   "chained_query_id": "qc_8",
+   "from_query": "VisualReviewScanInstances",
+   "to_query": "VisualReviewStatusById"
+  },
+  "qc_9": {
+   "arg_map": {
+    "activity_id": "activity_id"
+   },
+   "caption": "Details",
+   "chained_query_id": "qc_9",
+   "from_query": "ListActivities",
+   "to_query": "InboxContentByActivityId"
+  }
+ },
+ "QueryProcessingButtons": {
+  "qbp_AnalyzeSeriesVisualiations": {
+   "caption": "Analyze Series Visualizations",
+   "obj_class": "Posda::NewerProcessPopup",
+   "operation": "AnalyzeSeriesVisualizations",
+   "params": {
+    "subprocess_invocation_id": 0
+   },
+   "queries": {
+    "ImageDefacingResultsByActivity": 1
+   }
+  },
+  "qbp_BackgroundApplyPrivateDispositions": {
+   "caption": "Apply Private Dispositions",
+   "obj_class": "Posda::NewerProcessPopup",
+   "operation": "OpenNewTableLevelPopup",
+   "queries": {
+    "DistinctStudySeriesByCollection": 1,
+    "DistinctStudySeriesByCollectionSite": 1
+   },
+   "spreadsheet_operation": "BackgroundPrivateDispositionsTp"
+  },
+  "qbp_BackgroundDciodvfySeries": {
+   "caption": "Run dciodvfy for series",
+   "obj_class": "Posda::NewerProcessPopup",
+   "operation": "OpenNewTableLevelPopup",
+   "queries": {
+    "DistinctSeriesByCollection": 1,
+    "DistinctSeriesByCollectionSite": 1
+   },
+   "spreadsheet_operation": "BackgroundDciodvfySeries"
+  },
+  "qbp_ChangeReviewStatus": {
+   "caption": "Change Review Status",
+   "obj_class": "Posda::NewerProcessPopup",
+   "operation": "OpenNewTableLevelPopup",
+   "queries": {
+    "VisualReviewStatusDetails": 1
+   },
+   "spreadsheet_operation": "ChangeReviewStatus"
+  },
+  "qbp_NiftiKaleidoscope": {
+   "caption": "Review Nifti File Projections",
+   "obj_class": "Posda::ImageDisplayer::NiftiProjections",
+   "operation": "LaunchNiftiProjectionViewer",
+   "params": {
+    "visual_review_id": 0
+   },
+   "queries": {
+    "NiftiFileRenderingsByActvity": 1
+   }
+  },
+  "qbp_NoFaceInDefaceReport": {
+   "caption": "Show Face Not Found Report",
+   "obj_class": "Posda::NiftiNoFacesReport",
+   "operation": "LaunchNoFaceReport",
+   "params": {
+    "subprocess_invocation_id": 0
+   },
+   "queries": {
+    "NoFaceInFileNiftiDefacingBySubprocess": 1
+   }
+  },
+  "qbp_Pathology_Export": {
+   "caption": "Export to PathDB",
+   "obj_class": "Posda::NewerProcessPopup",
+   "operation": "OpenNewTableLevelPopup",
+   "params": {
+    "subprocess_invocation_id": 0
+   },
+   "queries": {
+    "PathologyExportQuery1": 1
+   },
+   "spreadsheet_operation": "Path_Export_parse"
+  },
+  "qbp_PrototypeKaleidoscope": {
+   "caption": "Launch Prototype Kaleidoscope",
+   "obj_class": "Posda::ImageDisplayer::Kaleidoscope",
+   "operation": "LaunchKaleidoscope",
+   "params": {
+    "visual_review_id": 0
+   },
+   "queries": {
+    "VisualReviewStatusById": 1
+   }
+  },
+  "qbp_RemoveFilesMarkedBadFromActivity": {
+   "caption": "Remove Bad Sops from Timepoint",
+   "obj_class": "Posda::NewerProcessPopup",
+   "operation": "OpenNewTableLevelPopup",
+   "params": {
+    "visual_review_id": 0
+   },
+   "queries": {
+    "VisualReviewStatusById": 1
+   },
+   "spreadsheet_operation": "RemoveFilesMarkedBadFromActivity"
+  },
+  "qbp_RetryFailedProjections": {
+   "caption": "Retry Failed Projections",
+   "obj_class": "Posda::NewerProcessPopup",
+   "operation": "OpenNewTableLevelPopup",
+   "queries": {
+    "VisualReviewStatusDetails": 1
+   },
+   "spreadsheet_operation": "RetryFailedProjections"
+  },
+  "qpb_AnalyzeSeriesDuplicates": {
+   "caption": "Analyze Series Duplicates",
+   "obj_class": "Posda::NewerProcessPopup",
+   "operation": "OpenNewTableLevelPopup",
+   "queries": {
+    "SeriesWithDupSopsByCollectionSiteNew": 1
+   },
+   "spreadsheet_operation": "AnalyzeSeriesDuplicates"
+  },
+  "qpb_BogusQueryHandlingButton": {
+   "caption": "Linked to non-existent operation",
+   "obj_class": "Posda::NewerProcessPopup",
+   "operation": "OpenNewTableLevelPopup",
+   "queries": {
+    "SeriesByMatchingImportEventsWithEventInfoAndFileCount": 1
+   },
+   "spreadsheet_operation": "DontEverNameAnOperationThis"
+  },
+  "qpb_CreateActivityTimepointFromImportEventId": {
+   "caption": "Create Timepoint From All Files in Import Event List",
+   "obj_class": "Posda::NewerProcessPopup",
+   "operation": "OpenNewTableLevelPopup",
+   "queries": {
+    "ApiImportEvents": 1,
+    "ApiImportEventsDateRange": 1,
+    "ApiImportEventsForPatient": 1,
+    "GetImportEventIdByImportName": 1,
+    "ImportEvents": 1,
+    "ImportEventsByDateRange": 1,
+    "ImportEventsByMatchingName": 1,
+    "ImportEventsByMatchingNameAndType": 1,
+    "ImportEventsWithTypeAndPatientId": 1,
+    "PathologyImportEventsByDateRange": 1
+   },
+   "spreadsheet_operation": "CreateActivityTimepointFromImportEventId"
+  },
+  "qpb_CreateActivityTimepointFromImportId": {
+   "caption": "Create Timepoint From DICOM Files in Import Event List",
+   "obj_class": "Posda::NewerProcessPopup",
+   "operation": "OpenNewTableLevelPopup",
+   "queries": {
+    "ImportEventsByMatchingName": 1,
+    "ImportEventsByMatchingNameAndType": 1,
+    "ImportEventsWithTypeAndPatientId": 1
+   },
+   "spreadsheet_operation": "CreateActivityTimepointFromImportId"
+  }
+ },
+ "QueryToProcessingButton": {
+  "ApiImportEvents": [
+   {
+    "caption": "Create Timepoint From All Files in Import Event List",
+    "obj_class": "Posda::NewerProcessPopup",
+    "operation": "OpenNewTableLevelPopup",
+    "queries": {
+     "ApiImportEvents": 1,
+     "ApiImportEventsDateRange": 1,
+     "ApiImportEventsForPatient": 1,
+     "GetImportEventIdByImportName": 1,
+     "ImportEvents": 1,
+     "ImportEventsByDateRange": 1,
+     "ImportEventsByMatchingName": 1,
+     "ImportEventsByMatchingNameAndType": 1,
+     "ImportEventsWithTypeAndPatientId": 1,
+     "PathologyImportEventsByDateRange": 1
+    },
+    "spreadsheet_operation": "CreateActivityTimepointFromImportEventId"
+   }
+  ],
+  "ApiImportEventsDateRange": [
+   {
+    "caption": "Create Timepoint From All Files in Import Event List",
+    "obj_class": "Posda::NewerProcessPopup",
+    "operation": "OpenNewTableLevelPopup",
+    "queries": {
+     "ApiImportEvents": 1,
+     "ApiImportEventsDateRange": 1,
+     "ApiImportEventsForPatient": 1,
+     "GetImportEventIdByImportName": 1,
+     "ImportEvents": 1,
+     "ImportEventsByDateRange": 1,
+     "ImportEventsByMatchingName": 1,
+     "ImportEventsByMatchingNameAndType": 1,
+     "ImportEventsWithTypeAndPatientId": 1,
+     "PathologyImportEventsByDateRange": 1
+    },
+    "spreadsheet_operation": "CreateActivityTimepointFromImportEventId"
+   }
+  ],
+  "ApiImportEventsForPatient": [
+   {
+    "caption": "Create Timepoint From All Files in Import Event List",
+    "obj_class": "Posda::NewerProcessPopup",
+    "operation": "OpenNewTableLevelPopup",
+    "queries": {
+     "ApiImportEvents": 1,
+     "ApiImportEventsDateRange": 1,
+     "ApiImportEventsForPatient": 1,
+     "GetImportEventIdByImportName": 1,
+     "ImportEvents": 1,
+     "ImportEventsByDateRange": 1,
+     "ImportEventsByMatchingName": 1,
+     "ImportEventsByMatchingNameAndType": 1,
+     "ImportEventsWithTypeAndPatientId": 1,
+     "PathologyImportEventsByDateRange": 1
+    },
+    "spreadsheet_operation": "CreateActivityTimepointFromImportEventId"
+   }
+  ],
+  "DistinctSeriesByCollection": [
+   {
+    "caption": "Run dciodvfy for series",
+    "obj_class": "Posda::NewerProcessPopup",
+    "operation": "OpenNewTableLevelPopup",
+    "queries": {
+     "DistinctSeriesByCollection": 1,
+     "DistinctSeriesByCollectionSite": 1
+    },
+    "spreadsheet_operation": "BackgroundDciodvfySeries"
+   }
+  ],
+  "DistinctSeriesByCollectionSite": [
+   {
+    "caption": "Run dciodvfy for series",
+    "obj_class": "Posda::NewerProcessPopup",
+    "operation": "OpenNewTableLevelPopup",
+    "queries": {
+     "DistinctSeriesByCollection": 1,
+     "DistinctSeriesByCollectionSite": 1
+    },
+    "spreadsheet_operation": "BackgroundDciodvfySeries"
+   }
+  ],
+  "DistinctStudySeriesByCollection": [
+   {
+    "caption": "Apply Private Dispositions",
+    "obj_class": "Posda::NewerProcessPopup",
+    "operation": "OpenNewTableLevelPopup",
+    "queries": {
+     "DistinctStudySeriesByCollection": 1,
+     "DistinctStudySeriesByCollectionSite": 1
+    },
+    "spreadsheet_operation": "BackgroundPrivateDispositionsTp"
+   }
+  ],
+  "DistinctStudySeriesByCollectionSite": [
+   {
+    "caption": "Apply Private Dispositions",
+    "obj_class": "Posda::NewerProcessPopup",
+    "operation": "OpenNewTableLevelPopup",
+    "queries": {
+     "DistinctStudySeriesByCollection": 1,
+     "DistinctStudySeriesByCollectionSite": 1
+    },
+    "spreadsheet_operation": "BackgroundPrivateDispositionsTp"
+   }
+  ],
+  "GetImportEventIdByImportName": [
+   {
+    "caption": "Create Timepoint From All Files in Import Event List",
+    "obj_class": "Posda::NewerProcessPopup",
+    "operation": "OpenNewTableLevelPopup",
+    "queries": {
+     "ApiImportEvents": 1,
+     "ApiImportEventsDateRange": 1,
+     "ApiImportEventsForPatient": 1,
+     "GetImportEventIdByImportName": 1,
+     "ImportEvents": 1,
+     "ImportEventsByDateRange": 1,
+     "ImportEventsByMatchingName": 1,
+     "ImportEventsByMatchingNameAndType": 1,
+     "ImportEventsWithTypeAndPatientId": 1,
+     "PathologyImportEventsByDateRange": 1
+    },
+    "spreadsheet_operation": "CreateActivityTimepointFromImportEventId"
+   }
+  ],
+  "ImageDefacingResultsByActivity": [
+   {
+    "caption": "Analyze Series Visualizations",
+    "obj_class": "Posda::NewerProcessPopup",
+    "operation": "AnalyzeSeriesVisualizations",
+    "params": {
+     "subprocess_invocation_id": 0
+    },
+    "queries": {
+     "ImageDefacingResultsByActivity": 1
+    }
+   }
+  ],
+  "ImportEvents": [
+   {
+    "caption": "Create Timepoint From All Files in Import Event List",
+    "obj_class": "Posda::NewerProcessPopup",
+    "operation": "OpenNewTableLevelPopup",
+    "queries": {
+     "ApiImportEvents": 1,
+     "ApiImportEventsDateRange": 1,
+     "ApiImportEventsForPatient": 1,
+     "GetImportEventIdByImportName": 1,
+     "ImportEvents": 1,
+     "ImportEventsByDateRange": 1,
+     "ImportEventsByMatchingName": 1,
+     "ImportEventsByMatchingNameAndType": 1,
+     "ImportEventsWithTypeAndPatientId": 1,
+     "PathologyImportEventsByDateRange": 1
+    },
+    "spreadsheet_operation": "CreateActivityTimepointFromImportEventId"
+   }
+  ],
+  "ImportEventsByDateRange": [
+   {
+    "caption": "Create Timepoint From All Files in Import Event List",
+    "obj_class": "Posda::NewerProcessPopup",
+    "operation": "OpenNewTableLevelPopup",
+    "queries": {
+     "ApiImportEvents": 1,
+     "ApiImportEventsDateRange": 1,
+     "ApiImportEventsForPatient": 1,
+     "GetImportEventIdByImportName": 1,
+     "ImportEvents": 1,
+     "ImportEventsByDateRange": 1,
+     "ImportEventsByMatchingName": 1,
+     "ImportEventsByMatchingNameAndType": 1,
+     "ImportEventsWithTypeAndPatientId": 1,
+     "PathologyImportEventsByDateRange": 1
+    },
+    "spreadsheet_operation": "CreateActivityTimepointFromImportEventId"
+   }
+  ],
+  "ImportEventsByMatchingName": [
+   {
+    "caption": "Create Timepoint From All Files in Import Event List",
+    "obj_class": "Posda::NewerProcessPopup",
+    "operation": "OpenNewTableLevelPopup",
+    "queries": {
+     "ApiImportEvents": 1,
+     "ApiImportEventsDateRange": 1,
+     "ApiImportEventsForPatient": 1,
+     "GetImportEventIdByImportName": 1,
+     "ImportEvents": 1,
+     "ImportEventsByDateRange": 1,
+     "ImportEventsByMatchingName": 1,
+     "ImportEventsByMatchingNameAndType": 1,
+     "ImportEventsWithTypeAndPatientId": 1,
+     "PathologyImportEventsByDateRange": 1
+    },
+    "spreadsheet_operation": "CreateActivityTimepointFromImportEventId"
+   },
+   {
+    "caption": "Create Timepoint From DICOM Files in Import Event List",
+    "obj_class": "Posda::NewerProcessPopup",
+    "operation": "OpenNewTableLevelPopup",
+    "queries": {
+     "ImportEventsByMatchingName": 1,
+     "ImportEventsByMatchingNameAndType": 1,
+     "ImportEventsWithTypeAndPatientId": 1
+    },
+    "spreadsheet_operation": "CreateActivityTimepointFromImportId"
+   }
+  ],
+  "ImportEventsByMatchingNameAndType": [
+   {
+    "caption": "Create Timepoint From All Files in Import Event List",
+    "obj_class": "Posda::NewerProcessPopup",
+    "operation": "OpenNewTableLevelPopup",
+    "queries": {
+     "ApiImportEvents": 1,
+     "ApiImportEventsDateRange": 1,
+     "ApiImportEventsForPatient": 1,
+     "GetImportEventIdByImportName": 1,
+     "ImportEvents": 1,
+     "ImportEventsByDateRange": 1,
+     "ImportEventsByMatchingName": 1,
+     "ImportEventsByMatchingNameAndType": 1,
+     "ImportEventsWithTypeAndPatientId": 1,
+     "PathologyImportEventsByDateRange": 1
+    },
+    "spreadsheet_operation": "CreateActivityTimepointFromImportEventId"
+   },
+   {
+    "caption": "Create Timepoint From DICOM Files in Import Event List",
+    "obj_class": "Posda::NewerProcessPopup",
+    "operation": "OpenNewTableLevelPopup",
+    "queries": {
+     "ImportEventsByMatchingName": 1,
+     "ImportEventsByMatchingNameAndType": 1,
+     "ImportEventsWithTypeAndPatientId": 1
+    },
+    "spreadsheet_operation": "CreateActivityTimepointFromImportId"
+   }
+  ],
+  "ImportEventsWithTypeAndPatientId": [
+   {
+    "caption": "Create Timepoint From All Files in Import Event List",
+    "obj_class": "Posda::NewerProcessPopup",
+    "operation": "OpenNewTableLevelPopup",
+    "queries": {
+     "ApiImportEvents": 1,
+     "ApiImportEventsDateRange": 1,
+     "ApiImportEventsForPatient": 1,
+     "GetImportEventIdByImportName": 1,
+     "ImportEvents": 1,
+     "ImportEventsByDateRange": 1,
+     "ImportEventsByMatchingName": 1,
+     "ImportEventsByMatchingNameAndType": 1,
+     "ImportEventsWithTypeAndPatientId": 1,
+     "PathologyImportEventsByDateRange": 1
+    },
+    "spreadsheet_operation": "CreateActivityTimepointFromImportEventId"
+   },
+   {
+    "caption": "Create Timepoint From DICOM Files in Import Event List",
+    "obj_class": "Posda::NewerProcessPopup",
+    "operation": "OpenNewTableLevelPopup",
+    "queries": {
+     "ImportEventsByMatchingName": 1,
+     "ImportEventsByMatchingNameAndType": 1,
+     "ImportEventsWithTypeAndPatientId": 1
+    },
+    "spreadsheet_operation": "CreateActivityTimepointFromImportId"
+   }
+  ],
+  "NiftiFileRenderingsByActvity": [
+   {
+    "caption": "Review Nifti File Projections",
+    "obj_class": "Posda::ImageDisplayer::NiftiProjections",
+    "operation": "LaunchNiftiProjectionViewer",
+    "params": {
+     "visual_review_id": 0
+    },
+    "queries": {
+     "NiftiFileRenderingsByActvity": 1
+    }
+   }
+  ],
+  "NoFaceInFileNiftiDefacingBySubprocess": [
+   {
+    "caption": "Show Face Not Found Report",
+    "obj_class": "Posda::NiftiNoFacesReport",
+    "operation": "LaunchNoFaceReport",
+    "params": {
+     "subprocess_invocation_id": 0
+    },
+    "queries": {
+     "NoFaceInFileNiftiDefacingBySubprocess": 1
+    }
+   }
+  ],
+  "PathologyExportQuery1": [
+   {
+    "caption": "Export to PathDB",
+    "obj_class": "Posda::NewerProcessPopup",
+    "operation": "OpenNewTableLevelPopup",
+    "params": {
+     "subprocess_invocation_id": 0
+    },
+    "queries": {
+     "PathologyExportQuery1": 1
+    },
+    "spreadsheet_operation": "Path_Export_parse"
+   }
+  ],
+  "PathologyImportEventsByDateRange": [
+   {
+    "caption": "Create Timepoint From All Files in Import Event List",
+    "obj_class": "Posda::NewerProcessPopup",
+    "operation": "OpenNewTableLevelPopup",
+    "queries": {
+     "ApiImportEvents": 1,
+     "ApiImportEventsDateRange": 1,
+     "ApiImportEventsForPatient": 1,
+     "GetImportEventIdByImportName": 1,
+     "ImportEvents": 1,
+     "ImportEventsByDateRange": 1,
+     "ImportEventsByMatchingName": 1,
+     "ImportEventsByMatchingNameAndType": 1,
+     "ImportEventsWithTypeAndPatientId": 1,
+     "PathologyImportEventsByDateRange": 1
+    },
+    "spreadsheet_operation": "CreateActivityTimepointFromImportEventId"
+   }
+  ],
+  "SeriesByMatchingImportEventsWithEventInfoAndFileCount": [
+   {
+    "caption": "Linked to non-existent operation",
+    "obj_class": "Posda::NewerProcessPopup",
+    "operation": "OpenNewTableLevelPopup",
+    "queries": {
+     "SeriesByMatchingImportEventsWithEventInfoAndFileCount": 1
+    },
+    "spreadsheet_operation": "DontEverNameAnOperationThis"
+   }
+  ],
+  "SeriesWithDupSopsByCollectionSiteNew": [
+   {
+    "caption": "Analyze Series Duplicates",
+    "obj_class": "Posda::NewerProcessPopup",
+    "operation": "OpenNewTableLevelPopup",
+    "queries": {
+     "SeriesWithDupSopsByCollectionSiteNew": 1
+    },
+    "spreadsheet_operation": "AnalyzeSeriesDuplicates"
+   }
+  ],
+  "VisualReviewStatusById": [
+   {
+    "caption": "Launch Prototype Kaleidoscope",
+    "obj_class": "Posda::ImageDisplayer::Kaleidoscope",
+    "operation": "LaunchKaleidoscope",
+    "params": {
+     "visual_review_id": 0
+    },
+    "queries": {
+     "VisualReviewStatusById": 1
+    }
+   },
+   {
+    "caption": "Remove Bad Sops from Timepoint",
+    "obj_class": "Posda::NewerProcessPopup",
+    "operation": "OpenNewTableLevelPopup",
+    "params": {
+     "visual_review_id": 0
+    },
+    "queries": {
+     "VisualReviewStatusById": 1
+    },
+    "spreadsheet_operation": "RemoveFilesMarkedBadFromActivity"
+   }
+  ],
+  "VisualReviewStatusDetails": [
+   {
+    "caption": "Retry Failed Projections",
+    "obj_class": "Posda::NewerProcessPopup",
+    "operation": "OpenNewTableLevelPopup",
+    "queries": {
+     "VisualReviewStatusDetails": 1
+    },
+    "spreadsheet_operation": "RetryFailedProjections"
+   },
+   {
+    "caption": "Change Review Status",
+    "obj_class": "Posda::NewerProcessPopup",
+    "operation": "OpenNewTableLevelPopup",
+    "queries": {
+     "VisualReviewStatusDetails": 1
+    },
+    "spreadsheet_operation": "ChangeReviewStatus"
+   }
+  ]
+ },
+ "WorkflowQueries": {
+  "ActivityReports": [
+   "Suggested Queries for Activity Timepoint Reports",
+   [
+    {
+     "caption": "VerboseActivityTimepointReport",
+     "query": "VerboseActivityTimepointReport"
+    },
+    {
+     "caption": "FilesSeriesNumFIlesAndSopsVisibilityInTimepoint",
+     "query": "FilesSeriesNumFIlesAndSopsVisibilityInTimepoint"
+    },
+    {
+     "caption": "TimepointCreationReport",
+     "query": "TimepointCreationReport"
+    }
+   ]
+  ],
+  "CTPImports": [
+   "Suggested Queries for Importing CTP data by Date Range",
+   [
+    {
+     "caption": "CTP Brief Import Summary By Date Range",
+     "query": "CtpImportBriefSummaryByDateRange"
+    },
+    {
+     "caption": "CTP Import Summary By Date Range",
+     "query": "CtpImportSummaryByDateRange"
+    },
+    {
+     "caption": "CTP Imports By Date Range",
+     "query": "CtpImportsByDateRange"
+    },
+    {
+     "caption": "CTP Imports By Date Range With Series and Study",
+     "query": "CtpImportsByDateRangeWithSeriesStudy"
+    },
+    {
+     "caption": "CTP Imports By Date Range With FileId",
+     "query": "CtpImportsByDateRangeWithFileId"
+    }
+   ]
+  ],
+  "CopyFiles": [
+   "Suggested Queries for Copying Files",
+   [
+    {
+     "caption": "Files In Timepoint With PatientId",
+     "query": "FilesInTimepointWithPatientId"
+    },
+    {
+     "caption": "Files In Timepoint Excluding Patient Id",
+     "query": "FilesInTimepointExcludingPatientId"
+    }
+   ]
+  ],
+  "DisplayNiftiPHIReport": [
+   "Suggested Queries for Nifti PHI Reporting",
+   [
+    {
+     "caption": "Display created Nifti PHI Report",
+     "query": "RunNiftiPHIReport"
+    }
+   ]
+  ],
+  "Display_TiffPHI_Report": [
+   "Suggested Queries for Tiff PHI Reporting",
+   [
+    {
+     "caption": "Display created Tiff PHI Report",
+     "query": "RunTiffPHIReport"
+    }
+   ]
+  ],
+  "DupeSops": [
+   "Suggested Queries for Duplicate SOPs",
+   [
+    {
+     "caption": "Series with Dup Sops in Tp with SOP and file counts",
+     "query": "SeriesWithDupSopsInTimepoint"
+    },
+    {
+     "caption": "Dup Sops In Timepoint With Series File Ids And Load Times",
+     "query": "DupSopsInTimepointWithSeriesFileIdsAndLoadTimes"
+    }
+   ]
+  ],
+  "ExportEvents": [
+   "Suggested Queries for ExportEvents",
+   [
+    {
+     "caption": "Pending Exports",
+     "query": "PendingExportRequests"
+    },
+    {
+     "caption": "Running Exports",
+     "query": "RunningExportRequests"
+    },
+    {
+     "caption": "Completed Exports",
+     "query": "CompletedExportRequests"
+    },
+    {
+     "caption": "Export Event Summary",
+     "query": "ExportEventStatusSummary"
+    },
+    {
+     "caption": "Dismissed Export Event Summary",
+     "query": "DismissedExportEventStatusSummary"
+    },
+    {
+     "caption": "Export Events Awaiting Closure",
+     "query": "ExportEventsAwaitingClosure"
+    }
+   ]
+  ],
+  "ExportEventsByActivity": [
+   "Suggested Queries for ExportEvents By Activity",
+   [
+    {
+     "caption": "Pending Exports",
+     "query": "PendingExportRequestsByActivity"
+    },
+    {
+     "caption": "Export Event Summary",
+     "query": "ExportEventStatusSummaryByActivity"
+    },
+    {
+     "caption": "Export Events Awaiting Closure",
+     "query": "ExportEventsAwaitingClosureByActivity"
+    }
+   ]
+  ],
+  "FindImportEvents": [
+   "Suggested Queries for Import Events",
+   [
+    {
+     "caption": "ApiImportEvents",
+     "query": "ApiImportEvents"
+    },
+    {
+     "caption": "ApiImportEventsDateRange",
+     "query": "ApiImportEventsDateRange"
+    },
+    {
+     "caption": "ApiImportEventsForPatient",
+     "query": "ApiImportEventsForPatient"
+    },
+    {
+     "caption": "FindingImportEvent",
+     "query": "FindingImportEvent"
+    },
+    {
+     "caption": "GetAllFilesByImportEventId",
+     "query": "GetAllFilesByImportEventId"
+    },
+    {
+     "caption": "GetDicomFilesByImportEventId",
+     "query": "GetDicomFilesByImportEventId"
+    },
+    {
+     "caption": "GetImportEventIdByImportName",
+     "query": "GetImportEventIdByImportName"
+    },
+    {
+     "caption": "ImportEvents",
+     "query": "ImportEvents"
+    },
+    {
+     "caption": "ImportEventsByDateRange",
+     "query": "ImportEventsByDateRange"
+    },
+    {
+     "caption": "ImportEventsByMatchingName",
+     "query": "ImportEventsByMatchingName"
+    },
+    {
+     "caption": "ImportEventsByMatchingNameAndType",
+     "query": "ImportEventsByMatchingNameAndType"
+    },
+    {
+     "caption": "ImportEventsWithTypeAndPatientId",
+     "query": "ImportEventsWithTypeAndPatientId"
+    },
+    {
+     "caption": "PathologyImportEventsByDateRange",
+     "query": "PathologyImportEventsByDateRange"
+    }
+   ]
+  ],
+  "ImageDefacing": [
+   "Suggested Queries for ImageDefacing",
+   [
+    {
+     "caption": "Series Which May Need Defacing",
+     "query": "SeriesWhichMayNeedDefacing"
+    },
+    {
+     "caption": "Nifti Conversions For Timepoint",
+     "query": "ListNiftiConversionsForActivityTp"
+    },
+    {
+     "caption": "Nifti Files For Nifti Conversion",
+     "query": "ListNiftiFileFromSeriesByNiftiConversion"
+    }
+   ]
+  ],
+  "LinkedRtStructs": [
+   "Suggested Queries for Series with Linked RT Structs",
+   [
+    {
+     "caption": "LinkedSeriesForStructsInTimepoint",
+     "query": "LinkedSeriesForStructsInTimepoint"
+    }
+   ]
+  ],
+  "MaskingStatus": [
+   "Suggested Queries for Masking Status",
+   [
+    {
+     "caption": "MaskingStatus",
+     "query": "MaskingStatus"
+    },
+    {
+     "caption": "MaskingReview",
+     "query": "MaskingReview"
+    }
+   ]
+  ],
+  "NiftiCountQueries": [
+   "Nifti Suggested Queries for finding merged files",
+   [
+    {
+     "caption": "FileIds assocaited with multiple filenames",
+     "query": "niftiDuplicateFileDataReport"
+    },
+    {
+     "caption": "All filenames in activity",
+     "query": "niftiTimePointReport"
+    }
+   ]
+  ],
+  "NiftiVisualReviewStatus": [
+   "Nifti Suggested Queries for Visual Review",
+   [
+    {
+     "caption": "View Nifti VR Instances (Launcher)",
+     "query": "ViewNiftiVisualReviewInstances"
+    },
+    {
+     "caption": "List all Nifti visual reviews for an activity",
+     "query": "NiftiVRlogs"
+    },
+    {
+     "caption": "Get a summmary of Nifti visual review status by activity",
+     "query": "NiftiReviewCountByActivity"
+    },
+    {
+     "caption": "Get a summmary of Nifti visual review status by timepoint",
+     "query": "NiftiReviewCountByActivityTimepoint"
+    },
+    {
+     "caption": "List review summary for nifti files that were marked bad or have had too few reviews",
+     "query": "NiftiBadFilesInTPCheck"
+    }
+   ]
+  ],
+  "PathImportEvents": [
+   "Pathology Suggested Queries for Visual Review",
+   [
+    {
+     "caption": "PathologyImportEventsByDateRange",
+     "query": "PathologyImportEventsByDateRange"
+    }
+   ]
+  ],
+  "PathVisualReviewStatus": [
+   "Pathology Suggested Queries for Visual Review",
+   [
+    {
+     "caption": "View Pathology VR Instances (Launcher)",
+     "query": "ViewPathologyVisualReviewInstances"
+    },
+    {
+     "caption": "PathologyVRlogs",
+     "query": "PathologyVRlogs"
+    },
+    {
+     "caption": "PathologyReviewCountByActivity",
+     "query": "PathologyReviewCountByActivity"
+    },
+    {
+     "caption": "PathologyReviewCountByActivityTimepoint",
+     "query": "PathologyReviewCountByActivityTimepoint"
+    },
+    {
+     "caption": "PathologyBadFilesInTPCheck",
+     "query": "PathologyBadFilesInTPCheck"
+    },
+    {
+     "caption": "PathologyViewEdits",
+     "query": "PathologyViewEdits"
+    },
+    {
+     "caption": "FilePathsFromActivity",
+     "query": "FilePathsFromActivity"
+    }
+   ]
+  ],
+  "PathologyExportQueries": [
+   "Suggested Queries for Pathology Export",
+   [
+    {
+     "caption": "PathDB Style: 1",
+     "query": "PathologyExportQuery1"
+    },
+    {
+     "caption": "MetadataDigest",
+     "query": "PathologyMetaExport"
+    }
+   ]
+  ],
+  "RunCountChecks": [
+   "Suggested Queries for Count Checks",
+   [
+    {
+     "caption": "CountsByCollectionLikeSite",
+     "query": "CountsByCollectionLikeSite"
+    },
+    {
+     "caption": "CountsByCollectionSite",
+     "query": "CountsByCollectionSite"
+    },
+    {
+     "caption": "CountsByCollectionDateRange",
+     "query": "CountsByCollectionDateRange"
+    },
+    {
+     "caption": "CountsByCollectionSiteDateRange",
+     "query": "CountsByCollectionSiteDateRange"
+    },
+    {
+     "caption": "CountsByPatientId",
+     "query": "CountsByPatientId"
+    },
+    {
+     "caption": "PatientStatusCounts",
+     "query": "PatientStatusCounts"
+    },
+    {
+     "caption": "CountsByCollectionLike",
+     "query": "CountsByCollectionLike"
+    }
+   ]
+  ],
+  "VisualReviewStatus": [
+   "Suggested Queries for Visual Review Status",
+   [
+    {
+     "caption": "VisualReviewScanInstances (generally obsolete)",
+     "query": "VisualReviewScanInstances"
+    },
+    {
+     "caption": "VisualReviewForActivity",
+     "query": "GetVisualReviewByActivityId"
+    },
+    {
+     "caption": "VisualReviewStatusById",
+     "query": "VisualReviewStatusById"
+    },
+    {
+     "caption": "VisualReviewStatusDetailsByPatient",
+     "query": "VisualReviewStatusDetailsByPatient"
+    }
+   ]
+  ],
+  "patient_mapping": [
+   "Suggested Queries for DICOM Patient Mapping",
+   [
+    {
+     "caption": "GetMappingByToPatientId",
+     "query": "GetMappingByToPatientId"
+    },
+    {
+     "caption": "GetPatientMapping",
+     "query": "GetPatientMapping"
+    },
+    {
+     "caption": "GetPatientMappingByCollectionSite",
+     "query": "GetPatientMappingByCollectionSite"
+    },
+    {
+     "caption": "GetPatientMappingForFilesInTimepoint",
+     "query": "GetPatientMappingForFilesInTimepoint"
+    },
+    {
+     "caption": "SetPatientMappingToInactive",
+     "query": "SetPatientMappingToInactive"
+    }
+   ]
+  ]
+ }
+}
