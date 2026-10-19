@@ -3,13 +3,13 @@ import { AuthGate } from "./auth/AuthGate";
 import { AppShell } from "./components/AppShell";
 import { ActivitiesPage } from "./pages/ActivitiesPage";
 import { ActivityPage } from "./pages/ActivityPage";
+import { AdminUsersPage } from "./pages/AdminUsersPage";
 import { BackgroundJobsPage } from "./pages/BackgroundJobsPage";
 import { DownloadsPage } from "./pages/DownloadsPage";
 import { InboxItemPage } from "./pages/InboxItemPage";
 import { InboxPage } from "./pages/InboxPage";
 import { HomeRedirect } from "./pages/HomeRedirect";
 import { LoginPage } from "./pages/LoginPage";
-import { NotYetPage } from "./pages/NotYetPage";
 import { QueriesPage } from "./pages/QueriesPage";
 import { QueryPage } from "./pages/QueryPage";
 import { RunPage } from "./pages/RunPage";
@@ -41,7 +41,7 @@ export function App() {
         <Route path="/upload-to-event" element={<UploadToEventPage />} />
         <Route path="/download" element={<DownloadsPage />} />
         <Route path="/background" element={<BackgroundJobsPage />} />
-        <Route path="/admin" element={<NotYetPage title="Admin" phase={5} />} />
+        <Route path="/admin" element={<AdminUsersPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

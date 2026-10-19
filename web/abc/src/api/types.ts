@@ -335,3 +335,16 @@ export interface DownloadDir {
   modified: string;
   entries: number;
 }
+
+// --- user administration ----------------------------------------------------
+
+export interface AdminUser {
+  user_id: number;
+  user_name: string;
+  full_name: string;
+  disabled: boolean;
+  email: string | null;
+}
+
+/** app -> permission name -> granted */
+export type PermissionMap = Record<string, Record<string, boolean>>;

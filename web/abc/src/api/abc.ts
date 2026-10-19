@@ -3,6 +3,7 @@
 import { API_BASE, api } from "./client";
 import type {
   Activity,
+  AdminUser,
   FileText,
   LaunchPreview,
   LaunchSource,
@@ -54,6 +55,11 @@ export const paths = {
   downloads: "/v1/abc/downloads",
   downloadTar: (name: string) => `${API_BASE}/v1/abc/downloads/${encodeURIComponent(name)}/tar`,
   fileData: (fileId: number) => `${API_BASE}/v1/files/${fileId}/data`,
+  adminUsers: "/v1/abc/admin/users",
+  adminUser: (name: string) => `/v1/abc/admin/users/${encodeURIComponent(name)}`,
+  adminUserPermissions: (name: string) =>
+    `/v1/abc/admin/users/${encodeURIComponent(name)}/permissions`,
+  adminPermissions: "/v1/abc/admin/permissions",
 };
 
 export function login(username: string, password: string): Promise<void> {
@@ -201,4 +207,31 @@ export async function uploadFilesToEvent(files: File[], importEventId: number): 
     throw new Error(`${response.status}: ${detail || response.statusText}`);
   }
   return (await response.json()) as Uploaded[];
+}
+
+export function createAdminUser(body: {
+  user_name: string;
+  full_name: string;
+  email: string | null;
+  password: string;
+}): Promise<AdminUser> {
+  return api.post<AdminUser>(paths.adminUsers, body);
+}
+
+export function patchAdminUser(
+  name: string,
+  body: { full_name?: string; email?: string | null; disabled?: boolean; password?: string },
+): Promise<AdminUser> {
+  return api.patch<AdminUser>(paths.adminUser(name), body);
+}
+
+export function deleteAdminUser(name: string): Promise<void> {
+  return api.delete<void>(paths.adminUser(name));
+}
+
+export function putAdminPermissions(
+  name: string,
+  granted: Record<string, string[]>,
+): Promise<Record<string, Record<string, boolean>>> {
+  return api.put(paths.adminUserPermissions(name), { granted });
 }
