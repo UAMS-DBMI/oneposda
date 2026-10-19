@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import useSWR, { useSWRConfig } from "swr";
 import { dismissInboxItem, fileInboxItem, forwardInboxItem, paths } from "../api/abc";
@@ -8,23 +8,40 @@ import { useCurrentActivity } from "../hooks/useCurrentActivity";
 import { formatTimestamp } from "../lib/format";
 
 const URL_PATTERN = /(https?:\/\/[^\s<>"]+)/g;
+const ANCHOR_PATTERN = /<a\s+href="([^"]+)"[^>]*>([^<]*)<\/a>/gi;
 
-/** Report text with http(s) URLs turned into links, as the Perl page did. */
-export function Linkified({ text }: { text: string }) {
-  const parts = text.split(URL_PATTERN);
-  return (
-    <>
-      {parts.map((part, i) =>
-        /^https?:\/\//.test(part) ? (
-          <a key={i} href={part} className="text-blue-700 underline" target="_blank" rel="noreferrer">
-            {part}
-          </a>
-        ) : (
-          part
-        ),
-      )}
-    </>
+function urlLinks(text: string, keyBase: string) {
+  return text.split(URL_PATTERN).map((part, i) =>
+    /^https?:\/\//.test(part) ? (
+      <a key={`${keyBase}-${i}`} href={part} className="text-blue-700 underline" target="_blank" rel="noreferrer">
+        {part}
+      </a>
+    ) : (
+      part
+    ),
   );
+}
+
+/**
+ * Report text with bare http(s) URLs and the ``<a href="…">…</a>`` anchors
+ * the Perl report scripts write turned into links; everything else is
+ * rendered as text, never as HTML.
+ */
+export function Linkified({ text }: { text: string }) {
+  const nodes: ReactNode[] = [];
+  let last = 0;
+  for (const match of text.matchAll(ANCHOR_PATTERN)) {
+    const index = match.index ?? 0;
+    nodes.push(...urlLinks(text.slice(last, index), `t${index}`));
+    nodes.push(
+      <a key={`a${index}`} href={match[1]} className="text-blue-700 underline" target="_blank" rel="noreferrer">
+        {match[2] || match[1]}
+      </a>,
+    );
+    last = index + match[0].length;
+  }
+  nodes.push(...urlLinks(text.slice(last), "tail"));
+  return <>{nodes}</>;
 }
 
 export function InboxItemPage() {
