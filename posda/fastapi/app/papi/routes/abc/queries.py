@@ -4,7 +4,13 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from ...services import abc_definitions as defs
+from ...services import bindings as bindings_service
+from ...services import workqueue
+from ...services.operations import launch
+from ...services.operations.background_query import background_query_plan
 from ...services.queries import catalog
+from ...services.queries.runner import ordered_values
+from ...services.settings import get_settings
 from .deps import Conn, CurrentUser, Pools
 
 router = APIRouter()
@@ -53,6 +59,19 @@ class QueryDetailOut(QuerySummaryOut):
     chained_queries: list[ChainedQueryOut]
     processing_buttons: list[ProcessingButtonOut]
     column_buttons: list[ColumnButtonOut]
+
+
+class BackgroundQueryIn(BaseModel):
+    args: dict[str, str | None] = {}
+    activity_id: int | None = None
+
+
+class BackgroundQueryOut(BaseModel):
+    subprocess_invocation_id: int
+    work_id: int
+    queue_name: str
+    pending_work: int
+    command_line: str
 
 
 class WorkflowGroupEntryOut(BaseModel):
@@ -175,3 +194,44 @@ def chained_query_or_404(chained_query_id: str) -> defs.ChainedQuery:
             status_code=404, detail=f"no chained query {chained_query_id}"
         )
     return chain
+
+
+@router.post("/{name}/background", response_model=BackgroundQueryOut, status_code=201)
+async def run_in_background(
+    name: str, body: BackgroundQueryIn, conn: Conn, pools: Pools, user: CurrentUser
+) -> BackgroundQueryOut:
+    """Queue RunQueryInBackground.pl for the query; results arrive in the inbox."""
+    try:
+        detail = await catalog.get_query(conn, name, pools)
+    except catalog.QueryNotFound:
+        raise HTTPException(status_code=404, detail=f"query {name} does not exist")
+    unknown = sorted(set(body.args) - set(detail.args))
+    if unknown:
+        raise HTTPException(
+            status_code=400, detail=f"unknown argument(s): {', '.join(unknown)}"
+        )
+    activity_id = body.activity_id
+    if activity_id is None:
+        bound = await bindings_service.get_binding(conn, user.username, "activity_id")
+        activity_id = int(bound) if bound and bound.isdigit() else None
+    values = ordered_values(detail.args, body.args)
+    if detail.args:
+        await bindings_service.set_bindings(
+            conn, user.username, dict(zip(detail.args, values))
+        )
+    plan = background_query_plan(
+        detail, values, activity_id=activity_id, notify=user.username
+    )
+    try:
+        result = await launch.launch(
+            conn, workqueue.get_work_queue(), get_settings(), plan, user=user.username
+        )
+    except launch.WorkNotQueued as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return BackgroundQueryOut(
+        subprocess_invocation_id=result.subprocess_invocation_id,
+        work_id=result.work_id,
+        queue_name=result.queue_name,
+        pending_work=result.pending_work,
+        command_line=result.command_line,
+    )
