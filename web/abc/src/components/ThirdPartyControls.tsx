@@ -1,6 +1,12 @@
 import { useEffect, useState } from "react";
 import { setThirdPartyUrl } from "../api/abc";
 import type { Activity } from "../api/types";
+import { SegmentedControl } from "./ui";
+
+const CHOICES = [
+  { value: "no", label: "No" },
+  { value: "yes", label: "Yes" },
+] as const;
 
 /** Perl: "Is third party: Yes/No" radios, plus a URL box while Yes. */
 export function ThirdPartyControls({
@@ -30,48 +36,31 @@ export function ThirdPartyControls({
     }
   }
 
-  function chooseNo() {
-    setIsThirdParty(false);
-    if (stored !== null) void save(null);
+  function choose(value: "yes" | "no") {
+    setIsThirdParty(value === "yes");
+    if (value === "no" && stored !== null) void save(null);
   }
 
   return (
-    <div className="mt-1 text-sm">
-      Is third party:{" "}
-      <label className="mr-2">
-        <input
-          type="radio"
-          name="third-party"
-          checked={isThirdParty}
-          onChange={() => setIsThirdParty(true)}
-        />{" "}
-        Yes
-      </label>
-      <label>
-        <input
-          type="radio"
-          name="third-party"
-          checked={!isThirdParty}
-          onChange={chooseNo}
-        />{" "}
-        No
-      </label>
+    <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
+      <span className="text-slate-600" title="Is this activity a third-party analysis of existing data?">
+        Third-party analysis
+      </span>
+      <SegmentedControl size="sm" label="Third-party analysis" options={CHOICES} value={isThirdParty ? "yes" : "no"} onChange={choose} />
       {isThirdParty && (
-        <div className="mt-1">
-          third party analysis url:{" "}
-          <input
-            className="input w-96"
-            placeholder="enter url"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            onBlur={() => {
-              const trimmed = url.trim();
-              if (trimmed !== (stored ?? "")) void save(trimmed || null);
-            }}
-          />
-        </div>
+        <input
+          className="input w-96 max-w-full py-0.5"
+          placeholder="analysis URL (saved when you leave the box)"
+          aria-label="third party analysis url"
+          value={url}
+          onChange={(e) => setUrl(e.target.value)}
+          onBlur={() => {
+            const trimmed = url.trim();
+            if (trimmed !== (stored ?? "")) void save(trimmed || null);
+          }}
+        />
       )}
-      {error && <p className="text-red-700">{error}</p>}
+      {error && <span className="text-red-700">{error}</span>}
     </div>
   );
 }

@@ -31,14 +31,14 @@ describe("TimelineTable", () => {
 
     render(<TimelineTable events={events} activityId={1} onRefresh={() => {}} />);
 
-    const rows = screen.getAllByRole("row").slice(2); // two header rows
+    const rows = screen.getAllByRole("row").slice(1); // header row
     expect(rows).toHaveLength(2);
     expect(rows[0]).toHaveTextContent("7");
     expect(rows[0]).toHaveTextContent("718");
     expect(screen.getByLabelText("from timepoint 3")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "email" })).toHaveLength(2);
     expect(screen.getAllByRole("button", { name: "input" })).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "cmp" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Compare timepoints" })).toBeDisabled();
   });
 
   it("says so when there are no events", () => {

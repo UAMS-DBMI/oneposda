@@ -7,7 +7,9 @@ import type { Activity, TimelineEvent } from "../api/types";
 import { TaskStatusPanel } from "../components/TaskStatusPanel";
 import { ThirdPartyControls } from "../components/ThirdPartyControls";
 import { TimelineTable } from "../components/TimelineTable";
+import { ErrorMessage, Loading } from "../components/ui";
 import { useCurrentActivity } from "../hooks/useCurrentActivity";
+import { formatTimestamp } from "../lib/format";
 
 export function ActivityPage() {
   const navigate = useNavigate();
@@ -19,6 +21,7 @@ export function ActivityPage() {
   );
   const timeline = useSWR<TimelineEvent[]>(
     Number.isInteger(activityId) ? paths.timeline(activityId) : null,
+    { refreshInterval: 15000 },
   );
 
   // Opening an activity's URL selects it, as the Perl dropdown did.
@@ -51,27 +54,44 @@ export function ActivityPage() {
     navigate("/activities");
   }
 
-  if (!Number.isInteger(activityId)) return <p>Bad activity id.</p>;
-  if (missing) return <p className="text-gray-500">Activity {activityId} not found…</p>;
-  if (error) return <p className="text-red-700">{String(error)}</p>;
-  if (!activity) return <p className="text-gray-500">Loading…</p>;
+  if (!Number.isInteger(activityId)) return <ErrorMessage>Bad activity id.</ErrorMessage>;
+  if (missing) return <Loading>Activity {activityId} not found…</Loading>;
+  if (error) return <ErrorMessage error={error} />;
+  if (!activity) return <Loading />;
 
   return (
     <div>
-      <div className="flex flex-wrap items-start gap-6">
-        <div>
-          <h1 className="text-xl font-semibold">
-            Activity {activity.activity_id}: {activity.brief_description}
-          </h1>
+      <p className="mb-1 text-sm">
+        <Link to="/activities" className="link">Activities</Link>
+        <span className="mx-1 text-slate-400">/</span>
+        <span className="text-slate-600">#{activity.activity_id}</span>
+      </p>
+      <div className="mb-4 grid gap-4 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+        <section className="card">
+          <div className="flex flex-wrap items-start gap-3">
+            <div className="min-w-0 flex-1">
+              <h1>
+                <span className="mr-2 text-slate-400">#{activity.activity_id}</span>
+                {activity.brief_description}
+              </h1>
+              <p className="mt-1 text-sm text-slate-500">
+                Created {formatTimestamp(activity.when_created)} by {activity.who_created}
+                {activity.when_closed && <> · closed {formatTimestamp(activity.when_closed)}</>}
+              </p>
+            </div>
+            <div className="toolbar">
+              <Link to="/workflow" className="btn btn-sm" title="Curation steps for this activity">Workflow</Link>
+              <Link to="/queries" className="btn btn-sm">Queries</Link>
+              <button type="button" className="btn btn-sm" onClick={chooseAnother}>
+                Choose another…
+              </button>
+            </div>
+          </div>
           <ThirdPartyControls activity={activity} onChanged={() => mutate()} />
-          <button type="button" className="btn mt-2" onClick={chooseAnother}>
-            Choose Another Activity
-          </button>
-        </div>
+        </section>
         <TaskStatusPanel activityId={activity.activity_id} />
       </div>
-      <hr className="my-4" />
-      {timeline.error && <p className="text-red-700">{String(timeline.error)}</p>}
+      {timeline.error && <ErrorMessage error={timeline.error} />}
       {timeline.data && (
         <TimelineTable
           events={timeline.data}
@@ -79,11 +99,6 @@ export function ActivityPage() {
           onRefresh={() => timeline.mutate()}
         />
       )}
-      <p className="mt-3 text-sm">
-        <Link to="/activities" className="text-blue-700">
-          All activities
-        </Link>
-      </p>
     </div>
   );
 }
