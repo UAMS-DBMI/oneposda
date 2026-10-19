@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import useSWR from "swr";
 import { paths } from "../api/abc";
 import type { FileText } from "../api/types";
@@ -13,6 +14,14 @@ export function TextViewerModal({
   onClose: () => void;
 }) {
   const { data, error } = useSWR<FileText>(paths.fileText(fileId));
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
 
   return (
     <div
