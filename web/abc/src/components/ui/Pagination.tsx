@@ -1,6 +1,6 @@
 import { SegmentedControl } from "./SegmentedControl";
 
-export const PAGE_SIZES = [
+const PAGE_SIZES = [
   { value: "30", label: "30" },
   { value: "100", label: "100" },
   { value: "500", label: "500" },

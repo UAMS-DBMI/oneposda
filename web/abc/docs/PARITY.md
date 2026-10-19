@@ -24,7 +24,7 @@ already accepted are listed in `notes/abc-gui-replacement-plan.md`
 - [ ] The timeline lists the same events with the same timepoint ids and
       file counts; "ol" overlaps agree; email and input viewers show the
       same text.
-- [ ] Picking a from and a to timepoint and pressing cmp opens
+- [ ] Picking a from and a to timepoint and pressing "Compare timepoints" opens
       CompareTimepoints with the same arguments.
 - [ ] Third-party URL yes/no and the URL itself round-trip.
 
@@ -64,16 +64,16 @@ meta-args), compare the Perl popup with the SPA launch dialog:
 - [ ] Start queues the work; the worker runs it; the report appears in the
       inbox and on the timeline.
 - [ ] Launch from: workflow button, operation picker, result table button,
-      Chain (candidate list), row button, compare timepoints, named upload,
+      "Any operation…" (candidate list), row button, compare timepoints, named upload,
       unnamed upload.
 
 ## Upload, inbox, background, download
 
 - [ ] Uploaded CSV and XLSX files import with the same file ids on
-      re-upload (digest), chain to the right operation.
+      re-upload (digest), "Process" goes to the right operation.
 - [ ] Inbox list, unread badge, message text with links, dismiss, forward,
       file to activity, operation history.
-- [ ] Background list modes and "in last" window; stdout/stderr links.
+- [ ] Background list status filter and time-window presets (1h–48h, All); stdout/stderr links; the list refreshes itself.
 - [ ] Download page lists the same directories; tar contents match
       `tar -chf`; delete removes the directory.
 - [ ] Upload To Event groups files under one import event and closes it.

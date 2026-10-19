@@ -460,3 +460,38 @@ Sizes are rough new lines (py / ts). Flagged items: **[schema]**, **[public API]
   `requirements.txt`), the two migrations (`user_variable_binding` unique
   index, `query_run`), `POSDA_CACHE_ROOT` on the shared volume for every
   API pod, and the SPA built into the web image (`abc-builder` stage).
+
+### UI refinements — 2026-10-19 (usability and styling pass)
+
+Done after the parity build, without changing any endpoint. Conventions
+for further SPA work:
+
+- `web/abc/src/index.css` is the design system: `btn` / `btn-primary` /
+  `btn-danger` / `btn-ghost` (+ `btn-sm` in tables), `input` + `field`,
+  `card`, `table-wrap` + `table-grid` (sticky header, hover rows, `num`
+  for right-aligned numbers, `mono`), `badge-*`, `tabs`/`tab`, `seg`
+  (segmented control), `notice-*`, `dropzone`, `pre-block`.
+- `web/abc/src/components/ui/` holds the shared pieces: `PageHeader`,
+  `SegmentedControl`, `TimeWindowPicker` (presets in `lib/timeWindow.ts`:
+  1h, 6h, 12h, 24h, 48h, All), `Badge` with `runStateTone` /
+  `jobStatusTone` / `inboxStatusTone`, `Modal`, `Pagination`, and the
+  `Loading` / `ErrorMessage` / `Notice` / `EmptyState` / `errorText`
+  helpers. New pages should compose these rather than restyle inline.
+- Rule of thumb applied everywhere: a choice among a few known values is
+  a segmented control or tabs, never a radio group or a free-text box;
+  lists that change on their own refresh on their own (background jobs
+  10 s, inbox 10 s, timeline 15 s, active runs 3 s) with no "Refresh"
+  checkbox; a page's filter state lives in the URL so reload and back
+  keep it (`?tab=`, `?group=`, `?step=`, `?mode=&in_last=`).
+- The selected activity is shown in the header on every page (it
+  pre-fills `activity_id` everywhere), with a warning chip when none is
+  selected.
+- Label changes from the Perl GUI: "Show Background" → "Background",
+  "Upload To Event" → "Upload Data", timeline "cmp" → "Compare
+  timepoints", result-table "Chain" → "Any operation…", upload "chain" →
+  "Process", query list "foreground/background" → one "Open" (the form
+  has both Run buttons), active-runs "select" → "Open".
+- Not done (still candidates): keyboard shortcuts, column sorting on
+  result tables, a date picker for `from`/`to` arguments (left as text
+  plus the quick ranges because saved queries accept any timestamp
+  literal), dark mode.
