@@ -11,7 +11,7 @@ import re
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, UploadFile
+from fastapi import APIRouter, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
 from ...services.files import file_path, ingest
@@ -32,6 +32,16 @@ class UploadedOut(BaseModel):
     file_id: int
     created: bool
     is_spreadsheet: bool
+
+
+class NewImportEvent(BaseModel):
+    comment: str
+    origin: str | None = None
+    expected_count: int | None = None
+
+
+class ImportEventOut(BaseModel):
+    import_event_id: int
 
 
 class SheetOut(BaseModel):
@@ -71,7 +81,12 @@ async def upload_files(
         path, size = await _save(upload, directory)
         async with conn.transaction():
             ingested = await ingest.import_local_file(
-                conn, path, storage, comment=IMPORT_COMMENT, localpath=str(path)
+                conn,
+                path,
+                storage,
+                comment=IMPORT_COMMENT,
+                import_event_id=import_event_id,
+                localpath=str(path),
             )
         results.append(
             UploadedOut(
