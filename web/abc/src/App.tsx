@@ -9,6 +9,8 @@ import { NotYetPage } from "./pages/NotYetPage";
 import { QueriesPage } from "./pages/QueriesPage";
 import { QueryPage } from "./pages/QueryPage";
 import { RunPage } from "./pages/RunPage";
+import { UploadPage } from "./pages/UploadPage";
+import { WorkflowPage } from "./pages/WorkflowPage";
 
 export function App() {
   return (
@@ -24,12 +26,12 @@ export function App() {
         <Route index element={<HomeRedirect />} />
         <Route path="/activities" element={<ActivitiesPage />} />
         <Route path="/activities/:activityId" element={<ActivityPage />} />
-        <Route path="/workflow" element={<NotYetPage title="Workflow" phase={3} />} />
+        <Route path="/workflow" element={<WorkflowPage />} />
         <Route path="/queries" element={<QueriesPage />} />
         <Route path="/queries/:name" element={<QueryPage />} />
         <Route path="/runs/:runId" element={<RunPage />} />
         <Route path="/inbox" element={<NotYetPage title="Inbox" phase={4} />} />
-        <Route path="/upload" element={<NotYetPage title="Upload" phase={3} />} />
+        <Route path="/upload" element={<UploadPage />} />
         <Route
           path="/upload-to-event"
           element={<NotYetPage title="Upload To Event" phase={4} />}

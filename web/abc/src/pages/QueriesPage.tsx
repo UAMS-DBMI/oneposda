@@ -118,8 +118,11 @@ function SearchTab() {
 }
 
 function WorkflowTab() {
+  const [params, setParams] = useSearchParams();
   const { data, error } = useSWR<WorkflowGroup[]>(paths.workflowGroups);
-  const [selected, setSelected] = useState("");
+  const selected = params.get("group") ?? "";
+  const setSelected = (group: string) =>
+    setParams(group ? { tab: "workflow", group } : { tab: "workflow" }, { replace: true });
   if (error) return <p className="text-red-700">{String(error)}</p>;
   if (!data) return <p className="text-gray-500">Loading…</p>;
   const group = data.find((g) => g.name === selected);

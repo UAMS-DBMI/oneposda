@@ -29,7 +29,7 @@ describe("TimelineTable", () => {
       event({ inbox_content_id: 1, subprocess_invocation_id: 6, spreadsheet_file_id: 20 }),
     ];
 
-    render(<TimelineTable events={events} onRefresh={() => {}} />);
+    render(<TimelineTable events={events} activityId={1} onRefresh={() => {}} />);
 
     const rows = screen.getAllByRole("row").slice(2); // two header rows
     expect(rows).toHaveLength(2);
@@ -42,7 +42,7 @@ describe("TimelineTable", () => {
   });
 
   it("says so when there are no events", () => {
-    render(<TimelineTable events={[]} onRefresh={() => {}} />);
+    render(<TimelineTable events={[]} activityId={1} onRefresh={() => {}} />);
     expect(screen.getByText(/No reports for this activity yet/)).toBeInTheDocument();
   });
 });

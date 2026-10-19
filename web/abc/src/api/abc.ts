@@ -1,7 +1,16 @@
 /** Typed calls for the ABC endpoints. Paths double as SWR keys. */
 
 import { API_BASE, api } from "./client";
-import type { Activity, FileText, Run, RunDetail } from "./types";
+import type {
+  Activity,
+  FileText,
+  LaunchPreview,
+  LaunchSource,
+  Launched,
+  Run,
+  RunDetail,
+  Uploaded,
+} from "./types";
 
 export const paths = {
   me: "/v1/abc/me",
@@ -29,6 +38,13 @@ export const paths = {
     `/v1/abc/query-runs/${id}/rows?first=${first}&n=${n}&filtered=${filtered}`,
   runCsv: (id: number, filtered: boolean) =>
     `${API_BASE}/v1/abc/query-runs/${id}/csv?filtered=${filtered}`,
+  operations: (q = "") => `/v1/abc/operations${q ? `?q=${encodeURIComponent(q)}` : ""}`,
+  operation: (name: string) => `/v1/abc/operations/${encodeURIComponent(name)}`,
+  candidatesForRun: (runId: number, filtered: boolean) =>
+    `/v1/abc/operations/candidates?query_run_id=${runId}&filtered=${filtered}`,
+  candidatesForFile: (fileId: number) => `/v1/abc/operations/candidates?file_id=${fileId}`,
+  workflowCategories: "/v1/abc/workflow/categories",
+  sheet: (fileId: number) => `/v1/abc/uploads/${fileId}/sheet`,
 };
 
 export function login(username: string, password: string): Promise<void> {
@@ -108,4 +124,31 @@ export function setRunFilter(
     filter,
     view_filtered: viewFiltered,
   });
+}
+
+export function prepareLaunch(source: LaunchSource): Promise<LaunchPreview> {
+  return api.post<LaunchPreview>("/v1/abc/operations/prepare", { source });
+}
+
+export function launchOperation(
+  source: LaunchSource,
+  args: Record<string, string>,
+): Promise<Launched> {
+  return api.post<Launched>("/v1/abc/operations/launch", { source, args });
+}
+
+/** Multipart upload; not JSON, so it bypasses the typed client's body handling. */
+export async function uploadFiles(files: File[]): Promise<Uploaded[]> {
+  const body = new FormData();
+  for (const file of files) body.append("files", file, file.name);
+  const response = await fetch(`${API_BASE}/v1/abc/uploads`, {
+    method: "POST",
+    body,
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    const detail = await response.text();
+    throw new Error(`${response.status}: ${detail || response.statusText}`);
+  }
+  return (await response.json()) as Uploaded[];
 }

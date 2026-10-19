@@ -172,3 +172,105 @@ export interface RowsPage {
   filtered: boolean;
   partial: boolean;
 }
+
+// --- operations ------------------------------------------------------------
+
+export interface Operation {
+  operation_name: string;
+  command_line: string;
+  operation_type: string | null;
+  input_line_format: string;
+  tags: string[];
+  can_chain: boolean;
+  outdated: boolean;
+  worker_priority: number;
+  args: string[];
+  meta_args: string[];
+  fields: string[];
+  program: string | null;
+  program_found: boolean | null;
+}
+
+export interface Candidate {
+  operation: Operation;
+  matches: number;
+}
+
+export interface Candidates {
+  columns: string[];
+  row_count: number;
+  named_operation: string | null;
+  candidates: Candidate[];
+}
+
+export type LaunchSource =
+  | { type: "workflow"; operation: string; caption?: string; prior_args?: Record<string, string> }
+  | { type: "table"; query_run_id: number; filtered: boolean; operation: string; caption?: string }
+  | { type: "row"; query_run_id: number; filtered: boolean; row_index: number; operation: string; caption?: string }
+  | { type: "compare_timepoints"; activity_id: number; from_timepoint_id: number; to_timepoint_id: number }
+  | { type: "spreadsheet"; file_id: number; operation?: string };
+
+export type ArgSource =
+  | "from spreadsheet"
+  | "from current_settings"
+  | "from bindings"
+  | "not present"
+  | "entered";
+
+export interface ResolvedArg {
+  value: string;
+  source: ArgSource;
+}
+
+export interface LaunchPreview {
+  operation: Operation;
+  button_name: string;
+  args: Record<string, ResolvedArg>;
+  expanded_command: string;
+  input_line_count: number;
+  input_head: string[];
+  input_tail: string[];
+  spreadsheet_file_id: number | null;
+  query_invoked_by_dbif_id: number | null;
+}
+
+export interface Launched {
+  subprocess_invocation_id: number;
+  work_id: number;
+  queue_name: string;
+  pending_work: number;
+  command_line: string;
+}
+
+export interface WorkflowOperation {
+  action: string;
+  caption: string;
+  special: string | null;
+  defined: boolean;
+}
+
+export interface WorkflowCategory {
+  id: string;
+  name: string;
+  description: string;
+  note: string | null;
+  operations: WorkflowOperation[];
+  query_groups: { caption: string; query_list_name: string }[];
+  operation_picker: boolean;
+}
+
+export interface Uploaded {
+  name: string;
+  size: number;
+  mime_type: string | null;
+  file_id: number;
+  created: boolean;
+  is_spreadsheet: boolean;
+}
+
+export interface Sheet {
+  columns: string[];
+  row_count: number;
+  first_row: Record<string, string> | null;
+  named_operation: string | null;
+}

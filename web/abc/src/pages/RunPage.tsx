@@ -2,10 +2,25 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import useSWR from "swr";
 import { paths, rerun, runAction, setBinding, setRunFilter } from "../api/abc";
+import { api } from "../api/client";
 import { ApiError } from "../api/client";
-import { ACTIVE_RUN_STATES, type Cell, type ChainedQuery, type ColumnButton, type QueryDetail, type RowsPage, type RunDetail } from "../api/types";
+import {
+  ACTIVE_RUN_STATES,
+  type Candidates,
+  type Cell,
+  type ChainedQuery,
+  type ColumnButton,
+  type LaunchSource,
+  type QueryDetail,
+  type RowsPage,
+  type RunDetail,
+} from "../api/types";
+import { CandidateOperationsTable } from "../components/CandidateOperationsTable";
+import { LaunchDialog } from "../components/LaunchDialog";
 import { formatTimestamp } from "../lib/format";
 import { isViewerButton, viewerUrl } from "../lib/viewerLinks";
+
+const LAUNCHER_OBJ = "Posda::NewerProcessPopup";
 
 const DEFAULT_ROWS = 30;
 
@@ -29,6 +44,8 @@ export function RunPage() {
   const [viewFiltered, setViewFiltered] = useState<boolean | null>(null);
   const [editing, setEditing] = useState<Record<string, string> | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [launch, setLaunch] = useState<LaunchSource | null>(null);
+  const [candidates, setCandidates] = useState<Candidates | null>(null);
 
   const filtered = viewFiltered ?? run.data?.view_filtered ?? false;
   const useFilter = filtered && !!run.data?.filter;
@@ -110,6 +127,19 @@ export function RunPage() {
   const chains = query.data?.chained_queries ?? [];
   const viewerButtons = (query.data?.column_buttons ?? []).filter(isViewerButton);
   const viewerByColumn = new Map<string, ColumnButton>(viewerButtons.map((b) => [b.column, b]));
+  const rowLaunchers = (query.data?.column_buttons ?? []).filter(
+    (b) => b.obj === LAUNCHER_OBJ && b.operation,
+  );
+  const processingButtons = query.data?.processing_buttons ?? [];
+
+  async function chainToOperation() {
+    setError(null);
+    try {
+      setCandidates(await api.get<Candidates>(paths.candidatesForRun(runId, useFilter)));
+    } catch (err) {
+      setError(err instanceof ApiError ? err.detail : String(err));
+    }
+  }
 
   return (
     <div>
@@ -189,6 +219,44 @@ export function RunPage() {
             </span>
             <a className="btn" href={paths.runCsv(runId, useFilter)}>download csv</a>
           </div>
+          {!active && (
+            <div className="mb-2 flex flex-wrap items-center gap-2 text-sm">
+              {processingButtons.map((button) => (
+                <button
+                  key={button.operation}
+                  type="button"
+                  className="btn"
+                  title={button.operation}
+                  onClick={() =>
+                    setLaunch({
+                      type: "table",
+                      query_run_id: runId,
+                      filtered: useFilter,
+                      operation: button.operation,
+                      caption: button.caption,
+                    })
+                  }
+                >
+                  {button.caption}
+                </button>
+              ))}
+              <button type="button" className="btn" onClick={chainToOperation} title="Pick any operation that takes these columns">
+                Chain
+              </button>
+            </div>
+          )}
+          {candidates && (
+            <div className="mb-3">
+              <CandidateOperationsTable
+                candidates={candidates.candidates}
+                onChoose={(name) => {
+                  setCandidates(null);
+                  setLaunch({ type: "table", query_run_id: runId, filtered: useFilter, operation: name, caption: name });
+                }}
+              />
+              <button type="button" className="btn mt-1" onClick={() => setCandidates(null)}>close</button>
+            </div>
+          )}
           {editing && (
             <div className="mb-2 flex flex-wrap items-end gap-2 rounded border border-gray-300 p-2 text-sm">
               {detail.columns.map((column) => (
@@ -232,6 +300,7 @@ export function RunPage() {
               <thead>
                 <tr>
                   {chains.length > 0 && <th>chain</th>}
+                  {rowLaunchers.length > 0 && <th>run</th>}
                   {detail.columns.map((c) => (
                     <th key={c}>{c}</th>
                   ))}
@@ -252,6 +321,30 @@ export function RunPage() {
                               onClick={() => openChained(chain, row)}
                             >
                               {chain.caption}
+                            </button>
+                          ))}
+                        </td>
+                      )}
+                      {rowLaunchers.length > 0 && (
+                        <td className="space-x-1 whitespace-nowrap">
+                          {rowLaunchers.map((button) => (
+                            <button
+                              key={button.button_id}
+                              type="button"
+                              className="btn"
+                              title={button.operation ?? ""}
+                              onClick={() =>
+                                setLaunch({
+                                  type: "row",
+                                  query_run_id: runId,
+                                  filtered: useFilter,
+                                  row_index: first + i,
+                                  operation: button.operation ?? "",
+                                  caption: button.caption,
+                                })
+                              }
+                            >
+                              {button.caption}
                             </button>
                           ))}
                         </td>
@@ -278,6 +371,7 @@ export function RunPage() {
           </div>
         </>
       )}
+      {launch && <LaunchDialog source={launch} onClose={() => setLaunch(null)} />}
     </div>
   );
 }

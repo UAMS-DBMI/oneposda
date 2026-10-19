@@ -1,18 +1,23 @@
 import { useState } from "react";
-import type { TimelineEvent } from "../api/types";
+import type { LaunchSource, TimelineEvent } from "../api/types";
 import { formatDuration, formatTimestamp } from "../lib/format";
+import { LaunchDialog } from "./LaunchDialog";
 import { TextViewerModal } from "./TextViewerModal";
 
 /** The activity timeline: one row per report email, newest first. */
 export function TimelineTable({
   events,
+  activityId,
   onRefresh,
 }: {
   events: TimelineEvent[];
+  activityId: number;
   onRefresh: () => void;
 }) {
   const [fromTimepoint, setFromTimepoint] = useState<number | null>(null);
   const [toTimepoint, setToTimepoint] = useState<number | null>(null);
+  const [compare, setCompare] = useState<LaunchSource | null>(null);
+  const canCompare = fromTimepoint !== null && toTimepoint !== null;
   const [viewing, setViewing] = useState<{ fileId: number; title: string } | null>(
     null,
   );
@@ -40,8 +45,17 @@ export function TimelineTable({
               <button
                 type="button"
                 className="btn"
-                disabled
-                title="Compare timepoints arrives with operations in phase 3"
+                disabled={!canCompare}
+                title={canCompare ? "Compare the selected timepoints" : "Pick a from and a to timepoint"}
+                onClick={() =>
+                  canCompare &&
+                  setCompare({
+                    type: "compare_timepoints",
+                    activity_id: activityId,
+                    from_timepoint_id: fromTimepoint,
+                    to_timepoint_id: toTimepoint,
+                  })
+                }
               >
                 cmp
               </button>
@@ -129,6 +143,7 @@ export function TimelineTable({
       {events.length === 0 && (
         <p className="mt-2 text-sm text-gray-600">No reports for this activity yet.</p>
       )}
+      {compare && <LaunchDialog source={compare} onClose={() => setCompare(null)} />}
       {viewing && (
         <TextViewerModal
           fileId={viewing.fileId}

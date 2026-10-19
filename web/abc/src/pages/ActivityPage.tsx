@@ -73,7 +73,11 @@ export function ActivityPage() {
       <hr className="my-4" />
       {timeline.error && <p className="text-red-700">{String(timeline.error)}</p>}
       {timeline.data && (
-        <TimelineTable events={timeline.data} onRefresh={() => timeline.mutate()} />
+        <TimelineTable
+          events={timeline.data}
+          activityId={activity.activity_id}
+          onRefresh={() => timeline.mutate()}
+        />
       )}
       <p className="mt-3 text-sm">
         <Link to="/activities" className="text-blue-700">
