@@ -20,3 +20,4 @@ python-multipart
 chardet
 redis
 pandas
+aiomysql
