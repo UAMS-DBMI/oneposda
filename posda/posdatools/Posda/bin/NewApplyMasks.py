@@ -875,7 +875,6 @@ def update_timepoint(activity_id, notify, files_to_remove, files_to_add, conn):
 
     original_files = get_files_in_activity(conn, activity_id)
 
-    new_timepoint = create_activity_timepoint(activity_id, notify, conn)
     files_to_insert = original_files.union(set(files_to_add)).difference(
         set(files_to_remove)
     )
@@ -883,9 +882,11 @@ def update_timepoint(activity_id, notify, files_to_remove, files_to_add, conn):
     if len(files_to_insert) != len(original_files):
         raise ValueError(
             "The number of files in the new timepoint should be the same as the original. "
-            "Something is very wrong."
+            "Something is very wrong. "
+            f"{len(files_to_insert)} to insert vs {len(original_files)} original, and {len(files_to_remove)} to remove"
         )
 
+    new_timepoint = create_activity_timepoint(activity_id, notify, conn)
     insert_files_into_timepoint(conn, new_timepoint, list(files_to_insert))
 
     # return the list of files that were not edited or changed
