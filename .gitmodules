@@ -6,7 +6,7 @@
 	url = git@github.com:quasarj/masker.git
 [submodule "web/mirabelle"]
 	path = web/mirabelle
-	url = git@github.com:quasarj/mirabelle.git
+	url = https://github.com/UAMS-DBMI/mirabelle.git
 [submodule "web/posda-release-module"]
 	path = web/posda-release-module
-	url = git@github.com:UAMS-DBMI/posda-release-module.git
+	url = https://github.com/UAMS-DBMI/posda-release-module.git
