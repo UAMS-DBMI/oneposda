@@ -1,4 +1,4 @@
-VERSION := 1.1.19
+VERSION := 1.1.20-multiplat-test
 REGISTRY := registry.dbmi.cloud
 GIT_TAG := $(shell git rev-parse --short HEAD)
 
