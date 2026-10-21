@@ -857,9 +857,37 @@ def import_edits(edit_list):
     return new_files
 
 
+def verify_files_in_timepoint(files_to_remove, original_files) -> None:
+    """
+    Every file we plan to remove must exist in the current timepoint.
+    If the activity's timepoint changed after the Visual Review was built
+    (files edited, deduplicated, or removed), the IEC input images will
+    still point at the old file_ids, and those can't be replaced here.
+    """
+    missing = set(files_to_remove).difference(original_files)
+    if len(missing) == 0:
+        return
+
+    print(
+        f"FATAL ERROR: {len(missing)} files to remove are not in the current "
+        "timepoint. The Visual Review was likely run against a different "
+        "timepoint than the activity's current one."
+    )
+    print("Missing file_ids:")
+    for file_id in sorted(missing):
+        print(f"\t{file_id}")
+
+    raise ValueError(
+        f"{len(missing)} premasked files are not in the current timepoint"
+    )
+
+
 def update_timepoint(activity_id, notify, files_to_remove, files_to_add, conn):
     print("Updating timepoint with new files...")
     print(f"Replacing {len(files_to_remove)} files with {len(files_to_add)} new files")
+
+    original_files = get_files_in_activity(conn, activity_id)
+    verify_files_in_timepoint(files_to_remove, original_files)
 
     if len(files_to_remove) != len(files_to_add):
         raise ValueError(
@@ -872,8 +900,6 @@ def update_timepoint(activity_id, notify, files_to_remove, files_to_add, conn):
         raise ValueError(
             "Files to remove and files to add should not overlap, something is very wrong."
         )
-
-    original_files = get_files_in_activity(conn, activity_id)
 
     files_to_insert = original_files.union(set(files_to_add)).difference(
         set(files_to_remove)
