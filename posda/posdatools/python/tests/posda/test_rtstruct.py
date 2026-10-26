@@ -12,8 +12,11 @@ from pydicom.uid import ExplicitVRLittleEndian
 from posda.rtstruct import (
     DELETE,
     EDIT_SHEET_HEADER,
+    INVENTORY_HEADER,
     REPORT,
+    batch_edit_groups,
     check,
+    inventory_rows,
     dataset_problem,
     plan_item_deletes,
     structure_set_from_dataset,
@@ -84,7 +87,8 @@ def rtstruct(*items, contours=None, observations=None, fors=(FOR_UID,),
     if fors is not None:
         ds.ReferencedFrameOfReferenceSequence = Sequence(
             [frame_of_reference(uid) for uid in fors])
-    ds.StructureSetROISequence = Sequence(list(items))
+    if items:
+        ds.StructureSetROISequence = Sequence(list(items))
     if contours is not None:
         ds.ROIContourSequence = Sequence(list(contours))
     if observations is not None:
@@ -125,10 +129,14 @@ SEQUENCE_KEYWORDS = {
 
 
 def apply_to_dataset(ds, tags):
-    """Apply item-delete tags to a dataset in order, as Posda would."""
+    """Apply delete tags to a dataset in order, as Posda would: an item when
+    the tag ends in [n], otherwise the whole sequence."""
     for tag in tags:
-        sequence, index = re.fullmatch(r"(\(\w{4},\w{4}\))\[(\d+)\]", tag).groups()
-        del ds[SEQUENCE_KEYWORDS[sequence]].value[int(index)]
+        sequence, index = re.fullmatch(r"(\(\w{4},\w{4}\))(?:\[(\d+)\])?", tag).groups()
+        if index is None:
+            del ds[SEQUENCE_KEYWORDS[sequence]]
+        else:
+            del ds[SEQUENCE_KEYWORDS[sequence]].value[int(index)]
 
 
 # ----------------------------------------------------------------------
@@ -190,12 +198,38 @@ def test_findings_carry_file_and_series_identity():
         (42, "9.9.9", "8.8.8")
 
 
-def test_missing_or_empty_sequences_are_conformant():
+def test_missing_sequences_are_conformant():
     """Every sequence the rules read is Type 3 in PS3.3."""
-    bare = rtstruct(fors=None)
-    del bare.StructureSetROISequence
-    for ds in (bare, rtstruct(), rtstruct(roi(1, "a"))):
+    for ds in (rtstruct(fors=None), rtstruct(), rtstruct(roi(1, "a"))):
         assert findings_for(ds) == []
+
+
+def test_empty_sequences_are_deleted_whole():
+    ds = rtstruct(roi(1, "a"), contours=[], observations=[])
+    findings = findings_for(round_trip(ds))
+    assert [(f.rule, f.location, f.action) for f in findings] == [
+        ("empty_sequence", "(3006,0039)", DELETE),
+        ("empty_sequence", "(3006,0080)", DELETE),
+    ]
+    (tags, _), = plan_item_deletes(findings, {"1.2.3.100": 1})[0]
+    assert tags == ("(3006,0039)", "(3006,0080)")
+    apply_to_dataset(ds, tags)
+    assert "ROIContourSequence" not in ds and "RTROIObservationsSequence" not in ds
+    assert findings_for(ds) == []
+
+
+def test_deleting_every_item_deletes_the_sequence():
+    """An observation sequence holding only orphans must go, not be left empty."""
+    ds = rtstruct(roi(18, "GTVn"),
+                  contours=[roi_contour(18, contour(1), contour(2)),
+                            roi_contour(11, contour(1)), roi_contour(12, contour(2))],
+                  observations=[observation(1, 11), observation(2, 12)])
+    (tags, _), = plan_item_deletes(findings_for(ds), {"1.2.3.100": 1})[0]
+    assert tags == ("(3006,0039)[2]", "(3006,0039)[1]", "(3006,0080)")
+    apply_to_dataset(ds, tags)
+    assert "RTROIObservationsSequence" not in ds
+    assert [i.ReferencedROINumber for i in ds.ROIContourSequence] == [18]
+    assert findings_for(ds) == []
 
 
 def test_duplicate_roi_numbers_are_report_only():
@@ -505,3 +539,84 @@ def test_findings_sheet():
     rows = list(csv.reader(io.StringIO(buf.getvalue())))
     assert rows[0][:5] == ["file_id", "series_instance_uid", "sop_instance_uid", "rule", "action"]
     assert rows[1][0] == "5" and rows[1][4] == DELETE and rows[1][5] == "(3006,0020)[1]"
+
+
+# ----------------------------------------------------------------------
+# Inventory
+# ----------------------------------------------------------------------
+
+def inventory_for(ds):
+    ss = structure_set_from_dataset(ds, file_id=1)
+    rows = [dict(zip(INVENTORY_HEADER, r)) for r in inventory_rows(ss, check(ss))]
+    return {r["roi_number"]: r for r in rows}, rows
+
+
+def test_inventory_describes_what_is_in_place():
+    obs = observation(1, 1)
+    obs.RTRelatedROISequence = Sequence([related(2)])
+    by_number, rows = inventory_for(rtstruct(
+        roi(1, "CTV"), roi(2, "PTV"),
+        contours=[roi_contour(1, contour(1), contour(2, "POINT")), roi_contour(2, contour(3))],
+        observations=[obs, observation(2, 2)]))
+    assert len(rows) == 2
+    ctv = by_number[1]
+    assert (ctv["declared"], ctv["roi_item"], ctv["roi_name"], ctv["for_listed"]) ==         ("yes", "(3006,0020)[0]", "CTV", "yes")
+    assert (ctv["contour_items"], ctv["contours"], ctv["geometric_types"]) ==         (1, 2, "CLOSED_PLANAR, POINT")
+    assert (ctv["observations"], ctv["interpreted_type"], ctv["related_rois"]) == ("1", "GTV", "2")
+    assert {r["status"] for r in rows} == {"ok"}
+
+
+def test_inventory_lists_undeclared_rois_with_their_findings():
+    by_number, rows = inventory_for(merged_rtstruct())
+    assert [r["roi_number"] for r in rows] == [18, 10, 11, 12]
+    assert by_number[18]["status"] == "ok" and by_number[18]["contours"] == 3
+    orphan = by_number[11]
+    assert (orphan["declared"], orphan["roi_item"], orphan["contours"]) == ("no", None, 2)
+    assert orphan["status"] == "observation_for_undeclared_roi, roi_contour_for_undeclared_roi"
+
+
+def test_inventory_status_matches_only_the_roi_s_own_items():
+    """(3006,0080)[1] must not pick up a finding at (3006,0080)[10]."""
+    rois = [roi(n, str(n)) for n in range(1, 12)]
+    observations = [observation(n, n) for n in range(1, 11)] + [observation(11, 99)]
+    by_number, _ = inventory_for(rtstruct(*rois, observations=observations))
+    assert by_number[2]["status"] == "ok"
+    assert by_number[99]["status"] == "observation_for_undeclared_roi"
+
+
+def test_inventory_rows_for_rule_with_multiple_locations():
+    by_number, rows = inventory_for(rtstruct(roi(1, "a"), roi(2, "b"), roi(1, "c")))
+    assert [r["status"] for r in rows] == ["duplicate_roi_number", "ok", "duplicate_roi_number"]
+
+
+def test_inventory_item_without_roi_number():
+    _, rows = inventory_for(rtstruct(roi(1, "a"), for_only()))
+    assert (rows[1]["roi_number"], rows[1]["declared"], rows[1]["status"]) ==         (None, "no", "roi_item_without_roi_number")
+
+
+# ----------------------------------------------------------------------
+# Batching
+# ----------------------------------------------------------------------
+
+def test_batches_keep_groups_whole():
+    groups = [(("t1",), ["a", "b"]), (("t2", "t3"), ["c"]), (("t4",), ["d", "e"])]
+    assert batch_edit_groups(groups, 6) == [
+        [(("t1",), ["a", "b"]), (("t2", "t3"), ["c"])],
+        [(("t4",), ["d", "e"])],
+    ]
+
+
+def test_oversized_group_is_split_by_series_with_its_deletes_repeated():
+    batches = batch_edit_groups([(("t1", "t2"), list("abcdefg"))], 5)
+    assert batches == [[(("t1", "t2"), list("abc"))], [(("t1", "t2"), list("def"))],
+                       [(("t1", "t2"), ["g"])]]
+    assert all(sum(len(s) + len(t) for t, s in b) <= 5 for b in batches)
+
+
+def test_every_edit_sheet_part_carries_the_operation():
+    batches = batch_edit_groups([(("(3006,0080)",), [S1, S2]), (("(3006,0039)[0]",), [S3])], 3)
+    for batch in batches:
+        buf = io.StringIO()
+        write_edit_sheet(buf, batch, {S1: 1, S2: 1, S3: 1}, "d", "n", "1")
+        rows = list(csv.reader(io.StringIO(buf.getvalue())))
+        assert rows[1][6] == "BackgroundEditTp"

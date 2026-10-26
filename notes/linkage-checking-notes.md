@@ -59,7 +59,7 @@ empty `StructureSetROISequence` items. See "StructFixer.pm bugs fixed".
 | [posda/posdatools/Posda/bin/CheckSegLinkages.py](../posda/posdatools/Posda/bin/CheckSegLinkages.py) | `SegLinkageChecker` — SEG files only, scans `ReferencedSeriesSequence` + volume-overlay sequences (see below) |
 | [posda/posdatools/Posda/bin/CheckRtLinkages.py](../posda/posdatools/Posda/bin/CheckRtLinkages.py) | `RTLinkageChecker` — RTSTRUCT/RTPLAN/RTDOSE/RTIMAGE, scans RT-specific ref sequences; candidate suggestion and the RTSTRUCT relink worklist are commented out for now |
 | [posda/posdatools/python/posda/rtstruct.py](../posda/posdatools/python/posda/rtstruct.py) | RTSTRUCT ROI checker library — model of one structure set, rules, edit planning and `BackgroundEditTp` sheet writer (see "RTSTRUCT ROI checker — plan") |
-| [posda/posdatools/Posda/bin/CheckRtStructRois.py](../posda/posdatools/Posda/bin/CheckRtStructRois.py) | `RtStructRoiChecker` — runs the `rtstruct` rules over every RTSTRUCT in the latest timepoint; writes `RTSTRUCT_ROI_Findings` and, when anything is safely deletable, `RTSTRUCT_ROI_Edits`. Button "Check RT Structure Set ROIs" in the RT linkage workflow step, after "Link RT Data" ([CheckRtStructRois.row](../posda/posdatools/spreadsheet_operations/rows/CheckRtStructRois.row)) |
+| [posda/posdatools/Posda/bin/CheckRtStructRois.py](../posda/posdatools/Posda/bin/CheckRtStructRois.py) | `RtStructRoiChecker` — runs the `rtstruct` rules over every RTSTRUCT in the latest timepoint; writes `RTSTRUCT_ROI_Findings`, `RTSTRUCT_ROI_Inventory` (one row per ROI per file, with a status) and, when anything is safely deletable, `RTSTRUCT_ROI_Edits`. Each is split into `_0`, `_1`, ... of at most 750,000 rows via `LinkageChecker.create_batched_reports` (the linkage reports use the same helper at 250,000); edit sheets split only on group boundaries. Button "Check RT Structure Set ROIs" in the RT linkage workflow step, after "Link RT Data" ([CheckRtStructRois.row](../posda/posdatools/spreadsheet_operations/rows/CheckRtStructRois.row)) |
 | [posda/posdatools/Posda/bin/FixLinkages.py](../posda/posdatools/Posda/bin/FixLinkages.py) | Standalone fixer — reads a `Relink_Worklist` CSV, rewrites RTSTRUCT/SEG files to point at a corrected target series, writes to `$POSDA_CACHE_ROOT/edits/<uuid>/` for review before import. **Not wired up yet** — no checker currently produces a worklist for it to consume |
 
 ## Architecture
@@ -611,6 +611,11 @@ gap: a non-DICOM response there produces no references and no findings (see TODO
   `(3006,0020)[n](3006,0024)`, deletes only that element. The item stays, and if that was its
   last element Posda writes it out as an empty item — still invalid, and invisible in diffs.
   Removing an item requires the tag to end in `[n]`.
+- Deleting every item of a sequence leaves the sequence present with zero items. That is
+  non-conformant for these Type 3 "One or more Items" sequences (dciodvfy: "Bad Sequence
+  number of Items = <0>"), and invisible in edit diffs. Delete the sequence itself instead:
+  `delete_tag` on the bare tag, e.g. `<(3006,0080)>`, runs in "exact" mode and removes the
+  whole element (`NewSubprocessEditor.pl` → `$ds->Delete`).
 - Index lists must come from the file itself. A list built from counts outside the file (e.g.
   an assumed number of real ROIs) deletes a real ROI as soon as one count is wrong.
 
@@ -643,6 +648,7 @@ gap: a non-DICOM response there produces no references and no findings (see TODO
 
    | Rule | PS3.3 basis | Action |
    |---|---|---|
+   | Structure Set ROI / Referenced FOR / ROI Contour / RT ROI Observations Sequence present with no items | C.8.8.5, C.8.8.6, C.8.8.8, "One or more Items are permitted" | delete the whole sequence; the planner also deletes the whole sequence when item deletes would empty it |
    | Structure Set ROI item without ROI Number | C.8.8.5, Type 1 | delete if empty or FOR-only, else report |
    | Duplicate ROI Numbers | C.8.8.5, "shall be unique within the Structure Set" | report |
    | ROI without a Referenced Frame of Reference UID | C.8.8.5, Type 1 | report |
@@ -656,9 +662,10 @@ gap: a non-DICOM response there produces no references and no findings (see TODO
    | CLOSEDPLANAR_XOR mixed with other geometric types in one ROI | C.8.8.6, "all Contours of that ROI shall be of the same type" | report |
 
    *Not rules* — conformant in the current standard:
-   - A missing or empty Structure Set ROI, Referenced Frame of Reference, ROI Contour, RT ROI
+   - A missing Structure Set ROI, Referenced Frame of Reference, ROI Contour, RT ROI
      Observations or RT Related ROI Sequence. All are Type 3. Older editions had several as
-     Type 1, so older validators may still flag them.
+     Type 1, so older validators may still flag them. *Present but empty* is a finding (see
+     the table).
    - A declared ROI with no ROI Contour item or no RT ROI Observation. Nothing requires one
      item per declared ROI.
    - Several ROI Contour items for one ROI. The standard doesn't address it.

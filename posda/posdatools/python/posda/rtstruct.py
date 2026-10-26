@@ -15,7 +15,9 @@ Conformance basis: each rule cites the DICOM PS3.3 requirement it enforces
 Structure Set ROI, Referenced Frame of Reference, ROI Contour, RT ROI
 Observations, RT Related ROI -- is Type 3 there, so a missing sequence, or a
 declared ROI with no contour item or observation, is conformant and not a
-finding. Considered and deliberately not rules:
+finding. A sequence that is present must hold at least one item ("One or
+more Items are permitted"), so an empty one is a finding. Considered and
+deliberately not rules:
   - Several ROI Contour items for one ROI: the standard doesn't address it.
   - Mixed Contour Geometric Types in one ROI: only prohibited when one of
     them is CLOSEDPLANAR_XOR (see closedplanar_xor_mixed_with_other_types).
@@ -35,6 +37,15 @@ ROI_CONTOUR_SEQUENCE = "(3006,0039)"
 RT_ROI_OBSERVATIONS_SEQUENCE = "(3006,0080)"
 RT_RELATED_ROI_SEQUENCE = "(3006,0030)"
 
+# Top-level sequences the rules read, by keyword. All Type 3 with "One or more
+# Items" -- present with no items is non-conformant (see empty_sequences).
+TOP_LEVEL_SEQUENCES = {
+    STRUCTURE_SET_ROI_SEQUENCE: "StructureSetROISequence",
+    REFERENCED_FRAME_OF_REFERENCE_SEQUENCE: "ReferencedFrameOfReferenceSequence",
+    ROI_CONTOUR_SEQUENCE: "ROIContourSequence",
+    RT_ROI_OBSERVATIONS_SEQUENCE: "RTROIObservationsSequence",
+}
+
 CLOSEDPLANAR_XOR = "CLOSEDPLANAR_XOR"
 
 FRAME_OF_REFERENCE_UID = Tag(0x0020, 0x0052)
@@ -44,6 +55,8 @@ ROI_NAME = Tag(0x3006, 0x0026)
 CONTOUR_GEOMETRIC_TYPE = Tag(0x3006, 0x0042)
 REFERENCED_ROI_NUMBER = Tag(0x3006, 0x0084)
 OBSERVATION_NUMBER = Tag(0x3006, 0x0082)
+ROI_GENERATION_ALGORITHM = Tag(0x3006, 0x0036)
+RT_ROI_INTERPRETED_TYPE = Tag(0x3006, 0x00A4)
 
 DELETE = "delete"
 REPORT = "report"
@@ -69,6 +82,7 @@ class RoiItem:
     roi_number: int | str | None
     roi_name: str | None
     referenced_for_uid: str | None = None
+    generation_algorithm: str | None = None
 
 
 @dataclass(frozen=True)
@@ -86,6 +100,7 @@ class ObservationItem:
     referenced_roi_number: int | str | None
     observation_number: int | str | None = None
     related_roi_numbers: tuple = ()   # Referenced ROI Number per RT Related ROI item
+    interpreted_type: str | None = None
 
 
 @dataclass
@@ -97,6 +112,7 @@ class StructureSet:
     roi_contour_items: list[RoiContourItem] = field(default_factory=list)
     observation_items: list[ObservationItem] = field(default_factory=list)
     referenced_for_uids: list = field(default_factory=list)  # one per (3006,0010) item
+    sequence_lengths: dict = field(default_factory=dict)  # TOP_LEVEL_SEQUENCES present -> items
 
 
 @dataclass(frozen=True)
@@ -109,7 +125,9 @@ class Finding:
     location: str           # e.g. "(3006,0020)[2]"
     detail: str
     sequence: str | None = None    # set for DELETE: the sequence holding the item
-    item_index: int | None = None  # set for DELETE: the item's index in it
+    item_index: int | None = None  # set for DELETE: the item's index; None deletes
+                                   # the whole sequence
+    sequence_length: int | None = None  # set for item DELETEs: items in the sequence
 
     def to_row(self):
         return [self.file_id, self.series_instance_uid, self.sop_instance_uid,
@@ -185,6 +203,7 @@ def structure_set_from_dataset(ds, file_id=None, series_instance_uid=None):
             roi_number=_number(item, ROI_NUMBER),
             roi_name=_value(item, ROI_NAME),
             referenced_for_uid=_value(item, REFERENCED_FRAME_OF_REFERENCE_UID),
+            generation_algorithm=_value(item, ROI_GENERATION_ALGORITHM),
         ))
     roi_contour_items = [
         RoiContourItem(
@@ -201,6 +220,7 @@ def structure_set_from_dataset(ds, file_id=None, series_instance_uid=None):
             observation_number=_number(item, OBSERVATION_NUMBER),
             related_roi_numbers=tuple(_number(related, REFERENCED_ROI_NUMBER)
                                       for related in item.get("RTRelatedROISequence") or []),
+            interpreted_type=_value(item, RT_ROI_INTERPRETED_TYPE),
         )
         for index, item in enumerate(ds.get("RTROIObservationsSequence") or [])
     ]
@@ -213,6 +233,9 @@ def structure_set_from_dataset(ds, file_id=None, series_instance_uid=None):
         observation_items=observation_items,
         referenced_for_uids=[_value(item, FRAME_OF_REFERENCE_UID)
                              for item in ds.get("ReferencedFrameOfReferenceSequence") or []],
+        sequence_lengths={sequence: len(ds[keyword].value or [])
+                          for sequence, keyword in TOP_LEVEL_SEQUENCES.items()
+                          if keyword in ds},
     )
 
 
@@ -244,6 +267,7 @@ def roi_items_without_roi_number(ss):
                 rule="roi_item_without_roi_number", action=DELETE,
                 location=location, detail=detail,
                 sequence=STRUCTURE_SET_ROI_SEQUENCE, item_index=item.index,
+                sequence_length=len(ss.roi_items),
             )
         else:
             present = ", ".join(f"({t.group:04X},{t.element:04X})" for t in sorted(item.tags))
@@ -339,6 +363,7 @@ def undeclared_roi_references(ss):
             rule="roi_contour_for_undeclared_roi", action=DELETE,
             location=location, detail=detail,
             sequence=ROI_CONTOUR_SEQUENCE, item_index=item.index,
+            sequence_length=len(ss.roi_contour_items),
         )
 
     for item in ss.observation_items:
@@ -366,6 +391,7 @@ def undeclared_roi_references(ss):
                 rule="observation_for_undeclared_roi", action=DELETE,
                 location=location, detail=f"references undeclared ROI Number {number}",
                 sequence=RT_ROI_OBSERVATIONS_SEQUENCE, item_index=item.index,
+                sequence_length=len(ss.observation_items),
             )
 
 
@@ -492,7 +518,27 @@ def closedplanar_xor_mixed_with_other_types(ss):
         )
 
 
+def empty_sequences(ss):
+    """Top-level sequences that are present but hold no items.
+
+    PS3.3 C.8.8.5, C.8.8.6, C.8.8.8: each of these sequences is Type 3, but
+    "One or more Items are permitted" -- it may be left out, not left empty
+    (dciodvfy: "Bad Sequence number of Items = <0> (1-n Required by Module
+    definition)"). Deleting the empty sequence is the fix.
+    """
+    for sequence, length in ss.sequence_lengths.items():
+        if length:
+            continue
+        yield Finding(
+            ss.file_id, ss.series_instance_uid, ss.sop_instance_uid,
+            rule="empty_sequence", action=DELETE, location=sequence,
+            detail=f"{TOP_LEVEL_SEQUENCES[sequence]} is present with no items",
+            sequence=sequence, item_index=None,
+        )
+
+
 RULES = (
+    empty_sequences,
     roi_items_without_roi_number,
     duplicate_roi_numbers,
     roi_frames_of_reference,
@@ -521,15 +567,22 @@ def plan_item_deletes(findings, files_per_series):
     in a series, so series holding more than one file -- or whose file count
     is unknown -- are skipped.
 
+    A sequence must not be left present with no items (see empty_sequences),
+    so when the deletes would remove every item -- or the sequence is already
+    empty -- the whole sequence is deleted instead.
+
     Returns (groups, skipped):
       groups  -- list of (tags, series_uids), tags in the order to apply them,
                  series grouped by identical edit lists
       skipped -- list of (series_uid, reason)
     """
     by_series = defaultdict(lambda: defaultdict(set))
+    lengths = {}
     for f in findings:
         if f.action == DELETE:
             by_series[f.series_instance_uid][f.sequence].add(f.item_index)
+            if f.sequence_length is not None:
+                lengths[(f.series_instance_uid, f.sequence)] = f.sequence_length
 
     by_tags = defaultdict(list)
     skipped = []
@@ -542,15 +595,119 @@ def plan_item_deletes(findings, files_per_series):
             skipped.append((series_uid,
                             f"series holds {num_files} files; item indices are per file"))
             continue
-        tags = tuple(
-            f"{sequence}[{index}]"
-            for sequence in sorted(by_series[series_uid])
-            for index in sorted(by_series[series_uid][sequence], reverse=True)
-        )
-        by_tags[tags].append(series_uid)
+        tags = []
+        for sequence in sorted(by_series[series_uid]):
+            indices = by_series[series_uid][sequence]
+            length = lengths.get((series_uid, sequence))
+            if None in indices or (length is not None and len(indices) >= length):
+                tags.append(sequence)
+            else:
+                tags.extend(f"{sequence}[{index}]" for index in sorted(indices, reverse=True))
+        by_tags[tuple(tags)].append(series_uid)
 
     groups = sorted(by_tags.items(), key=lambda kv: (len(kv[0]), kv[0]))
     return groups, skipped
+
+
+def batch_edit_groups(groups, max_rows):
+    """Split edit groups into batches of at most max_rows data rows each, one
+    batch per edit sheet.
+
+    A group's delete rows apply to the series rows directly above them, so a
+    batch never separates the two: groups are kept whole, and a group too big
+    for one batch is split by series, its delete rows repeated in each part.
+    """
+    batches, current, size = [], [], 0
+    for tags, series_uids in groups:
+        per_part = max(max_rows - len(tags), 1)
+        for start in range(0, len(series_uids), per_part):
+            part = series_uids[start:start + per_part]
+            rows = len(part) + len(tags)
+            if current and size + rows > max_rows:
+                batches.append(current)
+                current, size = [], 0
+            current.append((tags, part))
+            size += rows
+    if current:
+        batches.append(current)
+    return batches
+
+
+INVENTORY_HEADER = [
+    "file_id", "series_instance_uid", "sop_instance_uid",
+    "roi_number", "declared", "roi_item", "roi_name", "roi_generation_algorithm",
+    "frame_of_reference_uid", "for_listed",
+    "contour_items", "contours", "geometric_types",
+    "observations", "interpreted_type", "related_rois", "status",
+]
+
+
+def inventory_rows(ss, findings):
+    """One row per ROI in a structure set, with what is in place for it.
+
+    Declared ROIs come first, in Structure Set ROI Sequence order (an item
+    without an ROI Number gets a row of its own, declared "no"); then each
+    ROI Number that contour items or observations reference without a
+    declaration. status is "ok", or the rules from findings (this file's)
+    whose location is one of the ROI's items. File-level findings, such as
+    an empty sequence, appear only in the findings report.
+    """
+    rules_at = defaultdict(set)
+    for f in findings:
+        for location in f.location.split(", "):
+            rules_at[location].add(f.rule)
+
+    def status(locations):
+        rules = set()
+        for location in locations:
+            for at, at_rules in rules_at.items():
+                if at == location or at.startswith(location + "("):
+                    rules |= at_rules
+        return ", ".join(sorted(rules)) or "ok"
+
+    contour_items = defaultdict(list)
+    for item in ss.roi_contour_items:
+        contour_items[item.referenced_roi_number].append(item)
+    observations = defaultdict(list)
+    for item in ss.observation_items:
+        observations[item.referenced_roi_number].append(item)
+    listed = set(ss.referenced_for_uids)
+
+    def row(number, declared, roi_item, name, algorithm, for_uid, numbered):
+        c_items = contour_items.get(number, []) if numbered else []
+        o_items = observations.get(number, []) if numbered else []
+        types = {t for item in c_items for t, _ in item.contours if t is not None}
+        interpreted = {o.interpreted_type for o in o_items if o.interpreted_type}
+        locations = ([roi_item] if roi_item else []) \
+            + [f"{ROI_CONTOUR_SEQUENCE}[{i.index}]" for i in c_items] \
+            + [f"{RT_ROI_OBSERVATIONS_SEQUENCE}[{o.index}]" for o in o_items]
+        return [
+            ss.file_id, ss.series_instance_uid, ss.sop_instance_uid,
+            number, declared, roi_item, name, algorithm,
+            for_uid, ("yes" if for_uid in listed else "no") if for_uid else None,
+            len(c_items), sum(len(i.contours) for i in c_items), ", ".join(sorted(types)),
+            ", ".join(str(o.observation_number) for o in o_items),
+            ", ".join(sorted(interpreted)),
+            ", ".join(str(n) for o in o_items for n in o.related_roi_numbers),
+            status(locations),
+        ]
+
+    declared = set()
+    for item in ss.roi_items:
+        numbered = item.roi_number is not None
+        if numbered:
+            declared.add(item.roi_number)
+        yield row(item.roi_number, "yes" if numbered else "no",
+                  f"{STRUCTURE_SET_ROI_SEQUENCE}[{item.index}]", item.roi_name,
+                  item.generation_algorithm, item.referenced_for_uid, numbered)
+
+    undeclared = []
+    for item in ss.roi_contour_items + ss.observation_items:
+        number = item.referenced_roi_number
+        if number not in declared and number not in undeclared:
+            undeclared.append(number)
+    for number in undeclared:
+        yield row(number, "no", None, None, None, None, True)
 
 
 def write_edit_sheet(fh, groups, files_per_series, description, notify, activity_id):

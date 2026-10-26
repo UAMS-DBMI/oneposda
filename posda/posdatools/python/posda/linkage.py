@@ -938,18 +938,25 @@ class LinkageChecker:
 
     def create_reference_reports(self, references, base_name, batch_size=250_000):
         """Write references in batches, returning the list of report names created."""
-        if not references:
+        return self.create_batched_reports(references, base_name, REFERENCE_REPORT_HEADER,
+                                           batch_size)
+
+    def create_batched_reports(self, rows, base_name, header, batch_size):
+        """Write rows to reports named <base_name>_0, _1, ... of at most
+        batch_size rows each, every one starting with header. Returns the
+        list of report names created (none for no rows)."""
+        if not rows:
             return []
         batches = [
-            references[i:i + batch_size]
-            for i in range(0, len(references), batch_size)
+            rows[i:i + batch_size]
+            for i in range(0, len(rows), batch_size)
         ]
         report_names = []
         for i, batch in enumerate(batches):
             name = f"{base_name}_{i}"
             r = self.background.create_report(name)
             writer = csv.writer(r, lineterminator='\n')
-            writer.writerow(REFERENCE_REPORT_HEADER)
+            writer.writerow(header)
             for row in batch:
                 writer.writerow(row)
             report_names.append(name)

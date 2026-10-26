@@ -11,13 +11,23 @@ A file that doesn't come back as the expected RTSTRUCT (wrong SOP Class or
 SOP Instance UID, or unreadable) is reported as file_not_checked rather than
 being treated as clean.
 
-Reports
-  RTSTRUCT_ROI_Findings  one row per problem: file, location, rule, action,
-                         detail
-                           action "delete" -> included in the edit sheet
-                           action "report" -> needs a person to decide; no edit
-  RTSTRUCT_ROI_Edits     a BackgroundEditTp sheet for the "delete" findings.
-                         Only produced when something is safely deletable.
+Reports (each split into _0, _1, ... of at most 750,000 rows, to stay well
+under Excel's 1,048,576-row limit)
+  RTSTRUCT_ROI_Findings   one row per problem: file, location, rule, action,
+                          detail
+                            action "delete" -> included in the edit sheet
+                            action "report" -> needs a person to decide; no edit
+  RTSTRUCT_ROI_Inventory  one row per ROI per file: what is in place for it
+                          (name, frame of reference, contour items and
+                          contours, geometric types, observations, related
+                          ROIs) and a status: "ok", or the rules that flagged
+                          it. ROIs referenced but not declared get rows too,
+                          declared "no".
+  RTSTRUCT_ROI_Edits      a BackgroundEditTp sheet for the "delete" findings.
+                          Only produced when something is safely deletable.
+                          Each part is complete on its own (a series and its
+                          delete rows are never split apart); apply every
+                          part, each once.
 
 What gets deleted (and only this)
   - Structure Set ROI items with no ROI Number that are empty or hold only
@@ -27,6 +37,10 @@ What gets deleted (and only this)
     one without removing the originals)
   - RT ROI Observations for an undeclared ROI Number, unless that ROI still
     has contours found nowhere else
+  - Structure Set ROI, Referenced Frame of Reference, ROI Contour or RT ROI
+    Observations Sequences that are present with no items. These sequences
+    may be left out, but not left empty. When the deletes above would remove
+    every item of a sequence, the sheet deletes the whole sequence instead.
   Declared ROIs are never deleted or changed.
 
 Report-only
@@ -72,7 +86,8 @@ Reviewing the edit diffs
     items' places, so the diff compares different items at the same position.
   - "Only in from file" in the short report shows only the first index of
     each pattern: [2] can mean items [2] through [7] are gone.
-  - Removing an empty item never shows up in a diff (it has no elements).
+  - Removing an empty item or an empty sequence never shows up in a diff (it
+    has no elements).
   - Then rerun this check. It should report 0 findings.
 """
 import os
@@ -86,6 +101,7 @@ from posda import rtstruct
 
 EDIT_DESCRIPTION = "Delete unreferenceable RTSTRUCT items (CheckRtStructRois)"
 STATUS_EVERY = 100
+REPORT_BATCH_SIZE = 750_000   # data rows per report; Excel stops at 1,048,576
 APPLY_WARNING = """\
   Before applying RTSTRUCT_ROI_Edits:
     - Apply it once, as generated, to these files only. Deletes run from the
@@ -135,6 +151,7 @@ class RtStructRoiChecker(LinkageChecker):
         print(f"  {len(file_rows)} RTSTRUCT file(s) in {len(files_per_series)} series")
 
         findings = []
+        inventory = []
         not_checked = []
         roi_items_per_file = Counter()
         for n, row in enumerate(file_rows, 1):
@@ -158,7 +175,9 @@ class RtStructRoiChecker(LinkageChecker):
             ss = rtstruct.structure_set_from_dataset(
                 ds, file_id=row.file_id, series_instance_uid=row.series_instance_uid)
             roi_items_per_file[len(ss.roi_items)] += 1
-            findings.extend(rtstruct.check(ss))
+            file_findings = rtstruct.check(ss)
+            findings.extend(file_findings)
+            inventory.extend(rtstruct.inventory_rows(ss, file_findings))
 
         print(DIVIDER)
         print("Findings")
@@ -177,9 +196,20 @@ class RtStructRoiChecker(LinkageChecker):
         print(f"  {by_action[rtstruct.DELETE]} item(s) to delete, "
               f"{by_action[rtstruct.REPORT]} report-only finding(s)")
 
-        report = background.create_report("RTSTRUCT_ROI_Findings")
-        rtstruct.write_findings(report, not_checked + findings)
-        print("  -> RTSTRUCT_ROI_Findings")
+        finding_rows = [f.to_row() for f in not_checked + findings]
+        if finding_rows:
+            names = self.create_batched_reports(finding_rows, "RTSTRUCT_ROI_Findings",
+                                                rtstruct.FINDINGS_HEADER, REPORT_BATCH_SIZE)
+        else:
+            names = ["RTSTRUCT_ROI_Findings_0"]
+            rtstruct.write_findings(background.create_report(names[0]), [])
+        for name in names:
+            print(f"  -> {name}")
+
+        print(f"  {len(inventory)} ROI row(s) in the inventory")
+        for name in self.create_batched_reports(inventory, "RTSTRUCT_ROI_Inventory",
+                                                rtstruct.INVENTORY_HEADER, REPORT_BATCH_SIZE):
+            print(f"  -> {name}")
 
         groups, skipped = rtstruct.plan_item_deletes(findings, files_per_series)
         for series_uid, reason in skipped:
@@ -187,10 +217,12 @@ class RtStructRoiChecker(LinkageChecker):
         if groups:
             num_series = sum(len(series) for _, series in groups)
             print(f"  {num_series} series in {len(groups)} edit group(s)")
-            report = background.create_report("RTSTRUCT_ROI_Edits")
-            rtstruct.write_edit_sheet(report, groups, files_per_series,
-                                      EDIT_DESCRIPTION, args.notify, args.activity_id)
-            print("  -> RTSTRUCT_ROI_Edits")
+            for i, batch in enumerate(rtstruct.batch_edit_groups(groups, REPORT_BATCH_SIZE)):
+                name = f"RTSTRUCT_ROI_Edits_{i}"
+                rtstruct.write_edit_sheet(background.create_report(name), batch,
+                                          files_per_series, EDIT_DESCRIPTION,
+                                          args.notify, args.activity_id)
+                print(f"  -> {name}")
             print(APPLY_WARNING)
 
         if not_checked:
