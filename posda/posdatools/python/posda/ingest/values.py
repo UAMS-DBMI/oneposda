@@ -474,6 +474,13 @@ def decode_value(raw: bytes, vr: str, vm: str, sig: str, errors: list[str]) -> o
         return [unpad(part, vr, sig, errors) for part in text.split("\\")]
 
     if desc.type in _NUMERIC_FORMATS:
+        if not raw:
+            # A zero-length binary element (e.g. Planar Configuration present
+            # with no value) has nothing to unpack. Posda's parser returns
+            # before decoding in this case, so it never emits the VM-mismatch
+            # warning below; an empty list here would reach psycopg2 as the
+            # array literal '{}' and be rejected by integer columns.
+            return None
         fmt, size = _NUMERIC_FORMATS[desc.type]
         count = len(raw) // size
         values = list(struct.unpack(f"<{count}{fmt[1]}", raw[: count * size]))

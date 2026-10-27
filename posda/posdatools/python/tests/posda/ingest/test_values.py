@@ -181,6 +181,36 @@ class TestZeroLengthImplicitVR:
         assert implicit_errors == explicit_errors
 
 
+class TestZeroLengthNumeric:
+    """A binary element that is present but empty reads as no value.
+
+    Posda's parser returns before decoding a zero-length element, so it never
+    reaches the numeric unpack and its VM check. Decoding b"" through that
+    branch produced [] and a spurious VM-mismatch warning; the empty list
+    was then bound by psycopg2 as the array literal '{}', which Postgres
+    rejects for integer columns such as image.planar_configuration.
+    """
+
+    @pytest.mark.parametrize("builder", [build, build_implicit])
+    def test_empty_us_is_none_without_warning(self, builder):
+        errors: list[str] = []
+        values = ParsedValues(builder(PlanarConfiguration=None), errors=errors)
+        assert values.get("(0028,0006)") is None
+        assert errors == []
+
+    def test_empty_us_distinct_from_populated(self):
+        assert values_for(PlanarConfiguration=0).get("(0028,0006)") == 0
+
+    def test_empty_multi_vm_numeric_is_none(self):
+        # (0028,1101) RedPaletteColorLookupTableDescriptor is US VM 3.
+        errors: list[str] = []
+        values = ParsedValues(
+            build(RedPaletteColorLookupTableDescriptor=None), errors=errors
+        )
+        assert values.get("(0028,1101)") is None
+        assert errors == []
+
+
 class TestLookup:
     def test_absent_tag_is_none(self):
         assert values_for().get("(0008,1030)") is None
