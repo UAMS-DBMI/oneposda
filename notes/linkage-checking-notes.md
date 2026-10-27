@@ -38,12 +38,17 @@ per-frame derivation refs), progress-message improvements, and bringing RT check
 two checkers). Full detail in "Python code review — improvement ideas" below.
 
 **Open / future work:** a legacy-Perl porting inventory (below) — most notably
-`CheckStructLinkagesTpId.pl`'s internal ROI/contour consistency checks, not yet ported into
-`RTLinkageChecker`, and concrete correctness gaps in `FixLinkages.py`'s RTSTRUCT relink
-algorithm (no `StructureSetROISequence` FOR fixup, no geometry-based contour mapping, no
-overlap validation). None of this blocks RT *checking* from being live, since the Fix
-script and candidate suggestion stay disabled regardless. Full checklist in
-"Ideas / TODO" at the bottom.
+`CheckStructLinkagesTpId.pl`'s internal ROI/contour consistency checks, now planned as a
+separate general-purpose RTSTRUCT ROI checker rather than an extension of
+`RTLinkageChecker` (see "RTSTRUCT ROI checker — plan"), and concrete correctness gaps in
+`FixLinkages.py`'s RTSTRUCT relink algorithm (no `StructureSetROISequence` FOR fixup, no
+geometry-based contour mapping, no overlap validation). None of this blocks RT *checking*
+from being live, since the Fix script and candidate suggestion stay disabled regardless.
+Full checklist in "Ideas / TODO" at the bottom.
+
+**StructFixer.pm fixes:** two bugs in the legacy Perl relinker were fixed — an exact-equality
+axial test that rejected near-axial images, and an ROI frame-of-reference loop that created
+empty `StructureSetROISequence` items. See "StructFixer.pm bugs fixed".
 
 ## Files involved
 
@@ -53,6 +58,8 @@ script and candidate suggestion stay disabled regardless. Full checklist in
 | [posda/posdatools/Posda/bin/CheckLinkages.py](../posda/posdatools/Posda/bin/CheckLinkages.py) | `GeneralLinkageChecker` — all modalities, plus UID anomaly detection (dup SOPs, cross-category overlaps) |
 | [posda/posdatools/Posda/bin/CheckSegLinkages.py](../posda/posdatools/Posda/bin/CheckSegLinkages.py) | `SegLinkageChecker` — SEG files only, scans `ReferencedSeriesSequence` + volume-overlay sequences (see below) |
 | [posda/posdatools/Posda/bin/CheckRtLinkages.py](../posda/posdatools/Posda/bin/CheckRtLinkages.py) | `RTLinkageChecker` — RTSTRUCT/RTPLAN/RTDOSE/RTIMAGE, scans RT-specific ref sequences; candidate suggestion and the RTSTRUCT relink worklist are commented out for now |
+| [posda/posdatools/python/posda/rtstruct.py](../posda/posdatools/python/posda/rtstruct.py) | RTSTRUCT ROI checker library — model of one structure set, rules, edit planning and `BackgroundEditTp` sheet writer (see "RTSTRUCT ROI checker — plan") |
+| [posda/posdatools/Posda/bin/CheckRtStructRois.py](../posda/posdatools/Posda/bin/CheckRtStructRois.py) | `RtStructRoiChecker` — runs the `rtstruct` rules over every RTSTRUCT in the latest timepoint; writes `RTSTRUCT_ROI_Findings`, `RTSTRUCT_ROI_Inventory` (one row per ROI per file, with a status) and, when anything is safely deletable, `RTSTRUCT_ROI_Edits`. Each is split into `_0`, `_1`, ... of at most 750,000 rows via `LinkageChecker.create_batched_reports` (the linkage reports use the same helper at 250,000); edit sheets split only on group boundaries. Button "Check RT Structure Set ROIs" in the RT linkage workflow step, after "Link RT Data" ([CheckRtStructRois.row](../posda/posdatools/spreadsheet_operations/rows/CheckRtStructRois.row)) |
 | [posda/posdatools/Posda/bin/FixLinkages.py](../posda/posdatools/Posda/bin/FixLinkages.py) | Standalone fixer — reads a `Relink_Worklist` CSV, rewrites RTSTRUCT/SEG files to point at a corrected target series, writes to `$POSDA_CACHE_ROOT/edits/<uuid>/` for review before import. **Not wired up yet** — no checker currently produces a worklist for it to consume |
 
 ## Architecture
@@ -387,7 +394,7 @@ Three different contour-to-image relinking algorithms exist. Summary first, then
 | Overlap / slice-spacing validation | None | **Yes — hard abort if adjacent Z slots overlap** | **None** |
 | Unmapped contour handling | Always finds *some* nearest match (no failure mode) | Hard abort if Z falls in no slot | Reports "Unmapped contour SOP" but still writes the file (partial success) |
 | Referenced Study/Series/FOR sequence rebuild | Full rebuild, groups by study→series→sorted-Z images, handles multiple studies/series | Full delete-and-rebuild, single study/series, hardcoded placeholder RT-Study SOP-class UID | Patches existing items in place, single series only |
-| `StructureSetROISequence` FOR fixup `(3006,0020)[i](3006,0024)` | Yes — blanket: sets FOR on every ROI item | Yes — precise: resolves via Referenced ROI Number to exactly one matching ROI, aborts if ambiguous | **Not implemented at all — ROIs keep stale FOR after relink** |
+| `StructureSetROISequence` FOR fixup `(3006,0020)[i](3006,0024)` | Yes — blanket: sets FOR on every ROI item (**was buggy** — indexed by ROI Contour item position, creating empty ROI items; fixed, see "StructFixer.pm bugs fixed") | Yes — precise: resolves via Referenced ROI Number to exactly one matching ROI, aborts if ambiguous | **Not implemented at all — ROIs keep stale FOR after relink** |
 | Error philosophy | Soft-accumulate, caller must inspect `$this->{errors}` | Hard abort via subprocess `Error()`, partial output never written | Returns `(success, errors)`, caller marks row Failed/OK but still writes file even with partial errors |
 
 **Concrete gaps in `fix_rtstruct` vs. the Perl versions, ranked:**
@@ -406,16 +413,315 @@ the ROI FOR fixup (cheap, clear-cut), then geometry-based mapping, then overlap 
 - [x] Read `SubProcessStructLinkageReport.pl` and `BackgroundSingleRtLinkageDetailReports.pl` in full — determine if they duplicate `CheckStructLinkagesTpId.pl` or add something new. **Done 2026-07-13** — both are complementary, not duplicates; see porting-inventory table above. `DumpLinkages.pl` was reclassified as a result.
 - [ ] Does `BackgroundFixStructLinkagesTp.pl`'s `dicom_edit_compare_disposition`/`dicom_edit_compare_fixed` DB tracking have an equivalent in the new Python accept/reject flow, or does that state live only in email buttons today?
 - [ ] Confirm with stakeholders whether `CheckStructLinkagesTpId.pl` (marked "test version" in its own source) is actually the authoritative spec before treating its checklist as gospel.
-- [ ] Decide: blanket ROI-FOR fixup (StructFixer style, simpler) vs. ROI-Number-precise fixup (SubProcessRelinkStruct style, safer for multi-FOR ROI sets) when implementing the FOR fixup in `fix_rtstruct`.
+- [ ] ROI checker: should *unique* orphan ROI Contour items (contours found in no declared ROI) ever be included in generated edits, e.g. behind a flag, or always report-only?
+- [ ] ROI checker: handle multi-file RTSTRUCT series via `BackgroundEditBySopInstanceTp`, or just skip and flag them?
+- [ ] ROI checker: RTPLAN Dose Reference Sequence and RTDOSE DVH Referenced ROI Sequence also carry Referenced ROI Numbers (`3006,0084`) pointing into a referenced structure set — in scope, and in which phase?
+- [ ] ROI checker: surface the existing ingest-time `dicom_process_errors` rows for undeclared ROI references, or rely solely on reading the files?
+- [x] ROI checker: script name, workflow placement, caption. **Decided:** `CheckRtStructRois.py`, button "Check RT Structure Set ROIs" after "Link RT Data", no "(Preview)".
+- [ ] Decide: blanket ROI-FOR fixup (StructFixer style, simpler) vs. ROI-Number-precise fixup (SubProcessRelinkStruct style, safer for multi-FOR ROI sets) when implementing the FOR fixup in `fix_rtstruct`. Either way, iterate the `StructureSetROISequence` itself — StructFixer's blanket version was indexing by ROI Contour item position (see "StructFixer.pm bugs fixed").
+
+## StructFixer.pm bugs fixed
+
+Two bugs in [StructFixer.pm](../posda/posdatools/Posda/include/Posda/StructFixer.pm), the relinker
+behind `TestStructFixerTp.pl` / `BackgroundFixStructLinkagesTp.pl`.
+
+### Axial test used exact float equality [FIXED]
+
+`CheckImagGeo` compared ImageOrientationPatient against `1,0,0,0,1,0` with `==`. The
+`sprintf("%.8f")` applied first keeps 8 decimals, so it absorbed nothing — a direction cosine
+off by rounding noise on the order of 1e-5 (~0.001°) failed the test.
+
+Why that was silent: rejection is soft — the image goes into `{errors}` but is never added
+to `ImgsByZ`, the only table `LinkStructSet` maps contours against. With every image
+rejected, `BuildCtMap` searches an empty table and returns undef, `abs($closest_z - $z)`
+degenerates to `|z|` (so the reported `min_dist`/`max_dist` are contour Z coordinates, not
+match distances), every contour's `ReferencedSOPInstanceUID` is looked up through an undef
+key, and `LinkStructSet` still returns 1. `TestStructFixerTp.pl` prints `Linked:` and
+`BackgroundFixStructLinkagesTp.pl` reports `status = OK` — the `errors` column is
+informational only and never affects status.
+
+**Fix:** compare each component against `$IopAxialTolerance = 1e-4` (~0.006°). Acceptance is
+a strict superset of before (the old `sprintf` slack was ≤5e-9); checked old vs new
+predicate over exact, 8dp, tilted, `-0.00000000`, sagittal, coronal, 1°/15° oblique and
+malformed 3/5/7-element IOP values — 0 regressions. The `sprintf` moved into the error
+message, which prints identical text.
+
+**Deliberately not changed (backward compatibility):** the fail-open path itself. A genuinely
+oblique, sagittal or coronal series still rejects every image and still produces undefined
+references reported as OK. Candidate follow-up guards, all in `StructFixer.pm`:
+- `LinkStructSet` returns 0 when `ImgsByZ` is empty — `TestStructFixerTp.pl` then prints
+  `Not linked`, the background script sets `status = Failed` and skips writing the file;
+  no change needed outside the module.
+- Return 0 on an undefined `$closest_z`; have `BuildCtMap` record an error instead of
+  storing undef.
+- Optional max link distance (e.g. half the median slice spacing). Unlike the others this
+  can fail files that previously "succeeded" (contours legitimately between slices).
+
+### ROI frame-of-reference loop indexed the wrong sequence [FIXED]
+
+The "Fix frames of reference in Structure Set ROI sequence" block built `$for_ref` from
+`(3006,0020)` but then looped over `$ct_cont_ref` — one entry per CLOSED_PLANAR contour,
+from `(3006,0039)`. `Substitutions` always puts `<0>` at tuple position 0, so
+`$inst->[$for_ref->{index_list}->{"<0>"}]` yielded the **ROI Contour Sequence** index, which
+was then used as a **Structure Set ROI Sequence** index.
+
+- Harmless when the two sequences are 1:1 in the same order — which is why it went unnoticed.
+- When a file has more ROI Contour items than declared ROIs, `InsertElementBySig` on a
+  nonexistent index creates a blank item (`new_blank`, [Dataset.pm](../posda/posdatools/Posda/include/Posda/Dataset.pm)
+  `InsertElementBySig`) holding only `(3006,0024)` — empty ROI items with no ROI Number,
+  Name or Generation Algorithm, which dciodvfy flags. When orders differ it also writes the
+  FOR to the wrong ROI.
+- `$num_fors` counted only ROIs that already had `(3006,0024)`, so the
+  `Replaced N of M roi frames of reference` report line was meaningless.
+- The empty items are unreferenceable (every ROI reference resolves by ROI Number), so
+  deleting them is safe. They are also invisible to ingest (both `Modules.pm` and
+  `rt_structure.py` iterate on `(3006,0020)[<0>](3006,0022)`), so no DB-based check sees them.
+
+**Fix:** loop over `$for_ref` itself, built on `(3006,0022)` ROI Number (Type 1 — every real
+ROI has one) instead of `(3006,0024)` (which would only enumerate ROIs that already carry a
+FOR). Verified with the real `Posda::Try` / `Posda::Dataset` / `LinkStructSet` on an RTSTRUCT
+with more ROI Contour items than ROIs: old code added one empty item per excess contour
+item; new code left the ROI sequence unchanged.
+
+**Behavior change:** every declared ROI now gets the image FOR, including ROIs with no
+CLOSED_PLANAR contours (the old loop only reached the indices of items that had them, at the
+wrong position). Consistent with StructFixer's single-FOR model — it already forces the
+top-level Referenced FOR to the image FOR.
+
+### Pre-existing behavior noted, not changed
+
+- The RT Referenced Study Sequence rebuild writes `$this->{ImgSopClass}` (the *image* SOP
+  class) into `(3006,0010)[0](3006,0012)[n](0008,1150)`, a study-level Referenced SOP Class
+  UID. The conventional value there is the retired Detached Study Management SOP class
+  (`1.2.840.10008.3.1.2.3.1`). Every relinked file gets this element changed.
+- The contour loop relinks every CLOSED_PLANAR contour unconditionally, overwriting existing
+  links. Useful as a regression check: on a struct whose links are already correct, a correct
+  relink reproduces them exactly, so the edit diff shows no change under `(3006,0039)`.
+- `ShortLongDicomCompare.pl` replaces UIDs with `<uid>` / `<changed uid>`, so its diffs show
+  *which* tags changed but never the values written.
+
+### Testing StructFixer without the full Posda stack
+
+`Posda::Config` is the only module in the `Posda::Try` → `Posda::Dataset` chain that needs
+`Modern::Perl`, and `Dataset` only calls `Config()` when writing. Stubbing it lets the real
+parser and `StructFixer` run under a bare Perl:
+
+```perl
+BEGIN {
+  $INC{'Posda/Config.pm'} = 'stub';
+  package Posda::Config;
+  sub Config { return '' }
+  sub import { no strict 'refs'; *{caller() . '::Config'} = \&Config }
+}
+```
+
+Then `perl -I posda/posdatools/Posda/include ...`, build a fake `ImgsByUid` (iop/ipp/for_uid/
+sop_class_uid/file), call `Posda::StructFixer->new(\%Info)->LinkStructSet($try->{dataset})`.
+Pure-geometry code (`CheckImagGeo`) can be tested with `Posda::Try`/`Posda::Dataset` faked
+entirely via `%INC` plus a no-op `Posda::Dataset::InitDD`.
+
+## RTSTRUCT ROI checker — plan (2026-10-12)
+
+A general-purpose Python checker for the internal consistency of RTSTRUCT files, designed so
+the internal checks of the Perl RT check/fix scripts can be absorbed into it over time.
+Separate from `CheckRtLinkages.py`, which checks references *between* files; this checks
+consistency *within* one RTSTRUCT.
+
+### Existing coverage
+
+| Check | Where today | Gap |
+|---|---|---|
+| ROI Contour item / RT ROI Observation referencing an undeclared ROI Number | Ingest — `Modules.pm` (`RoiContour`, `RtRoiObservations`) and [rt_structure.py](../posda/posdatools/python/posda/ingest/rt_structure.py) | Recorded as `dicom_process_errors` rows (non-fatal; the item is skipped, the rest of the file ingests). Not surfaced by any check report; no fix path. |
+| Structure Set ROI item with no ROI Number | Nowhere — ingest iterates on `(3006,0022)` and silently skips it | Only dciodvfy catches it, as missing attributes |
+| Missing Type 1/2 attributes | `BackgroundDciodvfyTp.pl` | Generic conformance; no cross-sequence references |
+| ROI counts, mixed geometric types, unlinked contours, FOR matches, volume files exist | `CheckStructLinkagesTpId.pl` | Reads the DB, so blind to anything ingest dropped |
+| Per-file volume / contour / ROI tables | `DumpLinkages.pl` (behind `BackgroundSingleRtLinkageDetailReports.pl`) | Dump only, no checks |
+| References between files, FOR mismatch | `CheckRtLinkages.py` | Doesn't look inside the RTSTRUCT's own sequences |
+| Contour-to-slice geometry | `SubProcessStructLinkageReport.pl` | Different trigger path, not activity-wide |
+
+### Design principle: read the DICOM, not the DB projection
+
+The DB tables are a lossy projection of an RTSTRUCT: ingest drops exactly the malformed items
+(orphan contour items and observations skipped, ROI items without an ROI Number silently
+ignored). Any checker built on `roi` / `roi_contour` / `file_roi_image_linkage` reports such
+files as clean. The checker reads RTSTRUCT structure from the file and uses the DB only for
+cross-file context (which images exist in the activity, their FORs and geometry).
+
+Related ingest quirk: `SimplerDicomAnalysis.pm` builds its ROI list from declared ROI Numbers
+but also auto-creates ROI entries from `RTROIObservationsSequence` ROI Numbers. An undeclared
+ROI that still has an observation entry therefore gets its contours collected, and
+`PopulateFileRoiImageLinkagesByTimepoint.pl` finds no `roi_id` for it — inserts into
+`file_roi_image_linkage` (`roi_id NOT NULL`) are expected to fail once those contours carry
+image links. How `RunQuery` surfaces that failure is unconfirmed.
+
+### Never treat an unreadable file as clean
+
+`load_dataset` reads with `dcmread(force=True)`. An HTML page, a JSON error or an empty body
+(e.g. a moved or misconfigured API URL answering 200) parses into a near-empty dataset with
+no error. That dataset has no ROI items, so every rule passes and the file looks clean.
+
+`rtstruct.dataset_problem()` checks that the SOP Class UID is RT Structure Set Storage and
+that the SOP Instance UID matches the DB row. A file that fails is reported as
+`file_not_checked` instead of being checked, and the run finishes with
+`Complete; N file(s) could not be checked`. For the first such file under `POSDA_API_ONLY`,
+`CheckRtStructRois.py` prints the API response (URL, status, content type, first bytes).
+
+`LinkageChecker.load_dataset` itself has no such guard, so the linkage checkers have the same
+gap: a non-DICOM response there produces no references and no findings (see TODO).
+
+### Report upload pitfalls (`BackgroundProcess`)
+
+- `_close_reports()` uploads reports in order with no error handling. If one `insert_file`
+  fails, the loop stops: later reports are never closed or uploaded, and their temp files can
+  be left at 0 bytes.
+- `requests` drops the body when it follows a 301 on a PUT. An `http://` API URL that
+  redirects to `https://` therefore uploads an empty body, and the API rejects it with a 422
+  digest mismatch. Configure the API URL as `https://` directly.
+
+### Shape
+
+- **Library first, thin scripts on top** — what makes it absorbable later.
+- **Model of one RTSTRUCT** (e.g. `posda/rtstruct.py`): declared ROIs (`3006,0020`), ROI
+  Contour items with Referenced ROI Number and contours (type, points, z, image refs), RT ROI
+  Observations (and related-ROI refs), referenced volume (`3006,0010`). `DumpLinkages.pl`'s
+  three tables are this model printed.
+- **Rules** are small functions over the model yielding findings: severity, location,
+  fixable or not, and an optional proposed edit.
+- **Outputs:** findings report; a filled-in `BackgroundEditTp` spreadsheet (same layout as
+  `create_edit_skeleton` in [linkage.py](../posda/posdatools/python/posda/linkage.py)) for fixes
+  that are safe deletions or value sets. Structural rewrites (relinking) stay with a relinker.
+- **Leave generic conformance to dciodvfy.** Rules cover what it can't see: references
+  across sequences, linkage, geometry.
+- Reuse `LinkageChecker` plumbing (activity file query, `load_dataset` incl. `POSDA_API_ONLY`,
+  background reports) rather than duplicating it.
+
+### Edit pipeline constraints (for generated edits)
+
+- `delete_tag` on a tag ending in `[n]` runs in "item" mode and deletes the whole sequence
+  item ([ProcessBackgroundEditInstructions.pm](../posda/posdatools/Posda/include/Posda/ProcessBackgroundEditInstructions.pm) `ProcessIndividualEdit`).
+- Item deletion uses `splice` (`Dataset.pm` `DeleteElementBySig`), so later items renumber.
+  Edits are accumulated in input order and applied in that order with no sorting
+  (`NewSubprocessEditor.pl` `@effective_edits`). **Emit deletes per sequence from the highest
+  index down**, or the wrong items get deleted.
+- `BackgroundEditTp` targets a `series_instance_uid`; every file in the series gets the same
+  edits. Index-based item deletes are only safe for single-file series — skip and flag
+  multi-file series (or evaluate `BackgroundEditBySopInstanceTp`, input
+  `<unmapped_uid><mapped_uid><sop_instance_uid><operation><tag><val1><val2>`).
+- `delete_tag` on a tag that ends in an *element* inside an item, e.g.
+  `(3006,0020)[n](3006,0024)`, deletes only that element. The item stays, and if that was its
+  last element Posda writes it out as an empty item — still invalid, and invisible in diffs.
+  Removing an item requires the tag to end in `[n]`.
+- Deleting every item of a sequence leaves the sequence present with zero items. That is
+  non-conformant for these Type 3 "One or more Items" sequences (dciodvfy: "Bad Sequence
+  number of Items = <0>"), and invisible in edit diffs. Delete the sequence itself instead:
+  `delete_tag` on the bare tag, e.g. `<(3006,0080)>`, runs in "exact" mode and removes the
+  whole element (`NewSubprocessEditor.pl` → `$ds->Delete`).
+- Index lists must come from the file itself. A list built from counts outside the file (e.g.
+  an assumed number of real ROIs) deletes a real ROI as soon as one count is wrong.
+
+### Reading edit diffs (`ShortLongDicomCompare.pl` / `Posda::DiffDicom`)
+
+- The diff compares leaf elements by path. An empty sequence item has no leaves, so creating
+  or removing one never shows up.
+- "Only in from file" in the **short** report prints only the first element (sorted) of each
+  pattern. A file that lost `[2]`–`[7]` shows only `[2]`; one line does not mean one element.
+- For item deletes that are all trailing, items after the deleted ones shift down, so the
+  first index under "Only in from file" equals the number of items left — provided every
+  original item carried the element shown. A deleted real ROI shows up as its own ROI
+  Number / Name / Generation Algorithm lines.
+- The report's `short_file_id` / `long_file_id` are the stored report text files (identical
+  reports are stored once), not the edited DICOM files. `DifferenceReportByEditId` only
+  counts files per report pair. To find the files behind a report, join
+  `dicom_edit_compare.from_file_digest` to `file.digest` for that `subprocess_invocation_id`
+  and `short_report_file_id`.
+
+### Phasing
+
+1. **Internal reference checks + edits.** *Rules done:* `posda/rtstruct.py` and
+   `CheckRtStructRois.py` implement every rule below, plus the unreadable-file guard;
+   `tests/posda/test_rtstruct.py` covers each rule, the conformant cases that must stay clean,
+   non-DICOM responses, descending order, grouping and the sheet layout. Run from the "Check RT
+   Structure Set ROIs" button, after "Link RT Data".
+
+   Every rule enforces a PS3.3 requirement, checked against the 2026d edition and cited in
+   each rule's docstring:
+
+   | Rule | PS3.3 basis | Action |
+   |---|---|---|
+   | Structure Set ROI / Referenced FOR / ROI Contour / RT ROI Observations Sequence present with no items | C.8.8.5, C.8.8.6, C.8.8.8, "One or more Items are permitted" | delete the whole sequence; the planner also deletes the whole sequence when item deletes would empty it |
+   | Structure Set ROI item without ROI Number | C.8.8.5, Type 1 | delete if empty or FOR-only, else report |
+   | Duplicate ROI Numbers | C.8.8.5, "shall be unique within the Structure Set" | report |
+   | ROI without a Referenced Frame of Reference UID | C.8.8.5, Type 1 | report |
+   | ROI FOR not listed in, or listed more than once in, the Referenced Frame of Reference Sequence | C.8.8.5.1, "once and only once" | report |
+   | ROI Contour item referencing an undeclared ROI — *redundant* (every contour also present in a declared ROI) | C.8.8.6, Referenced ROI Number "uniquely identifies the referenced ROI described in the Structure Set ROI Sequence" | delete |
+   | Same, *unique* (holds contours found nowhere else) | same | report only — may mean an ROI was dropped from the declarations by mistake; the fix would be restoring the declaration |
+   | RT ROI Observation referencing an undeclared ROI | C.8.8.8, same wording | delete, unless the ROI has a unique contour item |
+   | RT Related ROI referencing an undeclared ROI | C.8.8.8, same wording | report |
+   | Missing Referenced ROI Number (contour item, observation) | C.8.8.6 / C.8.8.8, Type 1 | report |
+   | Missing or duplicate Observation Number | C.8.8.8, Type 1, "shall be unique within the RT ROI Observations Sequence" | report |
+   | CLOSEDPLANAR_XOR mixed with other geometric types in one ROI | C.8.8.6, "all Contours of that ROI shall be of the same type" | report |
+
+   *Not rules* — conformant in the current standard:
+   - A missing Structure Set ROI, Referenced Frame of Reference, ROI Contour, RT ROI
+     Observations or RT Related ROI Sequence. All are Type 3. Older editions had several as
+     Type 1, so older validators may still flag them. *Present but empty* is a finding (see
+     the table).
+   - A declared ROI with no ROI Contour item or no RT ROI Observation. Nothing requires one
+     item per declared ROI.
+   - Several ROI Contour items for one ROI. The standard doesn't address it.
+   - Mixed geometric types other than CLOSEDPLANAR_XOR (e.g. CLOSED_PLANAR with POINT). The
+     Perl `NumRois` check calls this suspicious, but the standard allows it.
+
+   *Implemented as specified, with these details:*
+   - Contours compare by geometric type and points (floats), not by image references.
+   - An ROI Contour item with no contours counts as redundant.
+   - ROI Numbers compare as integers, so `011` matches `11`.
+   - An observation for an undeclared ROI is report-only when that ROI Number also has a
+     *unique* contour item. Its label and interpreted type are what restoring the declaration
+     needs.
+   - Items with no Referenced ROI Number are report-only.
+   - One series' deletes can span several sequences. Each sequence is ordered from its
+     highest index down; the sequences don't affect each other's indices.
+
+   Tests: synthetic pydicom unit tests (detection, redundant/unique split, descending-index
+   ordering); apply generated edits through the real `Posda::Dataset` delete via the
+   `Posda::Config` stub above, to confirm ordering on the code that will apply them.
+2. **Contour-level checks:** point counts vs Number of Contour Points (C.8.8.6, "Number of
+   points (triplets) in Contour Data"), planarity of CLOSED_PLANAR contours (C.8.8.6, "All
+   points in Contour Data (3006,0050) shall be coplanar"), contours with no image reference,
+   contour image refs outside the declared volume (ports `UnlinkedClosedPlanar`,
+   `InternalLinkages`). Check each against the standard before adding it, as in phase 1.
+   Contours with no image reference are conformant: Contour Image Sequence (3006,0016) is
+   Type 3, and C.8.8.6.4 says it "is not required to be present" (contours are placed by
+   patient coordinates within the ROI's Frame of Reference). Flagging them is curation
+   policy, not conformance. Contours not tied to a declared ROI are a different case,
+   non-conformant and covered by phase 1.
+3. **Cross-file checks using the DB:** referenced images exist, FOR matches the images,
+   contour z vs slice geometry (ports `FrameOfRefExternal`, `VolumeFilesInPosda`,
+   `FrameOfReferenceMatches`; `SubProcessStructLinkageReport.pl`'s math implements
+   `PointsWithinVolume`). After this `CheckStructLinkagesTpId.pl` can retire.
+4. **Per-file detail mode** replacing `DumpLinkages.pl` / `BackgroundSingleRtLinkageDetailReports.pl`.
+
+### Cautions
+
+- Ship phase 1 on its own; don't block it on a full port.
+- `CheckStructLinkagesTpId.pl` calls itself a "test version" — phases 2–3 need confirmation
+  that its checks are the right spec (see open questions).
 
 ## Ideas / TODO
 
-- [ ] **Close the `StructureSetROISequence` FOR-fixup gap in `fix_rtstruct`** (FixLinkages.py) — clearest, lowest-risk win identified in the relink comparison above.
+- [ ] **RTSTRUCT ROI checker, phase 1** — model + internal reference rules + `BackgroundEditTp` edit generation (see "RTSTRUCT ROI checker — plan"). All phase 1 rules done, each checked against PS3.3; remaining: `.row`/button (below) and committing.
+- [x] `CheckRtStructRois.row` + "Check RT Structure Set ROIs" button after "Link RT Data" (needs `SyncAllSpreadsheetOps` on deploy, like any new `.row`).
+- [ ] Guard `LinkageChecker.load_dataset` (or its callers) against non-DICOM responses, as `rtstruct.dataset_problem()` does — today the linkage checkers would report such files as having no problems (see "Never treat an unreadable file as clean").
+- [ ] `BackgroundProcess._close_reports()`: keep uploading the remaining reports when one upload fails, and report the failure (see "Report upload pitfalls").
+- [ ] **Close the `StructureSetROISequence` FOR-fixup gap in `fix_rtstruct`** (FixLinkages.py) — clearest, lowest-risk win identified in the relink comparison above. Iterate the ROI sequence itself, keyed on ROI Number, not ROI Contour item positions (the StructFixer bug).
 - [ ] Add geometry-based (Z-slot) contour-to-image mapping to `fix_rtstruct`, replacing the lexicographic-UID fallback — the most consequential correctness gap found.
 - [ ] Add overlap/slice-spacing validation to `fix_rtstruct`, mirroring `SubProcessRelinkStruct.pl`'s hard-abort-on-overlap check.
-- [ ] Port `CheckStructLinkagesTpId.pl`'s internal-consistency checks into `RTLinkageChecker`, preserving the NumRois → SopsInVol → InternalLinkages/FrameOfRefExternal → VolumeFilesInPosda → FrameOfReferenceMatches data-flow ordering (see deep-dive above); explicitly drop `PointsWithinVolume` (unimplemented stub) rather than porting it as a real check.
-- [ ] Port `SubProcessStructLinkageReport.pl`'s geometric contour-to-image Z-matching logic — candidate implementation for the still-unimplemented `PointsWithinVolume` check.
-- [ ] Port `DumpLinkages.pl`'s per-file linkage/geometry logic (backs the live `BackgroundSingleRtLinkageDetailReports.pl` UI report — reclassified from retirement candidate, see above).
+- [ ] Port `CheckStructLinkagesTpId.pl`'s internal-consistency checks into the RTSTRUCT ROI checker (phases 2–3), not `RTLinkageChecker`. Make the NumRois → SopsInVol → InternalLinkages/FrameOfRefExternal → VolumeFilesInPosda → FrameOfReferenceMatches data dependencies explicit (see deep-dive above); read structure from the DICOM rather than the DB tables; explicitly drop `PointsWithinVolume` (unimplemented stub) rather than porting it as a real check.
+- [ ] Port `SubProcessStructLinkageReport.pl`'s geometric contour-to-image Z-matching logic into the ROI checker (phase 3) — candidate implementation for the still-unimplemented `PointsWithinVolume` check.
+- [ ] Port `DumpLinkages.pl`'s per-file linkage/geometry logic as the ROI checker's per-file detail mode (phase 4; backs the live `BackgroundSingleRtLinkageDetailReports.pl` UI report — reclassified from retirement candidate, see above).
+- [ ] StructFixer fail-open guards — return 0 from `LinkStructSet` when no image passes the axial check, and on an undefined `$closest_z` (see "StructFixer.pm bugs fixed"). Separate from the tolerance fix because it turns some former "OK" results into "Failed".
+- [ ] Decide whether StructFixer should keep writing the image SOP class into the study-level `(3006,0012)[n](0008,1150)`.
 - [ ] Verify RTDOSE/RTPLAN collection-site-patient cross-checks aren't lost vs. `BackgroundDoseLinkageCheck.pl` / `BackgroundPlanLinkageCheck.pl`
 - [ ] Plan retirement of the non-Tp Perl scripts + their `.row` files once parity is confirmed
 - [ ] **Re-enable candidate suggestion and the Fix script**, when ready: uncomment `suggest_missing_ref_candidates()`/`suggest_relink_candidates()` in all three checkers (`CheckLinkages.py`, `CheckSegLinkages.py`, `CheckRtLinkages.py`), the RTSTRUCT relink-worklist block in `CheckRtLinkages.py`, and the candidate-suggestion columns in `REFERENCE_REPORT_HEADER`/`FOR_MISMATCH_HEADER`/`reference_to_row()` (linkage.py) — all commented out (not deleted) for easy restoration, see "Candidate suggestion and the Fix script" and "Report output" notes above.
