@@ -156,6 +156,42 @@ class TestImagePixel:
         assert hist["image_id"] is not None
         assert hist["unique_pixel_data_id"] is None
 
+    def test_empty_number_of_frames_is_null(self):
+        # Number of Frames is IS; present-but-empty must not reach the
+        # integer column as ''. Recorded as a bad number, like series_number.
+        db = FakeDb(rows=[[]])
+        errors: list[str] = []
+        values = build(
+            Rows=4,
+            Columns=4,
+            BitsAllocated=8,
+            NumberOfFrames=None,
+            PixelData=bytes(300),
+        )
+        modules.image_pixel(db, values, 3, {}, errors)
+
+        ((sql, params),) = db.inserts_into("image")
+        columns = sql.split("(")[1].split(")")[0].split(", ")
+        assert params[columns.index("number_of_frames")] is None
+        assert errors == ['Bad number "" in number_of_frames']
+
+    def test_number_of_frames_is_kept_when_numeric(self):
+        db = FakeDb(rows=[[]])
+        errors: list[str] = []
+        values = build(
+            Rows=4,
+            Columns=4,
+            BitsAllocated=8,
+            NumberOfFrames="12",
+            PixelData=bytes(300),
+        )
+        modules.image_pixel(db, values, 3, {}, errors)
+
+        ((sql, params),) = db.inserts_into("image")
+        columns = sql.split("(")[1].split(")")[0].split(", ")
+        assert params[columns.index("number_of_frames")] == "12"
+        assert errors == []
+
     def test_small_pixel_data_populates_dedup_tables(self):
         # Only reachable with skip_large disabled, but the code path is the
         # one the fix in the follow-up commit will re-enable.

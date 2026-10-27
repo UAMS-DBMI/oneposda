@@ -146,6 +146,10 @@ IMAGE_PIXEL = AttrSpec(
         "pixel_spacing": "MultiText",
         "content_date": "Date",
         "content_time": "Timetag",
+        # Not in Posda's table. number_of_frames is the only IS element the
+        # ingest writes to an integer column; an empty (type 2) value reaches
+        # the driver as '' and fails the insert. Treated like series_number.
+        "number_of_frames": "UndefIfNotNumber",
     },
 )
 
