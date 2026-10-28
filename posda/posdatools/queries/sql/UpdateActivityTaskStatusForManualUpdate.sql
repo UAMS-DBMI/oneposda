@@ -11,6 +11,7 @@
 update activity_task_status set
   status_text = ?,
   last_updated = now(),
+  end_time = now(),
   dismissed_time = null,
   dismissed_by = null,
   manual_update = true
