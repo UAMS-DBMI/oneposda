@@ -33,3 +33,9 @@ def pop_work_id(
         return None
     _, work_id = result
     return work_id
+
+
+def push_work_id(redis_db: redis.StrictRedis, queue_name: str, work_id: int) -> None:
+    """Queue one work id for whichever worker pops ``queue_name`` next."""
+    log.debug("LPUSH %s onto %s", work_id, queue_name)
+    redis_db.lpush(queue_name, work_id)

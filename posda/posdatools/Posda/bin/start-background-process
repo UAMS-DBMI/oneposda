@@ -1,0 +1,24 @@
+#!/usr/bin/python3 -u
+"""
+Queue a spreadsheet operation as a background process from the command line,
+exactly as pressing Start in the GUI would.
+
+    start-background-process --list
+    start-background-process ImportInPlaceFromPublic --describe
+    start-background-process ImportInPlaceFromPublic --activity_id 7 \\
+        --notify admin --collection_name "My Collection" --visibility 1 \\
+        --site_name "My Site"
+    start-background-process HelloWorldPython -p activity_id=1 -p notify=me \\
+        --stdin series_uids.txt          # lines already in the input format
+    start-background-process HelloWorldPython -p activity_id=1 -p notify=me \\
+        --csv series.csv                 # header CSV, rendered per row
+
+Needs the Posda environment (posda_files database, POSDA_INTERNAL_API_URL,
+POSDA_REDIS_HOST). The implementation lives in posda.background.launch_cli.
+"""
+import sys
+
+from posda.background.launch_cli import main
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))
