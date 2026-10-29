@@ -1055,34 +1055,43 @@ def build_cycle_recordset(row):
     }
 
 
-async def count_orphaned_wp_downloads(wp_object_type: str, wp_object_id: int, attached_ids: set) -> int:
+async def find_orphaned_wp_downloads(wp_object_type: str, wp_object_id: int, attached_ids: set) -> list[dict]:
     """Downloads listed on the dataset's WP page that aren't the current
     download for any recordset here -- left behind by unlinking/relinking a
     recordset's download, or added directly in WordPress. Mirrors the check
     the Setup stage used to run client-side, moved server-side so it can gate
     setup completion consistently everywhere the cycle payload is read.
-    Best-effort: a WordPress hiccup shouldn't fail the whole cycle page, so
-    any error here just reports zero orphans rather than raising."""
+    Returned in the shape of a WP search result, so Setup can offer them as
+    link suggestions. Best-effort: a WordPress hiccup shouldn't fail the whole
+    cycle page, so any error here just reports no orphans rather than raising."""
     endpoint_key = "Collection" if wp_object_type == "collection" else "Analysis Result"
     downloads_field = "collection_downloads" if wp_object_type == "collection" else "result_downloads"
     try:
         item = await wp_get(f"{wp_url(endpoint_key)}/{wp_object_id}")
         if item is None:
-            return 0
+            return []
         listed_ids = item.get(downloads_field) or []
         orphaned_ids = [i for i in listed_ids if i not in attached_ids]
         if not orphaned_ids:
-            return 0
-        statuses = await asyncio.gather(
+            return []
+        downloads = await asyncio.gather(
             *(wp_get(f"{wp_url('Download')}/{i}") for i in orphaned_ids),
             return_exceptions=True,
         )
-        return sum(
-            1 for s in statuses
-            if isinstance(s, dict) and s.get("status") != "trash"
-        )
+        return [
+            {
+                "id":       d["id"],
+                "title":    d["title"]["rendered"],
+                "type":     d["type"],
+                "status":   d["status"],
+                "view_url": d["link"],
+                "edit_url": wp_edit_url(d["id"]),
+            }
+            for d in downloads
+            if isinstance(d, dict) and d.get("status") != "trash"
+        ]
     except Exception:
-        return 0
+        return []
 
 
 @router.get("/datasets/{dataset_id}/cycle")
@@ -1207,13 +1216,13 @@ async def get_dataset_cycle(
 
     dataset = dataset_rows[0]
 
-    orphaned_download_count = 0
+    orphaned_downloads = []
     if wp_collection_rows:
         attached_ids = {
             r["wp_download_object_id"] for r in recordset_rows
             if r["wp_download_object_id"] is not None
         }
-        orphaned_download_count = await count_orphaned_wp_downloads(
+        orphaned_downloads = await find_orphaned_wp_downloads(
             wp_collection_rows[0]["wp_object_type"],
             wp_collection_rows[0]["wp_object_id"],
             attached_ids,
@@ -1231,7 +1240,8 @@ async def get_dataset_cycle(
         "dataset_wp_map_id": wp_collection_rows[0]["map_id"] if wp_collection_rows else None,
         "dataset_wp_edit_url": wp_collection_rows[0]["wp_edit_url"] if wp_collection_rows else None,
         "dataset_wp_view_url": wp_collection_rows[0]["wp_view_url"] if wp_collection_rows else None,
-        "orphaned_download_count": orphaned_download_count,
+        "orphaned_download_count": len(orphaned_downloads),
+        "orphaned_downloads": orphaned_downloads,
         # The release this rollup describes -- pinned when release_id was given,
         # otherwise the latest. Compare against latest_dataset_release_id to see
         # whether this is the current cycle or an older one still being viewed.
