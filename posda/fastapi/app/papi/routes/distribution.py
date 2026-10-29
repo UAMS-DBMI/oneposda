@@ -5719,7 +5719,12 @@ async def generate_idc_imaging_manifest(transfer_id: int, db: Database = Depends
                 fp.patient_id,
                 fst.study_instance_uid,
                 fse.series_instance_uid,
-                fsc.sop_instance_uid
+                fsc.sop_instance_uid,
+                -- The CTP Project Name, (0013,"CTP",10), per file: an analysis
+                -- result's DICOM carries the collection it points at. Files
+                -- without one are curated upstream, so emit null and report a
+                -- count rather than refuse.
+                nullif(btrim(c.project_name), '') AS collection_name
             FROM transfer_recordset tr
             JOIN recordset_release rr   USING (recordset_release_id)
             JOIN recordset r            USING (recordset_id)
@@ -5730,6 +5735,8 @@ async def generate_idc_imaging_manifest(transfer_id: int, db: Database = Depends
             JOIN file_study fst         USING (file_id)
             JOIN file_series fse        USING (file_id)
             JOIN file_sop_common fsc    USING (file_id)
+            -- LEFT, not inner: a dropped file would change dataset_hash.
+            LEFT JOIN ctp_file c        USING (file_id)
             WHERE tr.dataset_release_transfer_id = $1
               AND {IDC_IMAGING_PREDICATE}
         ),
@@ -5760,6 +5767,7 @@ async def generate_idc_imaging_manifest(transfer_id: int, db: Database = Depends
         )
         SELECT
             dh.dataset_hash,
+            f.collection_name,
             f.patient_id,
             ph.patient_hash,
             f.study_instance_uid,
@@ -5768,6 +5776,9 @@ async def generate_idc_imaging_manifest(transfer_id: int, db: Database = Depends
             sh.series_hash,
             f.sop_instance_uid,
             f.digest AS instance_hash,
+            -- Relative to the manifest, computed here rather than read from
+            -- transfer_file; matches the fan-out's 'imaging/' || digest path.
+            './imaging/' || f.digest AS relative_file_url,
             f.file_id
         FROM files f
         JOIN series_hashes sh   USING (series_instance_uid)
@@ -5787,10 +5798,11 @@ async def generate_idc_imaging_manifest(transfer_id: int, db: Database = Depends
 
     fieldnames = [
         "dataset_hash",
+        "collection_name",
         "patient_id", "patient_hash",
         "study_instance_uid", "study_hash",
         "series_instance_uid", "series_hash",
-        "sop_instance_uid", "instance_hash", "file_id",
+        "sop_instance_uid", "instance_hash", "relative_file_url", "file_id",
     ]
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
@@ -5870,6 +5882,7 @@ async def generate_idc_imaging_manifest(transfer_id: int, db: Database = Depends
         "security_hash":        df_rows[0]["security_hash"],
         "row_count":            len(rows),
         "dataset_hash":         rows[0]["dataset_hash"],
+        "missing_collection_name": sum(1 for r in rows if r["collection_name"] is None),
     })
 
 
