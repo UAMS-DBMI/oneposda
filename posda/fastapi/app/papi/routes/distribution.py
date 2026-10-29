@@ -891,7 +891,7 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
                 ) as files_pending
             from qc_unit group by qc_review_id
         ) s on s.qc_review_id = v.qc_review_id
-        where v.review_status <> 'cancelled'
+        where v.review_status not in ('cancelled', 'replaced')
         group by od.recordset_id, od.recordset_draft_id
     ),
     bundled as (
@@ -7850,18 +7850,19 @@ async def cancel_qc_review(
     db: Database = Depends()):
 
     # Finished QC is locked, like a completed slice: a review leaves 'complete'
-    # only by going stale when its draft changes.
+    # only by going stale when its draft changes. A replaced review is already
+    # retired by the clone that superseded it.
     updated = await db.fetch_one(
         "update qc_review set review_status = 'cancelled', when_updated = now(), who_updated = $2 "
-        "where qc_review_id = $1 and review_status <> 'complete' returning *",
+        "where qc_review_id = $1 and review_status not in ('complete', 'replaced') returning *",
         [review_id, current_user.user_id],
     )
     if not updated:
-        exists = await db.fetch_one(
-            "select 1 from qc_review where qc_review_id = $1", [review_id])
-        if not exists:
+        existing = await db.fetch_one(
+            "select review_status from qc_review where qc_review_id = $1", [review_id])
+        if not existing:
             api_error("NOT_FOUND", "QC review not found", {"qc_review_id": review_id}, 404)
-        api_error("CONFLICT", "Cannot cancel a completed review",
+        api_error("CONFLICT", f"Cannot cancel a {existing['review_status']} review",
                   {"qc_review_id": review_id}, 409)
     return item_response(updated)
 
@@ -7947,6 +7948,18 @@ async def clone_qc_review(
 
             await conn.execute(series_insert, draft_id, seed_text, is_full, pct,
                                new_id, assignment["assignment_id"], is_resample, review_id)
+
+            # The clone supersedes a stale source; left stale it would block
+            # the publish gate forever and keep offering itself for re-clone.
+            if source["review_status"] == "stale":
+                await conn.execute(
+                    "update qc_review set review_status = 'replaced', when_updated = now(), "
+                    "who_updated = $2 where qc_review_id = $1",
+                    review_id, current_user.user_id,
+                )
+            # Carry-forward can bring every unit over approved; sync so such a
+            # clone completes now rather than sitting open with nothing to do.
+            await qc_sync_assignment_status(conn, assignment["assignment_id"])
 
             pop_rows = await conn.fetch(QC_POP_PER_MOD, draft_id)
             samp_rows = await conn.fetch(QC_SAMPLED_PER_MOD, new_id)
@@ -8151,9 +8164,9 @@ async def list_qc_assignments(
     if unassigned is True:
         where.append("a.assigned_to is null")
     # This is a work-queue endpoint (pickup pool / a user's queue); a cancelled
-    # review has no work, so its lingering slices never belong here. The rows
-    # stay in the DB for audit -- they're just filtered out of the queue.
-    where.append("r.review_status <> 'cancelled'")
+    # or replaced review has no work, so its lingering slices never belong here.
+    # The rows stay in the DB for audit -- they're just filtered out of the queue.
+    where.append("r.review_status not in ('cancelled', 'replaced')")
     where_sql = "where " + " and ".join(where)
 
     list_q = f"""
@@ -8272,7 +8285,7 @@ async def claim_qc_assignment(
         where assignment_id = $1 and assigned_to is null
           and (select review_status from qc_review r
                where r.qc_review_id = qc_review_assignment.qc_review_id)
-              not in ('cancelled', 'complete')
+              not in ('cancelled', 'complete', 'replaced')
         returning *
         """,
         [assignment_id, current_user.user_id])
@@ -8288,7 +8301,7 @@ async def claim_qc_assignment(
             [assignment_id])
         if not info:
             api_error("NOT_FOUND", "Assignment not found", {"assignment_id": assignment_id}, 404)
-        if info["review_status"] in ("cancelled", "complete"):
+        if info["review_status"] in ("cancelled", "complete", "replaced"):
             api_error("CONFLICT", f"Cannot claim a slice on a {info['review_status']} review",
                       {"assignment_id": assignment_id, "review_status": info["review_status"]}, 409)
         api_error("CONFLICT", "Assignment is not available to claim (already claimed)",
