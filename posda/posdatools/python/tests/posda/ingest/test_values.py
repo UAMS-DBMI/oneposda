@@ -228,6 +228,44 @@ class TestLookup:
     def test_private_tag_absent_creator_is_none(self):
         assert values_for().get_private('(0013,"CTP",10)') is None
 
+    def test_private_tag_explicit_un_uses_private_dictionary(self):
+        # CTP writes its private elements with an explicit VR of UN. Posda's
+        # parser recasts a UN element to the dictionary VR -- the private
+        # dictionary says (0013,"CTP",10) is LO -- so it must decode as text
+        # exactly as it would in an implicit-VR file, not come back as bytes.
+        ds = build()
+        block = ds.private_block(0x0013, "CTP", create=True)
+        block.add_new(0x10, "UN", b"MyProject ")
+        assert ParsedValues(ds).get_private('(0013,"CTP",10)') == "MyProject"
+
+    def test_private_tag_explicit_un_matches_implicit_read(self):
+        explicit = build()
+        explicit.private_block(0x0013, "CTP", create=True).add_new(
+            0x10, "UN", b"MyProject "
+        )
+        implicit = build_implicit()
+        implicit.private_block(0x0013, "CTP", create=True).add_new(
+            0x10, "LO", "MyProject"
+        )
+        sig = '(0013,"CTP",10)'
+        assert ParsedValues(explicit).get(sig) == ParsedValues(implicit).get(sig)
+
+    def test_private_tag_explicit_un_undeclared_stays_raw(self):
+        # No dictionary entry to recast to: the bytes stand, as in Perl.
+        ds = build()
+        block = ds.private_block(0x0013, "CTP", create=True)
+        block.add_new(0x7F, "UN", b"\x01\x02")
+        assert ParsedValues(ds).get_private('(0013,"CTP",7f)') == b"\x01\x02"
+
+    def test_private_tag_explicit_non_un_is_not_recast(self):
+        # Only UN falls back to the dictionary. An explicit ST is kept even
+        # though the dictionary says LO: ST keeps the leading space that LO
+        # would have stripped.
+        ds = build()
+        block = ds.private_block(0x0013, "CTP", create=True)
+        block.add_new(0x10, "ST", " MyProject")
+        assert ParsedValues(ds).get_private('(0013,"CTP",10)') == " MyProject"
+
     def test_private_signature_requires_odd_group(self):
         with pytest.raises(DicomValueError):
             values_for().get_private('(0012,"CTP",10)')

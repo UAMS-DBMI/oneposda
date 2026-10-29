@@ -165,7 +165,7 @@ class ParsedValues:
             return None
         if not remain:
             return self._read(dataset, tag, sig, declared)
-        return self._navigate(dataset, tag, remain, sig)
+        return self._navigate(dataset, tag, remain, sig, declared)
 
     def _split_head(
         self, dataset: Dataset, sig: str
@@ -200,7 +200,14 @@ class ParsedValues:
         tag = (int(match.group(1), 16) << 16) | int(match.group(2), 16)
         return tag, match.group(3), None
 
-    def _navigate(self, dataset: Dataset, tag: int, remain: str, sig: str) -> object:
+    def _navigate(
+        self,
+        dataset: Dataset,
+        tag: int,
+        remain: str,
+        sig: str,
+        declared: tuple[str, str] | None = None,
+    ) -> object:
         """Follow a navigation suffix, mirroring ExtractElementBySig."""
         if dataset is None or tag not in dataset:
             return None
@@ -210,13 +217,13 @@ class ParsedValues:
         # elements and sequences.
         match = _INDEX_ONLY.match(remain)
         if match is not None:
-            value = self._value_for_navigation(dataset, tag, sig)
+            value = self._value_for_navigation(dataset, tag, sig, declared)
             if not isinstance(value, (list, Sequence)):
                 return None
             index = int(match.group(1))
             return value[index] if index < len(value) else None
 
-        vr = _resolve_vr(dataset.get_item(tag, keep_deferred=True), tag)
+        vr = _resolve_vr(dataset.get_item(tag, keep_deferred=True), tag, declared)
         if vr != "SQ":
             raise DicomValueError(
                 f'invalid remaining ("{remain}") for non-seq ({vr}) element'
@@ -237,17 +244,23 @@ class ParsedValues:
 
         return self._resolve(item, rest)
 
-    def _value_for_navigation(self, dataset: Dataset, tag: int, sig: str) -> object:
+    def _value_for_navigation(
+        self,
+        dataset: Dataset,
+        tag: int,
+        sig: str,
+        declared: tuple[str, str] | None = None,
+    ) -> object:
         """The value to index into for a trailing ``[n]``.
 
         Sequences have to come from ``dataset[tag].value`` -- pydicom's
         ``get_item`` hands back the undecoded bytes for SQ, which cannot be
         indexed by item.
         """
-        vr = _resolve_vr(dataset.get_item(tag, keep_deferred=True), tag)
+        vr = _resolve_vr(dataset.get_item(tag, keep_deferred=True), tag, declared)
         if vr == "SQ":
             return dataset[tag].value
-        return self._read(dataset, tag, sig)
+        return self._read(dataset, tag, sig, declared)
 
     def substitutions(self, pattern: str) -> list[list[int]]:
         """Port of ``$ds->Substitutions($pat)``, returning its ``list``.
@@ -340,12 +353,10 @@ class ParsedValues:
         sig: str,
         declared: tuple[str, str] | None = None,
     ) -> object:
-        raw = raw_item(dataset, tag, self.skip_large)
+        raw = raw_item(dataset, tag, self.skip_large, declared)
         if raw is None:
             return None
-        vr = _resolve_vr(raw, tag)
-        if vr is None and declared is not None:
-            vr = declared[1]
+        vr = _resolve_vr(raw, tag, declared)
         if vr is None:
             return None
         if _is_skipped(raw, vr, self.skip_large):
@@ -381,17 +392,38 @@ def _dictionary_vm(tag: int) -> str:
         return "1-n"
 
 
-def _resolve_vr(raw: object, tag: int) -> str | None:
+def _resolve_vr(
+    raw: object, tag: int, declared: tuple[str, str] | None = None
+) -> str | None:
+    """The VR to decode ``raw`` with.
+
+    An explicit VR of ``UN`` is treated exactly like an implicit-VR element
+    with no VR at all: the dictionary decides. Public tags resolve through
+    pydicom's dictionary; a private tag resolves through ``declared``, the
+    (VM, VR) Posda's private dictionary carries for it. This matches
+    Posda::Parser, which recasts a ``UN`` element to the dictionary VR
+    (public or private) and only ever recasts ``UN`` -- an explicit VR that
+    is merely *different* from the dictionary's is kept as written.
+    Without a dictionary entry the raw ``UN`` (or None) stands.
+    """
     vr = getattr(raw, "VR", None)
-    if vr in (None, "UN", ""):
-        try:
-            vr = dictionary_VR(tag)
-        except KeyError:
-            return vr if vr else None
-    return str(vr) if vr else None
+    if vr not in (None, "UN", ""):
+        return str(vr)
+    try:
+        return dictionary_VR(tag)
+    except KeyError:
+        pass
+    if declared is not None:
+        return declared[1]
+    return vr if vr else None
 
 
-def raw_item(dataset: Dataset, tag: int, skip_large: int) -> object:
+def raw_item(
+    dataset: Dataset,
+    tag: int,
+    skip_large: int,
+    declared: tuple[str, str] | None = None,
+) -> object:
     """``Dataset.get_item`` honouring the deferred reads ``parse`` sets up.
 
     ``parse`` passes ``skip_large`` to ``dcmread`` as ``defer_size``, so an
@@ -408,7 +440,7 @@ def raw_item(dataset: Dataset, tag: int, skip_large: int) -> object:
     raw = dataset.get_item(tag, keep_deferred=True)
     if not _is_deferred(raw):
         return raw
-    if skip_large and _resolve_vr(raw, tag) != "SQ":
+    if skip_large and _resolve_vr(raw, tag, declared) != "SQ":
         return raw
     return read_deferred_data_element(
         dataset.fileobj_type, dataset.filename, dataset.timestamp, raw
