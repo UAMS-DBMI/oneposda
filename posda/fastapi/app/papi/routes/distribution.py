@@ -875,14 +875,20 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
             count(*) filter (where v.review_status = 'complete')::int as reviews_complete,
             coalesce(sum(s.total), 0)::int as series_total,
             coalesce(sum(s.pending), 0)::int as series_pending,
-            coalesce(sum(s.approved), 0)::int as series_approved
+            coalesce(sum(s.approved), 0)::int as series_approved,
+            -- series_* count every qc_unit, series and file alike; this is the
+            -- file share of series_pending, so callers can name both.
+            coalesce(sum(s.files_pending), 0)::int as files_pending
         from qc_draft od
         join qc_review v on v.recordset_draft_id = od.recordset_draft_id
         left join (
             select qc_review_id,
                 count(*) as total,
                 count(*) filter (where qc_status = 'pending') as pending,
-                count(*) filter (where qc_status = 'approved') as approved
+                count(*) filter (where qc_status = 'approved') as approved,
+                count(*) filter (
+                    where qc_status = 'pending' and unit_type = 'file'
+                ) as files_pending
             from qc_unit group by qc_review_id
         ) s on s.qc_review_id = v.qc_review_id
         where v.review_status <> 'cancelled'
@@ -955,6 +961,7 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
         coalesce(q.series_total, 0) as series_total,
         coalesce(q.series_pending, 0) as series_pending,
         coalesce(q.series_approved, 0) as series_approved,
+        coalesce(q.files_pending, 0) as files_pending,
         (lr.recordset_release_id is not null
          and lr.recordset_release_id in (select recordset_release_id from bundled))
             as in_dataset_release,
@@ -1015,6 +1022,7 @@ def build_cycle_recordset(row):
             "series_total": row["series_total"],
             "series_pending": row["series_pending"],
             "series_approved": row["series_approved"],
+            "files_pending": row["files_pending"],
         },
         "latest_release": {
             "recordset_release_id": row["recordset_release_id"],
