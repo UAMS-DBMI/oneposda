@@ -4705,6 +4705,34 @@ async def create_recordset_release(
                     422,
                 )
 
+            # QC gate -- the same rule as the cycle UI's isPublishable: at least
+            # one complete review, none open or stale (cancelled ones don't
+            # count). Enforced here so nothing publishes around the UI.
+            qc = await conn.fetchrow(
+                """
+                select
+                    count(*) filter (where review_status = 'complete') as complete,
+                    count(*) filter (where review_status = 'open') as open,
+                    count(*) filter (where review_status = 'stale') as stale
+                from qc_review
+                where recordset_draft_id = $1
+                """,
+                draft_id,
+            )
+            if qc["complete"] == 0 or qc["open"] > 0 or qc["stale"] > 0:
+                api_error(
+                    "QC_INCOMPLETE",
+                    "Draft cannot be published until QC is complete: it needs at "
+                    "least one complete review and no open or stale ones",
+                    {
+                        "draft_id": draft_id,
+                        "reviews_complete": qc["complete"],
+                        "reviews_open": qc["open"],
+                        "reviews_stale": qc["stale"],
+                    },
+                    422,
+                )
+
             # 2. Finalize the draft's release, or cut a new one for a draft
             #    that predates the draft-release model (recordset_release_id
             #    null). Keeping the old path means no backfill is needed.
@@ -7381,6 +7409,38 @@ async def qc_sync_assignment_status(conn, assignment_id: int):
             "where assignment_id = $1 and assignment_status = 'complete'",
             assignment_id,
         )
+    review = await conn.fetch(
+        "select qc_review_id from qc_review_assignment where assignment_id = $1",
+        assignment_id,
+    )
+    if review:
+        await qc_sync_review_status(conn, review[0]["qc_review_id"])
+
+
+async def qc_sync_review_status(conn, review_id: int):
+    # Auto: a review completes when every unit is approved, and reopens when one
+    # no longer is. Only open <-> complete; stale and cancelled are left alone.
+    await conn.execute(
+        """
+        update qc_review r set review_status = 'complete', when_updated = now()
+        where r.qc_review_id = $1 and r.review_status = 'open'
+          and exists (select 1 from qc_unit u where u.qc_review_id = r.qc_review_id)
+          and not exists (
+              select 1 from qc_unit u
+              where u.qc_review_id = r.qc_review_id and u.qc_status <> 'approved')
+        """,
+        review_id,
+    )
+    await conn.execute(
+        """
+        update qc_review r set review_status = 'open', when_updated = now()
+        where r.qc_review_id = $1 and r.review_status = 'complete'
+          and exists (
+              select 1 from qc_unit u
+              where u.qc_review_id = r.qc_review_id and u.qc_status <> 'approved')
+        """,
+        review_id,
+    )
 
 
 async def qc_approve_all_units(conn, assignment_id: int, user_id: int, note: str) -> int:
@@ -7789,13 +7849,20 @@ async def cancel_qc_review(
     current_user: User = logged_in_user,
     db: Database = Depends()):
 
+    # Finished QC is locked, like a completed slice: a review leaves 'complete'
+    # only by going stale when its draft changes.
     updated = await db.fetch_one(
         "update qc_review set review_status = 'cancelled', when_updated = now(), who_updated = $2 "
-        "where qc_review_id = $1 returning *",
+        "where qc_review_id = $1 and review_status <> 'complete' returning *",
         [review_id, current_user.user_id],
     )
     if not updated:
-        api_error("NOT_FOUND", "QC review not found", {"qc_review_id": review_id}, 404)
+        exists = await db.fetch_one(
+            "select 1 from qc_review where qc_review_id = $1", [review_id])
+        if not exists:
+            api_error("NOT_FOUND", "QC review not found", {"qc_review_id": review_id}, 404)
+        api_error("CONFLICT", "Cannot cancel a completed review",
+                  {"qc_review_id": review_id}, 409)
     return item_response(updated)
 
 
@@ -8160,6 +8227,15 @@ async def update_qc_assignment(
     current_user: User = logged_in_user,
     db: Database = Depends()):
 
+    current = await db.fetch_one(
+        "select assignment_status from qc_review_assignment where assignment_id = $1",
+        [assignment_id])
+    if not current:
+        api_error("NOT_FOUND", "Assignment not found", {"assignment_id": assignment_id}, 404)
+    if current["assignment_status"] == "complete" and payload.assigned_to is not None:
+        api_error("CONFLICT", "Cannot reassign a completed slice",
+                  {"assignment_id": assignment_id}, 409)
+
     updated = await db.fetch_one(
         """
         update qc_review_assignment set
@@ -8234,12 +8310,17 @@ async def release_qc_assignment(
             assignment_status = 'needs_qc',
             when_updated = now(),
             who_updated = $2
-        where assignment_id = $1
+        where assignment_id = $1 and assignment_status <> 'complete'
         returning *
         """,
         [assignment_id, current_user.user_id])
     if not updated:
-        api_error("NOT_FOUND", "Assignment not found", {"assignment_id": assignment_id}, 404)
+        exists = await db.fetch_one(
+            "select 1 from qc_review_assignment where assignment_id = $1", [assignment_id])
+        if not exists:
+            api_error("NOT_FOUND", "Assignment not found", {"assignment_id": assignment_id}, 404)
+        api_error("CONFLICT", "Cannot release a completed slice",
+                  {"assignment_id": assignment_id}, 409)
     return item_response(updated)
 
 
