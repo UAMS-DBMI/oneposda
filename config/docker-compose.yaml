@@ -257,7 +257,7 @@ services:
       - posda-api:posda-api
       - kaleidoscope:kaleidoscope
     volumes:
-      - ./web/default.conf:/opt/bitnami/nginx/conf/server_blocks/default.conf
+      - ./web/default.conf:/etc/nginx/conf.d/default.conf
       - ./web/posda-error.html:/www/posda-error.html
       - ./web/www/import.html:/www/import.html
       - ./web/www/upload.html:/www/upload.html
