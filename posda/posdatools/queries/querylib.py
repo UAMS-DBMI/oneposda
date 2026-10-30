@@ -1,5 +1,4 @@
 import sys
-import psycopg2
 import os
 
 CONNECTION = None
@@ -8,6 +7,10 @@ DSN="dbname=posda_files"
 
 def connect():
     global CONNECTION
+
+    # Imported here so parse_query_string can be used without a database driver
+    # (database/build-all-sql compiles the query library this way).
+    import psycopg2
 
     if CONNECTION is None:
         if 'PGHOST' in os.environ and ('localhost' not in os.environ['PGHOST']):

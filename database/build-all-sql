@@ -1,0 +1,521 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.14"
+# dependencies = []
+# ///
+"""Build ``database/all.sql``, the seed file for a fresh Posda install.
+
+``all.sql`` is what ``docker-entrypoint-initdb.d`` runs on an empty server. It
+is assembled from a live Posda database (the one your PG* environment points
+at) plus a few hand-written seed files:
+
+* every database contributes its DDL, dumped with ``pg_dump -s`` and limited
+  to an explicit allowlist of schemas, so nothing created for local
+  experiments can leak into the install image;
+* a few databases also contribute data, dumped table by table from an
+  explicit list -- the DICOM dictionary, the DbIf configuration, the
+  migration ledger, the lookup tables that migrations seeded, and so on;
+* ``seed/*.sql`` hold the defaults that must *not* come from a live database,
+  above all the ``auth`` content: a fresh install gets the admin and system
+  accounts only, never whoever happens to exist locally;
+* the DbIf query library in ``posdatools/queries/sql`` is compiled into
+  ``dbif_config.queries``.
+
+Everything is shelled out to ``pg_dump`` and ``psql`` so the file has no
+dependencies, in the same spirit as ``migrations/migrate``. The output is
+deterministic for a given database state (fixed ``\\restrict`` key, sorted
+query files, version banners stripped), so ``git diff all.sql`` after a
+rebuild shows real changes only.
+
+Usage::
+
+    ./build-all-sql            # rewrite all.sql from the database PG* names
+    ./build-all-sql --check    # build to a temp file, diff against all.sql
+"""
+
+from __future__ import annotations
+
+import argparse
+import difflib
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+REPO = HERE.parent
+SEED_DIR = HERE / "seed"
+OUTPUT = HERE / "all.sql"
+POSDATOOLS = REPO / "posda" / "posdatools"
+QUERY_DIR = POSDATOOLS / "queries" / "sql"
+QUERYLIB_DIR = POSDATOOLS / "queries"
+LEGACY_SQL_DIR = POSDATOOLS / "Posda" / "sql"
+
+# pg_dump 18 brackets its output in \restrict/\unrestrict with a random key.
+# A fixed key keeps the output stable between runs.
+RESTRICT_KEY = "posda"
+
+# Emitted once per pg_dump invocation and change with every upgrade of either
+# side, which is noise in a diff of a 5 MB file.
+VERSION_BANNER = re.compile(r"^-- Dumped (from database|by pg_dump) version ")
+
+DUMP_COMMON = (
+    "--no-owner",
+    "--no-privileges",
+    "--no-tablespaces",
+    f"--restrict-key={RESTRICT_KEY}",
+)
+
+
+class BuildError(Exception):
+    """A failure this tool raises deliberately."""
+
+
+@dataclass(frozen=True)
+class Database:
+    """What one database contributes to all.sql.
+
+    ``schemas`` is the DDL allowlist. Any other schema in the live database is
+    excluded with a warning, which is how a developer's scratch schema stays
+    out of the install image.
+
+    ``data_schemas`` and ``data_tables`` pick the rows that ship with a fresh
+    install. ``data_exclude`` removes tables from an otherwise-included schema.
+
+    ``seeds`` are hand-written SQL files appended after the data. They run
+    connected to this database.
+    """
+
+    name: str
+    schemas: tuple[str, ...] = ("public",)
+    data_schemas: tuple[str, ...] = ()
+    data_tables: tuple[str, ...] = ()
+    data_exclude: tuple[str, ...] = ()
+    seeds: tuple[Path, ...] = ()
+    queries: bool = False
+
+
+# Order matters only for readability; nothing crosses database boundaries.
+DATABASES: tuple[Database, ...] = (
+    Database(
+        "dicom_dd",
+        data_tables=("public.dicom_element",),
+    ),
+    Database("dicom_roots", schemas=("public", "db_version")),
+    Database("posda_appstats"),
+    Database("posda_backlog"),
+    Database("posda_counts"),
+    Database(
+        "posda_files",
+        schemas=("public", "auth", "db_version", "dbif_config", "dicom_conv"),
+        # DbIf's UI configuration and the migration ledger. The ledger has to
+        # match the DDL exactly: a fresh install must not re-run a migration
+        # whose effect is already in the dump, and must not skip one that is
+        # not. Dumping both from the same database in the same run is what
+        # guarantees that.
+        data_schemas=("dbif_config", "db_version"),
+        # Lookups that a migration seeded. Because the ledger marks that
+        # migration as applied, ./migrate will not seed them again, so the
+        # rows have to travel with the dump.
+        data_tables=(
+            "public.dataset_relation_type",
+            "public.dataset_type",
+            "public.recordset_type",
+            "public.transfer_destination",
+        ),
+        # Compiled from posdatools/queries/sql below instead.
+        data_exclude=("dbif_config.queries",),
+        # auth content is deliberately hand-written: see seed/posda_files_auth.sql
+        seeds=(
+            SEED_DIR / "posda_files_auth.sql",
+            SEED_DIR / "posda_files_defaults.sql",
+        ),
+        queries=True,
+    ),
+    Database("posda_nicknames", schemas=("public", "db_version")),
+    Database("posda_phi"),
+    Database(
+        "posda_phi_simple",
+        schemas=("public", "db_version"),
+        data_schemas=("db_version",),
+        data_tables=("public.element_seen",),
+    ),
+    Database(
+        "private_tag_kb",
+        schemas=("public", "db_version"),
+        # The private tag knowledge base is curated in git, not in a database:
+        # the committed file is the source of truth and is never re-dumped.
+        seeds=(LEGACY_SQL_DIR / "private_tag_kb_data.sql",),
+    ),
+    Database("public_tag_disposition"),
+)
+
+
+# --------------------------------------------------------------------------
+# Running the PostgreSQL client tools
+
+
+def run(cmd: list[str], *, stdin: str | None = None) -> str:
+    """Run a command and return stdout, raising BuildError with stderr if it fails."""
+    result = subprocess.run(cmd, input=stdin, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise BuildError(f"{cmd[0]} failed:\n{result.stderr.strip()}")
+    return result.stdout
+
+
+def psql_rows(database: str, sql: str) -> list[list[str]]:
+    out = run(
+        [
+            "psql",
+            "--no-psqlrc",
+            "-At",
+            "-F",
+            "\x1f",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-d",
+            database,
+            "-c",
+            sql,
+        ]
+    )
+    return [line.split("\x1f") for line in out.splitlines()]
+
+
+def psql_scalar(database: str, sql: str) -> str:
+    rows = psql_rows(database, sql)
+    if len(rows) != 1 or len(rows[0]) != 1:
+        raise BuildError(f"expected one value from {sql!r}, got {rows!r}")
+    return rows[0][0]
+
+
+def pg_dump(database: str, *args: str) -> str:
+    out = run(["pg_dump", *DUMP_COMMON, *args, database])
+    # Split on "\n" only: str.splitlines() also splits on control characters
+    # such as the record separator that some COPY rows contain.
+    lines = [line for line in out.split("\n") if not VERSION_BANNER.match(line)]
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+# Preflight checks
+
+
+def pg_dump_major() -> int:
+    banner = run(["pg_dump", "--version"])
+    match = re.search(r"\b(\d+)\.\d+", banner)
+    if match is None:
+        raise BuildError(f"cannot parse pg_dump version from {banner!r}")
+    return int(match.group(1))
+
+
+def server_major() -> int:
+    return int(psql_scalar("postgres", "show server_version_num")) // 10000
+
+
+def existing_databases() -> set[str]:
+    rows = psql_rows(
+        "postgres", "select datname from pg_database where not datistemplate"
+    )
+    return {row[0] for row in rows}
+
+
+def check_host_is_local(allow_remote: bool) -> None:
+    host = os.environ.get("PGHOST", "")
+    if (
+        allow_remote
+        or host in ("", "localhost", "127.0.0.1", "::1")
+        or host.startswith("/")
+    ):
+        return
+    raise BuildError(
+        f"PGHOST={host} is not local. all.sql should be built from a development "
+        "database; pass --allow-remote if you really mean it."
+    )
+
+
+def check_versions_match() -> None:
+    client, server = pg_dump_major(), server_major()
+    if client != server:
+        raise BuildError(
+            f"pg_dump is version {client} but the server is {server}; the output "
+            "would differ from a build on a matching client. Install a matching "
+            "pg_dump (or run this inside the database container)."
+        )
+
+
+def check_databases_exist(databases: tuple[Database, ...]) -> None:
+    missing = [db.name for db in databases if db.name not in existing_databases()]
+    if missing:
+        raise BuildError(f"databases not found on server: {', '.join(missing)}")
+
+
+def check_seed_files_exist(databases: tuple[Database, ...]) -> None:
+    missing = [str(p) for db in databases for p in db.seeds if not p.is_file()]
+    if missing:
+        raise BuildError(f"seed files not found: {', '.join(missing)}")
+
+
+def preflight(databases: tuple[Database, ...], allow_remote: bool) -> None:
+    check_host_is_local(allow_remote)
+    check_versions_match()
+    check_databases_exist(databases)
+    check_seed_files_exist(databases)
+    if not QUERY_DIR.is_dir():
+        raise BuildError(f"query directory not found: {QUERY_DIR}")
+
+
+# --------------------------------------------------------------------------
+# Schema (DDL)
+
+
+def user_schemas(database: str) -> set[str]:
+    rows = psql_rows(
+        database,
+        "select nspname from pg_namespace "
+        "where nspname not like 'pg\\_%' and nspname <> 'information_schema'",
+    )
+    return {row[0] for row in rows}
+
+
+def dump_schema(db: Database) -> str:
+    present = user_schemas(db.name)
+    missing = set(db.schemas) - present
+    if missing:
+        raise BuildError(f"{db.name}: expected schemas not found: {sorted(missing)}")
+    extraneous = sorted(present - set(db.schemas))
+    for schema in extraneous:
+        warn(f"{db.name}: excluding schema {schema!r} (not in the allowlist)")
+    exclude = [arg for schema in extraneous for arg in ("--exclude-schema", schema)]
+    return pg_dump(db.name, "--schema-only", "--create", *exclude)
+
+
+# --------------------------------------------------------------------------
+# Data
+
+
+def tables_in_schema(database: str, schema: str) -> list[str]:
+    rows = psql_rows(
+        database,
+        "select table_schema || '.' || table_name from information_schema.tables "
+        f"where table_schema = '{schema}' and table_type = 'BASE TABLE' "
+        "order by 1",
+    )
+    return [row[0] for row in rows]
+
+
+def check_tables_exist(database: str, tables: list[str]) -> None:
+    for table in tables:
+        schema, name = table.split(".", 1)
+        count = psql_scalar(
+            database,
+            "select count(*) from information_schema.tables "
+            f"where table_schema = '{schema}' and table_name = '{name}'",
+        )
+        if count != "1":
+            raise BuildError(f"{database}: data table {table} does not exist")
+
+
+def data_tables(db: Database) -> list[str]:
+    """The explicit, sorted list of tables whose rows ship with the install."""
+    tables: set[str] = set(db.data_tables)
+    for schema in db.data_schemas:
+        tables.update(tables_in_schema(db.name, schema))
+    tables.difference_update(db.data_exclude)
+    check_tables_exist(db.name, sorted(tables))
+    return sorted(tables)
+
+
+def dump_data(db: Database) -> str:
+    # pg_dump ignores --schema when --table is given, so every schema is
+    # expanded to its tables and one --table list is passed. That also makes
+    # the exclusion list a plain set difference instead of a pg_dump pattern.
+    tables = data_tables(db)
+    if not tables:
+        return ""
+    selectors = [arg for table in tables for arg in ("--table", table)]
+    return pg_dump(db.name, "--data-only", *selectors)
+
+
+# --------------------------------------------------------------------------
+# DbIf query library
+
+
+def pg_literal(value: object) -> str:
+    """Render a Python value as a PostgreSQL literal without a connection.
+
+    Strings use dollar quoting, so nothing inside a query body needs escaping;
+    the tag is extended until it does not occur in the text.
+    """
+    if value is None:
+        return "NULL"
+    if isinstance(value, str):
+        tag = "$q$"
+        while tag in value:
+            tag = tag[:-1] + "_$"
+        return f"{tag}{value}{tag}"
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return "'{}'::text[]"
+        return "ARRAY[" + ", ".join(pg_literal(item) for item in value) + "]"
+    raise BuildError(f"cannot render {value!r} as a SQL literal")
+
+
+def load_query_parser() -> Callable[[str], dict]:
+    sys.path.insert(0, str(QUERYLIB_DIR))
+    from querylib import parse_query_string
+
+    return parse_query_string
+
+
+def compile_queries() -> str:
+    parse_query_string = load_query_parser()
+    statements = []
+    for path in sorted(QUERY_DIR.glob("*.sql")):
+        query = parse_query_string(path.read_text())
+        values = ", ".join(
+            pg_literal(query[column])
+            for column in (
+                "name",
+                "query",
+                "args",
+                "columns",
+                "tags",
+                "schema",
+                "description",
+            )
+        )
+        statements.append(
+            "insert into dbif_config.queries\n"
+            "  (name, query, args, columns, tags, schema, description)\n"
+            f"values ({values});\n"
+        )
+    return "\n".join(statements)
+
+
+# --------------------------------------------------------------------------
+# Assembly
+
+
+def banner(text: str) -> str:
+    rule = "-" * 76
+    return f"--\n-- {rule}\n-- {text}\n-- {rule}\n--\n\n"
+
+
+def build_database(db: Database) -> str:
+    parts = [banner(f"{db.name}: schema"), dump_schema(db)]
+
+    data = dump_data(db)
+    if data:
+        parts += [banner(f"{db.name}: data"), f"\\connect {db.name}\n\n", data]
+
+    for seed in db.seeds:
+        relative = seed.relative_to(REPO)
+        parts += [
+            banner(f"{db.name}: seed {relative}"),
+            f"\\connect {db.name}\n\n",
+            seed.read_text().rstrip("\n") + "\n\n",
+        ]
+
+    if db.queries:
+        parts += [
+            banner(f"{db.name}: DbIf query library"),
+            f"\\connect {db.name}\n\n",
+            compile_queries(),
+        ]
+
+    return "".join(parts)
+
+
+def build(databases: tuple[Database, ...]) -> str:
+    header = (
+        "--\n"
+        "-- Posda initial database content.\n"
+        "--\n"
+        "-- GENERATED by database/build-all-sql. Do not edit; rebuild instead.\n"
+        "--\n\n"
+    )
+    return header + "".join(build_database(db) for db in databases)
+
+
+# --------------------------------------------------------------------------
+# Output
+
+
+def warn(message: str) -> None:
+    print(f"warning: {message}", file=sys.stderr)
+
+
+def note(message: str) -> None:
+    print(message, file=sys.stderr)
+
+
+def check_against(output: Path, text: str) -> int:
+    """Diff the freshly built text against the committed file. Exit 1 if they differ."""
+    if not output.is_file():
+        note(f"{output} does not exist")
+        return 1
+    diff = list(
+        difflib.unified_diff(
+            output.read_text().splitlines(keepends=True),
+            text.splitlines(keepends=True),
+            fromfile=str(output),
+            tofile="(rebuilt)",
+        )
+    )
+    if not diff:
+        note(f"{output} is up to date")
+        return 0
+    sys.stdout.writelines(diff)
+    note(f"{output} is out of date ({len(diff)} diff lines)")
+    return 1
+
+
+def write_atomically(output: Path, text: str) -> None:
+    with tempfile.NamedTemporaryFile(
+        "w", dir=output.parent, prefix=".all.sql.", delete=False
+    ) as handle:
+        handle.write(text)
+        temp_path = Path(handle.name)
+    temp_path.replace(output)
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument(
+        "--output", type=Path, default=OUTPUT, help=f"file to write (default: {OUTPUT})"
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="build to memory and diff against --output instead of writing; exit 1 on drift",
+    )
+    parser.add_argument(
+        "--allow-remote",
+        action="store_true",
+        help="permit a PGHOST other than localhost",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str]) -> int:
+    args = parse_args(argv)
+    try:
+        preflight(DATABASES, args.allow_remote)
+        text = build(DATABASES)
+        if args.check:
+            return check_against(args.output, text)
+        write_atomically(args.output, text)
+    except BuildError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    note(f"wrote {args.output} ({len(text.encode()) / 1e6:.1f} MB)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

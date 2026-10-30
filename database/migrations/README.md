@@ -71,11 +71,10 @@ migrations must be *stamped*, not run:
 Pick the cutoff by checking what the database actually contains — do not guess.
 Stamping too far silently skips migrations that were never applied.
 
-A database created from `database/all.sql` sits at **0043**. `all.sql` is a
-schema snapshot maintained separately from this series, and its content stops
-partway through `0044_path_migration_master.sql`: it has that migration's early
-tables but not its later `ALTER`s. 0043 is the last migration it fully contains,
-and 0044 re-applies cleanly on top of it.
+A database created from `database/all.sql` needs no baseline: `all.sql` is
+built by `database/build-all-sql` from a database that has every migration
+applied, and it carries that database's `db_version.migration` ledger along
+with the schema. `./migrate status` on a fresh install reports nothing pending.
 
 ## Why this and not a migration tool
 
