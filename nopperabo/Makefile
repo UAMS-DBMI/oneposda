@@ -1,13 +1,15 @@
 IMAGE_NAME := nopperabo
 
-default_override: build-special
+# The masker submodule's commit is baked into its wheel version
+MASKER_COMMIT := $(shell git -C masker rev-parse --short HEAD)
+MASKER_GIT_DIR := $(shell git -C masker rev-parse --absolute-git-dir)
+
+BUILD_ARGS := --build-arg GIT_COMMIT=$(MASKER_COMMIT)
+
 include ../common.mk
 
-.PHONY: build-special push
-
-SETUPTOOLS_SCM_PRETEND_VERSION_FOR_MASKER := $(shell git rev-parse HEAD)
-
-default: build
+# Rebuild whenever the masker submodule's checked-out commit changes.
+$(STAMP_DIR)/image.stamp: $(MASKER_GIT_DIR)/HEAD
 
 # Build masker itself
 masker/dist/masker-1.0.3-py3-none-any.whl:
@@ -17,16 +19,3 @@ masker/dist/masker-1.0.3-py3-none-any.whl:
 # Build nopperabo wheel
 dist/nopperabo-0.1.0-py3-none-any.whl: masker/dist/masker-1.0.3-py3-none-any.whl
 	docker run -t --rm -v ${PWD}:/workdir python:3 /bin/bash -c "cd /workdir; pip install build; python -m build"
-
-# Build actual docker image
-# carefully get the git commit from the masker submodule
-.ONESHELL:
-build-special: Dockerfile # masker/dist/masker-1.0.3-py3-none-any.whl dist/nopperabo-0.1.0-py3-none-any.whl
-	docker build --build-arg GIT_COMMIT=$(shell git --git-dir=masker/.git rev-parse --short HEAD) \
-		-t $(REGISTRY)/$(IMAGE_NAME):${POSDA_IMG_VERSION} \
-		-t $(REGISTRY)/${IMAGE_NAME}:${GIT_TAG} \
-		.
-
-push: 
-	docker image push $(REGISTRY)/${IMAGE_NAME}:${GIT_TAG}
-	docker image push $(REGISTRY)/${IMAGE_NAME}:${POSDA_IMG_VERSION} 
