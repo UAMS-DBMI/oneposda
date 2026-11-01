@@ -1,17 +1,16 @@
 IMAGE_NAME := posda_web
 
-MIRABELLE_COMMIT := $(shell git --git-dir=mirabelle/.git rev-parse HEAD)
+MIRABELLE_COMMIT := $(shell git -C mirabelle rev-parse HEAD)
+MIRABELLE_GIT_DIR := $(shell git -C mirabelle rev-parse --absolute-git-dir)
+
+BUILD_ARGS := --build-arg MIRABELLE_COMMIT=$(MIRABELLE_COMMIT)
 
 # There are some filenames with spaces further down
 MAXDEPTH := 2
 
 include ../common.mk
 
-## Must override the standard rule from common.mk so we can include
-## the build-arg for MIRABELLE_COMMIT
-$(STAMP_DIR)/image.stamp: ../common.mk Dockerfile $(shell find . -maxdepth $(MAXDEPTH) -type f -not -name "image.stamp") | $(STAMP_DIR)
-	docker build .  \
-		-t $(REGISTRY)/${IMAGE_NAME}:${GIT_TAG} \
-		-t $(REGISTRY)/${IMAGE_NAME}:$(POSDA_IMG_VERSION) \
-		--build-arg MIRABELLE_COMMIT="${MIRABELLE_COMMIT}"
-	touch $@
+# MAXDEPTH keeps find from seeing deep changes inside the mirabelle
+# submodule, so also rebuild whenever the submodule's checked-out commit
+# changes.
+$(STAMP_DIR)/image.stamp: $(MIRABELLE_GIT_DIR)/HEAD
