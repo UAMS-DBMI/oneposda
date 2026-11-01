@@ -1,4 +1,4 @@
-.PHONY: everything push
+.PHONY: everything push push-multiplatform
 
 default: everything
 
@@ -24,3 +24,8 @@ push:
 	make -C ream push
 	make -C exodus push
 	make -C nopperabo push
+
+# Only web is cheap to build multi-platform (its builder stages run on the
+# build host); everything else is native-only via `push`.
+push-multiplatform:
+	make -C web push-multiplatform
