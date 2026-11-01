@@ -8585,11 +8585,13 @@ async def list_qc_assignments(
             coalesce(c.pending, 0) as series_pending,
             coalesce(c.approved, 0) as series_approved,
             r.review_type, r.review_status, r.recordset_draft_id,
-            rs.recordset_id, rs.recordset_name
+            rs.recordset_id, rs.recordset_name,
+            ds.dataset_id, ds.dataset_name
         from qc_review_assignment a
         join qc_review r on r.qc_review_id = a.qc_review_id
         join recordset_draft d on d.recordset_draft_id = r.recordset_draft_id
         join recordset rs on rs.recordset_id = d.recordset_id
+        left join dataset ds on ds.dataset_id = rs.dataset_id
         left join (
             select assignment_id, count(*) as total,
                 count(*) filter (where qc_status = 'pending') as pending,
