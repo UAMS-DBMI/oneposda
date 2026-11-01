@@ -878,9 +878,11 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
             coalesce(sum(s.approved), 0)::int as series_approved,
             coalesce(sum(s.rejected), 0)::int as series_rejected,
             coalesce(sum(s.flagged), 0)::int as series_flagged,
-            -- series_* count every qc_unit, series and file alike; this is the
-            -- file share of series_pending, so callers can name both.
-            coalesce(sum(s.files_pending), 0)::int as files_pending
+            -- series_* count every qc_unit, series and file alike; these are
+            -- the file shares of series_pending / series_rejected, so callers
+            -- can name both.
+            coalesce(sum(s.files_pending), 0)::int as files_pending,
+            coalesce(sum(s.files_rejected), 0)::int as files_rejected
         from qc_draft od
         join qc_review v on v.recordset_draft_id = od.recordset_draft_id
         left join (
@@ -892,7 +894,10 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
                 count(*) filter (where qc_status = 'flagged') as flagged,
                 count(*) filter (
                     where qc_status = 'pending' and unit_type = 'file'
-                ) as files_pending
+                ) as files_pending,
+                count(*) filter (
+                    where qc_status = 'rejected' and unit_type = 'file'
+                ) as files_rejected
             from qc_unit group by qc_review_id
         ) s on s.qc_review_id = v.qc_review_id
         where v.review_status not in ('cancelled', 'replaced')
@@ -968,6 +973,7 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
         coalesce(q.series_rejected, 0) as series_rejected,
         coalesce(q.series_flagged, 0) as series_flagged,
         coalesce(q.files_pending, 0) as files_pending,
+        coalesce(q.files_rejected, 0) as files_rejected,
         (lr.recordset_release_id is not null
          and lr.recordset_release_id in (select recordset_release_id from bundled))
             as in_dataset_release,
@@ -1031,6 +1037,7 @@ def build_cycle_recordset(row):
             "series_rejected": row["series_rejected"],
             "series_flagged": row["series_flagged"],
             "files_pending": row["files_pending"],
+            "files_rejected": row["files_rejected"],
         },
         "latest_release": {
             "recordset_release_id": row["recordset_release_id"],
