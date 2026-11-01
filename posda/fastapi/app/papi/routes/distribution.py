@@ -7328,6 +7328,9 @@ class QCSeriesStatusUpdate(BaseModel):
     qc_status: str
     notes: Optional[str] = None
 
+class QCUnitsReject(BaseModel):
+    notes: str
+
 class QCSeriesBatchStatus(BaseModel):
     series_instance_uids: list[str]
     qc_status: str
@@ -7443,22 +7446,22 @@ async def qc_sync_review_status(conn, review_id: int):
     )
 
 
-async def qc_approve_all_units(conn, assignment_id: int, user_id: int, note: str) -> int:
-    # Approve every not-yet-approved unit in a slice (history per unit) and let
-    # qc_sync flip the slice to complete. Shared by the non-DICOM Mark-Approved
-    # action and the Bundle-testing shortcut. Returns the count approved.
+async def qc_decide_all_units(conn, assignment_id: int, qc_status: str, user_id: int, note: str) -> int:
+    # Set every unit in a slice not already at `qc_status` (history per unit) and
+    # let qc_sync settle the slice. Shared by the non-DICOM Approve / Reject
+    # actions and the Bundle-testing shortcut. Returns the count changed.
     rows = await conn.fetch(
         "select qc_unit_id, qc_status from qc_unit "
-        "where assignment_id = $1 and qc_status <> 'approved'",
-        assignment_id,
+        "where assignment_id = $1 and qc_status <> $2",
+        assignment_id, qc_status,
     )
     for r in rows:
         await conn.execute(
-            "update qc_unit set qc_status = 'approved' where qc_unit_id = $1", r["qc_unit_id"])
+            "update qc_unit set qc_status = $2 where qc_unit_id = $1", r["qc_unit_id"], qc_status)
         await conn.execute(
             "insert into qc_unit_history (qc_unit_id, previous_status, new_status, who_updated, notes) "
-            "values ($1, $2, 'approved', $3, $4)",
-            r["qc_unit_id"], r["qc_status"], user_id, note)
+            "values ($1, $2, $3, $4, $5)",
+            r["qc_unit_id"], r["qc_status"], qc_status, user_id, note)
     await qc_sync_assignment_status(conn, assignment_id)
     return len(rows)
 
@@ -8353,7 +8356,7 @@ async def complete_assignment_for_testing(
             if not exists:
                 api_error("NOT_FOUND", "Assignment has no units", {"assignment_id": assignment_id}, 404)
             # Approve every unit -> 0 pending -> qc_sync flips the slice to 'complete'.
-            await qc_approve_all_units(conn, assignment_id, current_user.user_id, "complete for testing")
+            await qc_decide_all_units(conn, assignment_id, "approved", current_user.user_id, "complete for testing")
     except HTTPException:
         raise
     except Exception as e:
@@ -8378,7 +8381,7 @@ async def approve_assignment_units(
                 "select 1 from qc_unit where assignment_id = $1 limit 1", assignment_id)
             if not exists:
                 api_error("NOT_FOUND", "Assignment has no units", {"assignment_id": assignment_id}, 404)
-            approved = await qc_approve_all_units(conn, assignment_id, current_user.user_id, "approved")
+            approved = await qc_decide_all_units(conn, assignment_id, "approved", current_user.user_id, "approved")
     except HTTPException:
         raise
     except Exception as e:
@@ -8386,6 +8389,64 @@ async def approve_assignment_units(
                  context={"assignment_id": assignment_id})
 
     return item_response({"assignment_id": assignment_id, "approved": approved})
+
+
+@router.post("/qc/assignments/{assignment_id}/reject-units")
+# Reject every unit in a slice -- the non-DICOM reviewer's other answer. A reason
+# is required. The slice completes (nothing pending) but the review stays open,
+# so the publish gate holds until the files are fixed.
+async def reject_assignment_units(
+    assignment_id: int,
+    payload: QCUnitsReject,
+    current_user: User = logged_in_user,
+    db: Database = Depends()):
+
+    notes = payload.notes.strip()
+    if not notes:
+        api_error("VALIDATION_ERROR", "A reason is required to reject", {"assignment_id": assignment_id}, 422)
+    try:
+        async with db.transaction() as conn:
+            exists = await conn.fetch(
+                "select 1 from qc_unit where assignment_id = $1 limit 1", assignment_id)
+            if not exists:
+                api_error("NOT_FOUND", "Assignment has no units", {"assignment_id": assignment_id}, 404)
+            rejected = await qc_decide_all_units(conn, assignment_id, "rejected", current_user.user_id, notes)
+    except HTTPException:
+        raise
+    except Exception as e:
+        db_error(e, operation="rejecting assignment units",
+                 context={"assignment_id": assignment_id})
+
+    return item_response({"assignment_id": assignment_id, "rejected": rejected})
+
+
+@router.get("/qc/reviews/{review_id}/files")
+# A non-DICOM review's file units with their names, optionally one slice's.
+# file_id feeds the raw download at /files/{file_id}/data.
+async def list_review_files(
+    review_id: int,
+    assignment_id: Optional[int] = Query(default=None),
+    db: Database = Depends()):
+
+    values = [review_id]
+    where = ["u.qc_review_id = $1", "u.unit_type = 'file'"]
+    if assignment_id is not None:
+        values.append(assignment_id)
+        where.append(f"u.assignment_id = ${len(values)}")
+    try:
+        rows = await db.fetch(
+            f"""
+            select u.qc_unit_id, u.assignment_id, u.recordset_draft_file_id,
+                rdf.file_id, rdf.file_name, u.qc_status
+            from qc_unit u
+            join recordset_draft_file rdf on rdf.recordset_draft_file_id = u.recordset_draft_file_id
+            where {" and ".join(where)}
+            order by rdf.file_name nulls last, rdf.file_id
+            """,
+            values)
+    except Exception as e:
+        db_error(e, operation="listing review files", context={"review_id": review_id})
+    return list_response([dict(r) for r in rows])
 
 
 # ---------------------------- QC SERIES (viz tool consumes) --------------------------
