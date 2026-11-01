@@ -1,4 +1,6 @@
-VERSION := 1.1.20-multiplat-test
+# Release version lives in ../VERSION so bumps are one-line commits that
+# never touch build rules. Tag the release commit too, e.g. `git tag v1.1.21`.
+VERSION := $(strip $(shell cat ../VERSION))
 REGISTRY := registry.dbmi.cloud
 GIT_TAG := $(shell git rev-parse --short HEAD)
 
@@ -83,7 +85,7 @@ push-multiplatform:
 
 # Child Makefiles can add prerequisites with another
 # `$(STAMP_DIR)/image.stamp: extra-file` line after the include.
-$(STAMP_DIR)/image.stamp: ../common.mk Dockerfile $(shell find . -maxdepth $(MAXDEPTH) -type f -not -name "image.stamp") | $(STAMP_DIR)
+$(STAMP_DIR)/image.stamp: ../common.mk ../VERSION Dockerfile $(shell find . -maxdepth $(MAXDEPTH) -type f -not -name "image.stamp") | $(STAMP_DIR)
 	docker buildx build --load . \
 		$(BUILD_ARGS) $(IMAGE_TAGS)
 	touch $@
