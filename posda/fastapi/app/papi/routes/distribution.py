@@ -3259,6 +3259,16 @@ async def delete_recordset_draft(
 
             record = await conn.fetchrow(delete_query, draft_id, current_user.user_id)
 
+            # The draft's unfinished reviews have nothing left to review; retire
+            # them as cancelled so the queue, claims and rollups drop them.
+            # Complete reviews stay as the record of finished work.
+            await conn.execute(
+                "update qc_review set review_status = 'cancelled', when_updated = now(), "
+                "who_updated = $2 "
+                "where recordset_draft_id = $1 and review_status in ('open', 'stale')",
+                draft_id, current_user.user_id,
+            )
+
             # Only an unpublished release is ours to remove. Once published it
             # is an immutable version that other things may already reference.
             if (
