@@ -142,6 +142,11 @@ class RecordsetDraftFileItem(BaseModel):
 
 class RecordsetDraftFileAdd(BaseModel):
     files: list[RecordsetDraftFileItem]
+    # add | replace_same_name | replace_all -- see _apply_draft_add_mode.
+    mode: str = "add"
+
+class RecordsetDraftNameMatches(BaseModel):
+    names: list[str]
 
 class RecordsetDraftFileRemove(BaseModel):
     # Membership ids, not file_ids -- removing one named copy must not remove
@@ -3421,8 +3426,65 @@ async def get_recordset_draft_summary(
 
 
 
+DRAFT_ADD_MODES = ("add", "replace_same_name", "replace_all")
+
+
+def _check_draft_add_mode(mode: str):
+    if mode not in DRAFT_ADD_MODES:
+        api_error("VALIDATION_ERROR", f"mode must be one of {', '.join(DRAFT_ADD_MODES)}",
+                  {"mode": mode}, 422)
+
+
+async def _apply_draft_add_mode(conn, draft_id: int, mode: str,
+                                incoming: list[tuple[Optional[str], int]]) -> int:
+    # Make room for an incoming batch of (file_name, file_id) before it is
+    # added. replace_all empties the draft; replace_same_name drops draft files
+    # whose name matches an incoming one but whose content differs (an
+    # identical file is left alone, so it isn't churned). Returns rows removed.
+    if mode == "replace_all":
+        rows = await conn.fetch(
+            "delete from recordset_draft_file where recordset_draft_id = $1 "
+            "returning recordset_draft_file_id",
+            draft_id,
+        )
+        return len(rows)
+    if mode == "replace_same_name":
+        named = [(name, fid) for name, fid in incoming if name]
+        if not named:
+            return 0
+        rows = await conn.fetch(
+            """
+            delete from recordset_draft_file d
+            using unnest($2::text[], $3::int[]) as n(file_name, file_id)
+            where d.recordset_draft_id = $1
+              and d.file_name = n.file_name
+              and d.file_id <> n.file_id
+            returning d.recordset_draft_file_id
+            """,
+            draft_id, [n for n, _ in named], [f for _, f in named],
+        )
+        return len(rows)
+    return 0
+
+
+@router.post("/recordsets/drafts/{draft_id}/files/name-matches")
+# Which of these file names the draft already holds -- sizes the "replace N
+# same-name files" option before an upload.
+async def recordset_draft_name_matches(
+    draft_id: int,
+    payload: RecordsetDraftNameMatches,
+    db: Database = Depends()):
+
+    rows = await db.fetch(
+        "select distinct file_name from recordset_draft_file "
+        "where recordset_draft_id = $1 and file_name = any($2::text[])",
+        [draft_id, payload.names],
+    )
+    return item_response({"matches": [r["file_name"] for r in rows]})
+
+
 @router.post("/recordsets/drafts/{draft_id}/files/add")
-# Add files to a draft
+# Add files to a draft; `mode` can first replace same-named files or empty it.
 async def add_recordset_draft_files(
     draft_id: int,
     payload: RecordsetDraftFileAdd,
@@ -3462,11 +3524,16 @@ async def add_recordset_draft_files(
             422,
         )
 
+    _check_draft_add_mode(payload.mode)
     added = []
     skipped = []
 
     try:
         async with db.transaction() as conn:
+            removed = await _apply_draft_add_mode(
+                conn, draft_id, payload.mode,
+                [(item.file_name, item.file_id) for item in payload.files],
+            )
             for item in payload.files:
                 record = await conn.fetch(add_query, draft_id, item.file_id, item.file_name)
                 if record:
@@ -3492,6 +3559,7 @@ async def add_recordset_draft_files(
             "draft_id": draft_id,
             "added": added,
             "skipped": skipped,
+            "removed": removed,
             "current_count": count_record[0]["current_count"] if count_record else 0,
         }
     )
@@ -3630,12 +3698,27 @@ async def _resolve_recordset_wp_download_file(draft_id: int, db: Database):
     return source_url, os.path.basename(source_url)
 
 
+@router.get("/recordsets/drafts/{draft_id}/files/from-wp/preview")
+# The WP download's filename and whether the draft already holds that name --
+# sizes the "replace the same-name file" option before a pull.
+async def preview_recordset_draft_file_from_wp(draft_id: int, db: Database = Depends()):
+    _source_url, file_name = await _resolve_recordset_wp_download_file(draft_id, db)
+    match = await db.fetch_one(
+        "select 1 from recordset_draft_file where recordset_draft_id = $1 and file_name = $2 limit 1",
+        [draft_id, file_name],
+    )
+    return item_response({"file_name": file_name, "same_name_in_draft": bool(match)})
+
+
 @router.post("/recordsets/drafts/{draft_id}/files/from-wp")
-# Pull the file attached to the recordset's WP download object into the draft.
+# Pull the file attached to the recordset's WP download object into the draft;
+# `mode` can first replace a same-named file or empty the draft.
 async def add_recordset_draft_file_from_wp(
     draft_id: int,
+    mode: str = Query(default="add"),
     db: Database = Depends()):
 
+    _check_draft_add_mode(mode)
     source_url, file_name = await _resolve_recordset_wp_download_file(draft_id, db)
 
     # Fetch the bytes to a temp file, hashing as we go -- mirrors importer's
@@ -3682,6 +3765,8 @@ async def add_recordset_draft_file_from_wp(
                 )
                 await importer.create_file_import(file_id, import_event_id, file_name, conn)
 
+                removed = await _apply_draft_add_mode(
+                    conn, draft_id, mode, [(file_name, file_id)])
                 record = await conn.fetch(
                     """
                     insert into recordset_draft_file (recordset_draft_id, file_id, file_name)
@@ -3711,6 +3796,7 @@ async def add_recordset_draft_file_from_wp(
             "file_name": file_name,
             "created": created,
             "added": bool(record),
+            "removed": removed,
             "current_count": count_record[0]["current_count"] if count_record else 0,
         }
     )
@@ -4242,19 +4328,35 @@ async def merge_recordset_draft_series(
 
 
 class SeriesReplaceAllRequest(BaseModel):
-    compare_timepoint_id: int
+    # Exactly one source: an activity timepoint or a recordset release.
+    compare_timepoint_id: Optional[int] = None
     compare_activity_id: Optional[int] = None
+    compare_release_id: Optional[int] = None
 
 
 @router.post("/recordsets/drafts/{draft_id}/content/replace-all")
-# Destructive: replace the entire draft's contents with an activity timepoint's.
+# Destructive: replace the entire draft's contents with an activity timepoint's
+# or a recordset release's.
 async def replace_all_recordset_draft(
     draft_id: int,
     payload: SeriesReplaceAllRequest,
     db: Database = Depends()):
 
     await _require_draft(db, draft_id)
-    await _require_timepoint(db, payload.compare_timepoint_id, payload.compare_activity_id)
+    from_release = payload.compare_release_id is not None
+    if from_release == (payload.compare_timepoint_id is not None):
+        api_error("VALIDATION_ERROR",
+                  "Give exactly one of compare_timepoint_id or compare_release_id", {}, 422)
+    if from_release:
+        rel = await db.fetch_one(
+            "select 1 from recordset_release where recordset_release_id = $1",
+            [payload.compare_release_id],
+        )
+        if not rel:
+            api_error("NOT_FOUND", f"Release {payload.compare_release_id} not found",
+                      {"compare_release_id": payload.compare_release_id}, 404)
+    else:
+        await _require_timepoint(db, payload.compare_timepoint_id, payload.compare_activity_id)
 
     try:
         async with db.transaction() as conn:
@@ -4262,24 +4364,38 @@ async def replace_all_recordset_draft(
                 "delete from recordset_draft_file where recordset_draft_id = $1 returning recordset_draft_file_id",
                 draft_id,
             )
-            added = await conn.fetch(
-                """
-                insert into recordset_draft_file (recordset_draft_id, file_id, file_name)
-                select $1, atf.file_id,
-                       case when f.is_dicom_file then null
-                            else (select fi.file_name from file_import fi
-                                  where fi.file_id = atf.file_id
-                                  order by fi.file_import_time desc nulls last, fi.import_event_id desc
-                                  limit 1)
-                       end
-                from activity_timepoint_file atf
-                join file f on f.file_id = atf.file_id
-                where atf.activity_timepoint_id = $2
-                on conflict (recordset_draft_id, file_id, file_name) do nothing
-                returning recordset_draft_file_id
-                """,
-                draft_id, payload.compare_timepoint_id,
-            )
+            if from_release:
+                # A release's memberships carry their names already.
+                added = await conn.fetch(
+                    """
+                    insert into recordset_draft_file (recordset_draft_id, file_id, file_name)
+                    select $1, file_id, file_name
+                    from recordset_release_file
+                    where recordset_release_id = $2
+                    on conflict (recordset_draft_id, file_id, file_name) do nothing
+                    returning recordset_draft_file_id
+                    """,
+                    draft_id, payload.compare_release_id,
+                )
+            else:
+                added = await conn.fetch(
+                    """
+                    insert into recordset_draft_file (recordset_draft_id, file_id, file_name)
+                    select $1, atf.file_id,
+                           case when f.is_dicom_file then null
+                                else (select fi.file_name from file_import fi
+                                      where fi.file_id = atf.file_id
+                                      order by fi.file_import_time desc nulls last, fi.import_event_id desc
+                                      limit 1)
+                           end
+                    from activity_timepoint_file atf
+                    join file f on f.file_id = atf.file_id
+                    where atf.activity_timepoint_id = $2
+                    on conflict (recordset_draft_id, file_id, file_name) do nothing
+                    returning recordset_draft_file_id
+                    """,
+                    draft_id, payload.compare_timepoint_id,
+                )
     except HTTPException:
         raise
     except Exception as e:
