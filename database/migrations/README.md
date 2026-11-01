@@ -41,6 +41,19 @@ That's the whole process — there is no index file to update. Date prefixes sor
 after the legacy `0001`–`0050` numbers and don't collide when two branches add a
 migration in the same week, the way sequential numbers do.
 
+When more than one migration lands on the same day, number them after the
+date so they sort in the order they must run:
+
+```
+posda_files/20261101_01_qc_unit_file_snapshot.sql
+posda_files/20261101_02_draft_non_dicom_unique_name.sql
+```
+
+Sorted filename order *is* apply order, and without the number two same-day
+files sort by name, which needn't match the order they were written in. It
+matters when one depends on the other; when they don't, numbering costs
+nothing.
+
 Write migrations to run inside a transaction: `./migrate` wraps each one in
 `--single-transaction`, so a failure rolls back both the schema change and its
 ledger row, leaving nothing half-applied. Don't put `BEGIN`/`COMMIT` in the file
