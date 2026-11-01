@@ -8437,7 +8437,8 @@ async def reject_assignment_units(
 
 @router.get("/qc/reviews/{review_id}/files")
 # A non-DICOM review's file units with their names, optionally one slice's.
-# file_id feeds the raw download at /files/{file_id}/data.
+# file_id feeds the raw download at /files/{file_id}/data. status_* come from
+# the history entry that set the current status (e.g. a rejection's reason).
 async def list_review_files(
     review_id: int,
     assignment_id: Optional[int] = Query(default=None),
@@ -8452,9 +8453,17 @@ async def list_review_files(
         rows = await db.fetch(
             f"""
             select u.qc_unit_id, u.assignment_id, u.recordset_draft_file_id,
-                rdf.file_id, rdf.file_name, u.qc_status
+                rdf.file_id, rdf.file_name, u.qc_status,
+                h.notes as status_notes, h.who_updated as status_who, h.when_updated as status_when
             from qc_unit u
             join recordset_draft_file rdf on rdf.recordset_draft_file_id = u.recordset_draft_file_id
+            left join lateral (
+                select notes, who_updated, when_updated
+                from qc_unit_history
+                where qc_unit_id = u.qc_unit_id and new_status = u.qc_status
+                order by history_id desc
+                limit 1
+            ) h on true
             where {" and ".join(where)}
             order by rdf.file_name nulls last, rdf.file_id
             """,
