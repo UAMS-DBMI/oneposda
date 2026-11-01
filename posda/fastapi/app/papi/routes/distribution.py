@@ -7776,9 +7776,27 @@ async def get_qc_review(review_id: int, db: Database = Depends()):
     )
 
     stale_breakdown = None
-    # A DICOM (sampled) review can reconstruct what changed; a non-DICOM review has
-    # no draw to replay, so it just carries the stale flag with no breakdown.
-    if review["review_status"] == "stale" and review["review_type"] != "non_dicom":
+    if review["review_status"] == "stale" and review["review_type"] == "non_dicom":
+        # A non-DICOM review holds every non-DICOM file, matched by content hash.
+        # Removing a file from the draft cascades its unit away, so a changed or
+        # dropped file can't be told apart once stale -- only new hashes show.
+        recon = await db.fetch(
+            """
+            select 0 as changed,
+                count(*) filter (where not exists (
+                    select 1 from qc_unit u
+                    where u.qc_review_id = $2 and u.unit_hash = f.digest
+                )) as would_add,
+                0 as would_drop
+            from recordset_draft_file rdf
+            join file f on f.file_id = rdf.file_id
+            where rdf.recordset_draft_id = $1 and coalesce(f.is_dicom_file, false) = false
+            """,
+            [review["recordset_draft_id"], review_id],
+        )
+        stale_breakdown = dict(recon[0]) if recon else None
+    # A DICOM (sampled) review replays its draw to reconstruct what changed.
+    elif review["review_status"] == "stale":
         is_full = review["review_type"] == "full"
         seed_text = str(review["sample_seed"]) if review["sample_seed"] is not None else "0"
         recon_q = f"""
@@ -7903,6 +7921,7 @@ async def clone_qc_review(
 
     is_resample = mode == "resample"
     is_full = source["review_type"] == "full"
+    is_non_dicom = source["review_type"] == "non_dicom"
     draft_id = source["recordset_draft_id"]
     pct = source["sample_percentage"]
     seed = secrets.randbelow(2_000_000_000) if is_resample else (source["sample_seed"] or 0)
@@ -7937,6 +7956,51 @@ async def clone_qc_review(
         from sel
         left join qc_unit s on s.qc_review_id = $8 and s.series_instance_uid = sel.suid
     """
+    # Non-DICOM: every current non-DICOM file, carrying a source decision when
+    # the content hash is unchanged (a fixed file has a new digest -> pending).
+    file_insert = """
+        insert into qc_unit (qc_review_id, unit_type, recordset_draft_file_id, qc_status, unit_hash, assignment_id)
+        select $1, 'file', rdf.recordset_draft_file_id,
+            case when $5 = true then 'pending'
+                 else coalesce((
+                     select s.qc_status from qc_unit s
+                     where s.qc_review_id = $4 and s.unit_hash = f.digest
+                     order by s.qc_unit_id desc limit 1
+                 ), 'pending') end,
+            f.digest, $2
+        from recordset_draft_file rdf
+        join file f on f.file_id = rdf.file_id
+        where rdf.recordset_draft_id = $3 and coalesce(f.is_dicom_file, false) = false
+    """
+    # Re-record a carried decision's note on the new unit, so a carried
+    # rejection still shows its reason.
+    file_history_carry = """
+        insert into qc_unit_history (qc_unit_id, previous_status, new_status, who_updated, notes)
+        select distinct on (n.qc_unit_id) n.qc_unit_id, null, n.qc_status, $3,
+            'carried from review #' || $2 || coalesce(': ' || h.notes, '')
+        from qc_unit n
+        join qc_unit s on s.qc_review_id = $2 and s.unit_hash = n.unit_hash
+        left join lateral (
+            select notes from qc_unit_history
+            where qc_unit_id = s.qc_unit_id and new_status = s.qc_status
+            order by history_id desc limit 1
+        ) h on true
+        where n.qc_review_id = $1 and n.qc_status <> 'pending'
+        order by n.qc_unit_id, s.qc_unit_id desc
+    """
+    file_reconcile_q = """
+        select
+            count(*) filter (where exists (
+                select 1 from qc_unit s where s.qc_review_id = $2 and s.unit_hash = n.unit_hash
+            )) as carried_unchanged,
+            0 as changed,
+            count(*) filter (where not exists (
+                select 1 from qc_unit s where s.qc_review_id = $2 and s.unit_hash = n.unit_hash
+            )) as added,
+            (select count(*) from qc_unit s where s.qc_review_id = $2
+               and s.unit_hash not in (select unit_hash from qc_unit where qc_review_id = $1)) as dropped
+        from qc_unit n where n.qc_review_id = $1
+    """
     reconcile_q = """
         with newr as (
             select series_instance_uid as suid, unit_hash as series_file_hash from qc_unit where qc_review_id = $1
@@ -7964,8 +8028,15 @@ async def clone_qc_review(
             asg = await conn.fetch(assign_insert, new_id, current_user.user_id)
             assignment = asg[0]
 
-            await conn.execute(series_insert, draft_id, seed_text, is_full, pct,
-                               new_id, assignment["assignment_id"], is_resample, review_id)
+            if is_non_dicom:
+                await conn.execute(file_insert, new_id, assignment["assignment_id"],
+                                   draft_id, review_id, is_resample)
+                if not is_resample:
+                    await conn.execute(file_history_carry, new_id, review_id,
+                                       current_user.user_id)
+            else:
+                await conn.execute(series_insert, draft_id, seed_text, is_full, pct,
+                                   new_id, assignment["assignment_id"], is_resample, review_id)
 
             # The clone supersedes a stale source; left stale it would block
             # the publish gate forever and keep offering itself for re-clone.
@@ -7981,7 +8052,8 @@ async def clone_qc_review(
 
             pop_rows = await conn.fetch(QC_POP_PER_MOD, draft_id)
             samp_rows = await conn.fetch(QC_SAMPLED_PER_MOD, new_id)
-            recon = await conn.fetch(reconcile_q, new_id, review_id)
+            recon = await conn.fetch(
+                file_reconcile_q if is_non_dicom else reconcile_q, new_id, review_id)
     except HTTPException:
         raise
     except Exception as e:
