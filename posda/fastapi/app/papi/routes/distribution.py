@@ -142,8 +142,14 @@ class RecordsetDraftFileItem(BaseModel):
 
 class RecordsetDraftFileAdd(BaseModel):
     files: list[RecordsetDraftFileItem]
-    # add | replace_same_name | replace_all -- see _apply_draft_add_mode.
+    # add | replace_all (empty the draft first).
     mode: str = "add"
+    # replace | skip -- see _plan_non_dicom_names. Omitted + a conflict = 409.
+    on_name_conflict: Optional[str] = None
+
+class RecordsetDraftReleaseMerge(BaseModel):
+    compare_release_id: int
+    on_name_conflict: Optional[str] = None
 
 class RecordsetDraftNameMatches(BaseModel):
     names: list[str]
@@ -3426,45 +3432,110 @@ async def get_recordset_draft_summary(
 
 
 
-DRAFT_ADD_MODES = ("add", "replace_same_name", "replace_all")
+DRAFT_ADD_MODES = ("add", "replace_all")
+NAME_CONFLICT_CHOICES = ("replace", "skip")
+
+# The most recent import name of a file -- how a nameless non-DICOM file is
+# named when it enters a draft.
+_LATEST_IMPORT_NAME = """
+    (select fi.file_name from file_import fi
+     where fi.file_id = {col}
+     order by fi.file_import_time desc nulls last, fi.import_event_id desc
+     limit 1)
+"""
 
 
-def _check_draft_add_mode(mode: str):
+def _check_draft_add_args(mode: str, on_name_conflict: Optional[str]):
     if mode not in DRAFT_ADD_MODES:
         api_error("VALIDATION_ERROR", f"mode must be one of {', '.join(DRAFT_ADD_MODES)}",
                   {"mode": mode}, 422)
+    if on_name_conflict is not None and on_name_conflict not in NAME_CONFLICT_CHOICES:
+        api_error("VALIDATION_ERROR",
+                  f"on_name_conflict must be one of {', '.join(NAME_CONFLICT_CHOICES)}",
+                  {"on_name_conflict": on_name_conflict}, 422)
 
 
-async def _apply_draft_add_mode(conn, draft_id: int, mode: str,
-                                incoming: list[tuple[Optional[str], int]]) -> int:
-    # Make room for an incoming batch of (file_name, file_id) before it is
-    # added. replace_all empties the draft; replace_same_name drops draft files
-    # whose name matches an incoming one but whose content differs (an
-    # identical file is left alone, so it isn't churned). Returns rows removed.
-    if mode == "replace_all":
-        rows = await conn.fetch(
-            "delete from recordset_draft_file where recordset_draft_id = $1 "
-            "returning recordset_draft_file_id",
-            draft_id,
+async def _empty_draft(conn, draft_id: int) -> int:
+    rows = await conn.fetch(
+        "delete from recordset_draft_file where recordset_draft_id = $1 "
+        "returning recordset_draft_file_id",
+        draft_id,
+    )
+    return len(rows)
+
+
+async def _plan_non_dicom_names(conn, draft_id: int, incoming: list[tuple[int, Optional[str]]],
+                                on_name_conflict: Optional[str]
+                                ) -> tuple[list[tuple[int, Optional[str]]], int, list[str]]:
+    # A draft never holds two different non-DICOM files under one name (the
+    # trg_recordset_draft_file_unique_non_dicom_name backstop). For an incoming
+    # batch of (file_id, file_name), resolve each name collision with the draft:
+    # 'replace' removes the draft's file, 'skip' drops the incoming one, and no
+    # choice is a 409 naming the conflicts. An identical file is not a conflict.
+    # Returns (pairs to insert, draft rows removed, names skipped).
+    if not incoming:
+        return incoming, 0, []
+    dicom = {
+        r["file_id"]: r["is_dicom"]
+        for r in await conn.fetch(
+            "select file_id, coalesce(is_dicom_file, false) as is_dicom "
+            "from file where file_id = any($1::int[])",
+            list({fid for fid, _ in incoming}),
         )
-        return len(rows)
-    if mode == "replace_same_name":
-        named = [(name, fid) for name, fid in incoming if name]
-        if not named:
-            return 0
-        rows = await conn.fetch(
-            """
-            delete from recordset_draft_file d
-            using unnest($2::text[], $3::int[]) as n(file_name, file_id)
-            where d.recordset_draft_id = $1
-              and d.file_name = n.file_name
-              and d.file_id <> n.file_id
-            returning d.recordset_draft_file_id
-            """,
-            draft_id, [n for n, _ in named], [f for _, f in named],
+    }
+    by_name: dict[str, set[int]] = {}
+    for fid, name in incoming:
+        if name and not dicom.get(fid, False):
+            by_name.setdefault(name, set()).add(fid)
+    dupes = sorted(n for n, fids in by_name.items() if len(fids) > 1)
+    if dupes:
+        api_error("VALIDATION_ERROR", "Two different files share a name in this batch",
+                  {"names": dupes}, 422)
+    if not by_name:
+        return incoming, 0, []
+
+    rows = await conn.fetch(
+        """
+        select rdf.recordset_draft_file_id, rdf.file_name, rdf.file_id
+        from recordset_draft_file rdf
+        join file f on f.file_id = rdf.file_id
+        where rdf.recordset_draft_id = $1 and rdf.file_name = any($2::text[])
+          and coalesce(f.is_dicom_file, false) = false
+        """,
+        draft_id, list(by_name),
+    )
+    clashing = [r for r in rows if r["file_id"] not in by_name[r["file_name"]]]
+    if not clashing:
+        return incoming, 0, []
+    clash_names = sorted({r["file_name"] for r in clashing})
+    if on_name_conflict is None:
+        api_error("NAME_CONFLICT",
+                  "The draft already has different files with these names",
+                  {"names": clash_names}, 409)
+    if on_name_conflict == "replace":
+        await conn.execute(
+            "delete from recordset_draft_file where recordset_draft_file_id = any($1::int[])",
+            [r["recordset_draft_file_id"] for r in clashing],
         )
-        return len(rows)
-    return 0
+        return incoming, len(clashing), []
+    skip = set(clash_names)
+    return [(fid, n) for fid, n in incoming if n not in skip], 0, clash_names
+
+
+async def _insert_draft_pairs(conn, draft_id: int,
+                              pairs: list[tuple[int, Optional[str]]]) -> list:
+    if not pairs:
+        return []
+    return await conn.fetch(
+        """
+        insert into recordset_draft_file (recordset_draft_id, file_id, file_name)
+        select $1, x.file_id, x.file_name
+        from unnest($2::int[], $3::text[]) as x(file_id, file_name)
+        on conflict (recordset_draft_id, file_id, file_name) do nothing
+        returning recordset_draft_file_id, file_id, file_name
+        """,
+        draft_id, [f for f, _ in pairs], [n for _, n in pairs],
+    )
 
 
 @router.post("/recordsets/drafts/{draft_id}/files/name-matches")
@@ -3476,40 +3547,33 @@ async def recordset_draft_name_matches(
     db: Database = Depends()):
 
     rows = await db.fetch(
-        "select distinct file_name from recordset_draft_file "
-        "where recordset_draft_id = $1 and file_name = any($2::text[])",
+        "select distinct rdf.file_name from recordset_draft_file rdf "
+        "join file f on f.file_id = rdf.file_id "
+        "where rdf.recordset_draft_id = $1 and rdf.file_name = any($2::text[]) "
+        "and coalesce(f.is_dicom_file, false) = false",
         [draft_id, payload.names],
     )
     return item_response({"matches": [r["file_name"] for r in rows]})
 
 
 @router.post("/recordsets/drafts/{draft_id}/files/add")
-# Add files to a draft; `mode` can first replace same-named files or empty it.
+# Add files to a draft. `mode=replace_all` empties it first; a non-DICOM name
+# that collides with a different draft file needs `on_name_conflict`.
 async def add_recordset_draft_files(
     draft_id: int,
     payload: RecordsetDraftFileAdd,
     db: Database = Depends()):
 
-    # $3 = caller-supplied name; when null, fall back to the file's most-recent
-    # file_import name for non-DICOM files (DICOM stays null). The same file_id
-    # may be added more than once under different names -- the unique index is
-    # on (recordset_draft_id, file_id, file_name), so only an exact repeat of a
-    # (file, name) pair is skipped.
-    add_query = """
-            insert into recordset_draft_file (recordset_draft_id, file_id, file_name)
-            values ($1, $2, coalesce($3,
-                (select case when f.is_dicom_file then null
-                             else (select fi.file_name
-                                   from file_import fi
-                                   where fi.file_id = $2
-                                   order by fi.file_import_time desc nulls last, fi.import_event_id desc
-                                   limit 1)
-                        end
-                 from file f where f.file_id = $2)))
-            on conflict (recordset_draft_id, file_id, file_name) do nothing
-            returning recordset_draft_file_id, file_id, file_name;
-        """
-
+    # A nameless item takes its file's most recent import name if non-DICOM
+    # (DICOM stays null). The same file_id may be added under different names --
+    # the unique index is on (recordset_draft_id, file_id, file_name), so only an
+    # exact repeat of a (file, name) pair is skipped.
+    names_query = f"""
+        select f.file_id,
+            case when f.is_dicom_file then null
+                 else {_LATEST_IMPORT_NAME.format(col="f.file_id")} end as import_name
+        from file f where f.file_id = any($1::int[])
+    """
     count_query = """
             select count(*) as current_count
             from recordset_draft_file
@@ -3524,29 +3588,43 @@ async def add_recordset_draft_files(
             422,
         )
 
-    _check_draft_add_mode(payload.mode)
+    _check_draft_add_args(payload.mode, payload.on_name_conflict)
     added = []
     skipped = []
 
     try:
         async with db.transaction() as conn:
-            removed = await _apply_draft_add_mode(
-                conn, draft_id, payload.mode,
-                [(item.file_name, item.file_id) for item in payload.files],
-            )
-            for item in payload.files:
-                record = await conn.fetch(add_query, draft_id, item.file_id, item.file_name)
+            import_names = {
+                r["file_id"]: r["import_name"]
+                for r in await conn.fetch(
+                    names_query, list({item.file_id for item in payload.files}))
+            }
+            incoming = [
+                (item.file_id, item.file_name or import_names.get(item.file_id))
+                for item in payload.files
+            ]
+            removed = await _empty_draft(conn, draft_id) if payload.mode == "replace_all" else 0
+            to_insert, replaced, skipped_names = await _plan_non_dicom_names(
+                conn, draft_id, incoming, payload.on_name_conflict)
+            removed += replaced
+            inserted = {(r["file_id"], r["file_name"]): r
+                        for r in await _insert_draft_pairs(conn, draft_id, to_insert)}
+            for fid, name in incoming:
+                record = inserted.get((fid, name))
                 if record:
                     added.append({
-                        "recordset_draft_file_id": record[0]["recordset_draft_file_id"],
-                        "file_id": record[0]["file_id"],
-                        "file_name": record[0]["file_name"],
+                        "recordset_draft_file_id": record["recordset_draft_file_id"],
+                        "file_id": fid,
+                        "file_name": name,
                     })
                 else:
-                    # Already present under this exact (file_id, file_name).
-                    skipped.append({"file_id": item.file_id, "file_name": item.file_name})
+                    # Already present under this exact (file_id, file_name), or
+                    # skipped for a name conflict.
+                    skipped.append({"file_id": fid, "file_name": name})
 
             count_record = await conn.fetch(count_query, draft_id)
+    except HTTPException:
+        raise
     except Exception as e:
         db_error(
             e,
@@ -3559,6 +3637,7 @@ async def add_recordset_draft_files(
             "draft_id": draft_id,
             "added": added,
             "skipped": skipped,
+            "skipped_names": skipped_names,
             "removed": removed,
             "current_count": count_record[0]["current_count"] if count_record else 0,
         }
@@ -3704,7 +3783,9 @@ async def _resolve_recordset_wp_download_file(draft_id: int, db: Database):
 async def preview_recordset_draft_file_from_wp(draft_id: int, db: Database = Depends()):
     _source_url, file_name = await _resolve_recordset_wp_download_file(draft_id, db)
     match = await db.fetch_one(
-        "select 1 from recordset_draft_file where recordset_draft_id = $1 and file_name = $2 limit 1",
+        "select 1 from recordset_draft_file rdf join file f on f.file_id = rdf.file_id "
+        "where rdf.recordset_draft_id = $1 and rdf.file_name = $2 "
+        "and coalesce(f.is_dicom_file, false) = false limit 1",
         [draft_id, file_name],
     )
     return item_response({"file_name": file_name, "same_name_in_draft": bool(match)})
@@ -3712,13 +3793,15 @@ async def preview_recordset_draft_file_from_wp(draft_id: int, db: Database = Dep
 
 @router.post("/recordsets/drafts/{draft_id}/files/from-wp")
 # Pull the file attached to the recordset's WP download object into the draft;
-# `mode` can first replace a same-named file or empty the draft.
+# `mode=replace_all` empties it first, and a same-named different file needs
+# `on_name_conflict` (replace | skip).
 async def add_recordset_draft_file_from_wp(
     draft_id: int,
     mode: str = Query(default="add"),
+    on_name_conflict: Optional[str] = Query(default=None),
     db: Database = Depends()):
 
-    _check_draft_add_mode(mode)
+    _check_draft_add_args(mode, on_name_conflict)
     source_url, file_name = await _resolve_recordset_wp_download_file(draft_id, db)
 
     # Fetch the bytes to a temp file, hashing as we go -- mirrors importer's
@@ -3765,17 +3848,11 @@ async def add_recordset_draft_file_from_wp(
                 )
                 await importer.create_file_import(file_id, import_event_id, file_name, conn)
 
-                removed = await _apply_draft_add_mode(
-                    conn, draft_id, mode, [(file_name, file_id)])
-                record = await conn.fetch(
-                    """
-                    insert into recordset_draft_file (recordset_draft_id, file_id, file_name)
-                    values ($1, $2, $3)
-                    on conflict (recordset_draft_id, file_id, file_name) do nothing
-                    returning recordset_draft_file_id, file_id, file_name
-                    """,
-                    draft_id, file_id, file_name,
-                )
+                removed = await _empty_draft(conn, draft_id) if mode == "replace_all" else 0
+                to_insert, replaced, skipped_names = await _plan_non_dicom_names(
+                    conn, draft_id, [(file_id, file_name)], on_name_conflict)
+                removed += replaced
+                record = await _insert_draft_pairs(conn, draft_id, to_insert)
                 count_record = await conn.fetch(
                     "select count(*) as current_count from recordset_draft_file where recordset_draft_id = $1",
                     draft_id,
@@ -3797,6 +3874,7 @@ async def add_recordset_draft_file_from_wp(
             "created": created,
             "added": bool(record),
             "removed": removed,
+            "skipped_names": skipped_names,
             "current_count": count_record[0]["current_count"] if count_record else 0,
         }
     )
@@ -3826,6 +3904,8 @@ class SeriesApplyRequest(BaseModel):
     entries: list[SeriesApplyEntry] = []
     # Also pull the activity's non-DICOM files not already in the draft.
     include_non_dicom: bool = False
+    # replace | skip for a non-DICOM name already used by a different file.
+    on_name_conflict: Optional[str] = None
 
 
 # Insert one activity series' files into the draft (DICOM -> null name). Shared
@@ -3855,20 +3935,32 @@ _DELETE_SERIES_FILES_Q = """
     returning recordset_draft_file_id
 """
 
-_INSERT_NON_DICOM_Q = """
-    insert into recordset_draft_file (recordset_draft_id, file_id, file_name)
-    select $1, atf.file_id,
-           (select fi.file_name
-            from file_import fi
-            where fi.file_id = atf.file_id
-            order by fi.file_import_time desc nulls last, fi.import_event_id desc
-            limit 1)
-    from activity_timepoint_file atf
-    join file f on f.file_id = atf.file_id
-    where atf.activity_timepoint_id = $2 and coalesce(f.is_dicom_file, false) = false
-    on conflict (recordset_draft_id, file_id, file_name) do nothing
-    returning recordset_draft_file_id
+# A timepoint's non-DICOM files, named by their latest import, that the draft
+# doesn't already hold under that (file, name).
+_TIMEPOINT_NON_DICOM_Q = f"""
+    select x.file_id, x.file_name from (
+        select atf.file_id, {_LATEST_IMPORT_NAME.format(col="atf.file_id")} as file_name
+        from activity_timepoint_file atf
+        join file f on f.file_id = atf.file_id
+        where atf.activity_timepoint_id = $2 and coalesce(f.is_dicom_file, false) = false
+    ) x
+    where not exists (
+        select 1 from recordset_draft_file rdf
+        where rdf.recordset_draft_id = $1 and rdf.file_id = x.file_id
+          and rdf.file_name is not distinct from x.file_name)
 """
+
+
+async def _add_timepoint_non_dicom(conn, draft_id: int, timepoint_id: int,
+                                   on_name_conflict: Optional[str]
+                                   ) -> tuple[int, int, list[str]]:
+    # Bring a timepoint's non-DICOM files into the draft, resolving name
+    # collisions like every other source. Returns (added, removed, skipped).
+    rows = await conn.fetch(_TIMEPOINT_NON_DICOM_Q, draft_id, timepoint_id)
+    to_insert, removed, skipped = await _plan_non_dicom_names(
+        conn, draft_id, [(r["file_id"], r["file_name"]) for r in rows], on_name_conflict)
+    added = await _insert_draft_pairs(conn, draft_id, to_insert)
+    return len(added), removed, skipped
 
 
 @router.post("/recordsets/drafts/{draft_id}/series/apply")
@@ -3922,11 +4014,13 @@ async def apply_recordset_draft_series(
                 404,
             )
 
+    _check_draft_add_args("add", payload.on_name_conflict)
     series_replaced = 0
     series_added = 0
     files_removed = 0
     files_added = 0
     non_dicom_added = 0
+    non_dicom_skipped: list[str] = []
 
     try:
         async with db.transaction() as conn:
@@ -3949,10 +4043,9 @@ async def apply_recordset_draft_series(
                 files_added += len(added)
 
             if payload.include_non_dicom:
-                nd = await conn.fetch(
-                    _INSERT_NON_DICOM_Q, draft_id, payload.compare_timepoint_id
-                )
-                non_dicom_added = len(nd)
+                non_dicom_added, nd_removed, non_dicom_skipped = await _add_timepoint_non_dicom(
+                    conn, draft_id, payload.compare_timepoint_id, payload.on_name_conflict)
+                files_removed += nd_removed
 
             count_record = await conn.fetch(
                 "select count(*) as current_count from recordset_draft_file where recordset_draft_id = $1",
@@ -3974,6 +4067,7 @@ async def apply_recordset_draft_series(
         "files_removed": files_removed,
         "files_added": files_added,
         "non_dicom_added": non_dicom_added,
+        "non_dicom_skipped_names": non_dicom_skipped,
         "current_count": count_record[0]["current_count"] if count_record else 0,
     })
 
@@ -4122,7 +4216,18 @@ async def get_recordset_draft_series_summary(
                 where atf.activity_timepoint_id = $2 and coalesce(f.is_dicom_file, false) = false
                 except
                 select rdf.file_id from recordset_draft_file rdf where rdf.recordset_draft_id = $1
-            ) x) as non_dicom_to_add
+            ) x) as non_dicom_to_add,
+            (select count(distinct x.file_name) from (
+                select atf.file_id, {_LATEST_IMPORT_NAME.format(col="atf.file_id")} as file_name
+                from activity_timepoint_file atf
+                join file f on f.file_id = atf.file_id
+                where atf.activity_timepoint_id = $2 and coalesce(f.is_dicom_file, false) = false
+            ) x
+            join recordset_draft_file rdf
+              on rdf.recordset_draft_id = $1 and rdf.file_name = x.file_name
+             and rdf.file_id <> x.file_id
+            join file df on df.file_id = rdf.file_id and coalesce(df.is_dicom_file, false) = false
+            ) as non_dicom_name_conflicts
     """
     try:
         row = await db.fetch_one(q, [draft_id, compare_timepoint_id])
@@ -4263,6 +4368,8 @@ class SeriesMergeRequest(BaseModel):
     add_new: bool = True
     update_matching: bool = True
     include_non_dicom: bool = False
+    # replace | skip for a non-DICOM name already used by a different file.
+    on_name_conflict: Optional[str] = None
 
 
 @router.post("/recordsets/drafts/{draft_id}/series/merge")
@@ -4280,8 +4387,10 @@ async def merge_recordset_draft_series(
     await _require_draft(db, draft_id)
     await _require_timepoint(db, payload.compare_timepoint_id, payload.compare_activity_id)
 
+    _check_draft_add_args("add", payload.on_name_conflict)
     tp = payload.compare_timepoint_id
     series_updated = series_added = files_removed = files_added = non_dicom_added = 0
+    non_dicom_skipped: list[str] = []
 
     try:
         async with db.transaction() as conn:
@@ -4306,8 +4415,9 @@ async def merge_recordset_draft_series(
                 series_added = len(new)
 
             if payload.include_non_dicom:
-                nd = await conn.fetch(_INSERT_NON_DICOM_Q, draft_id, tp)
-                non_dicom_added = len(nd)
+                non_dicom_added, nd_removed, non_dicom_skipped = await _add_timepoint_non_dicom(
+                    conn, draft_id, tp, payload.on_name_conflict)
+                files_removed += nd_removed
 
             current = (await conn.fetch(
                 "select count(*) as c from recordset_draft_file where recordset_draft_id = $1", draft_id))[0]["c"]
@@ -4323,7 +4433,83 @@ async def merge_recordset_draft_series(
         "files_removed": files_removed,
         "files_added": files_added,
         "non_dicom_added": non_dicom_added,
+        "non_dicom_skipped_names": non_dicom_skipped,
         "current_count": current,
+    })
+
+
+@router.get("/recordsets/drafts/{draft_id}/content/merge-release/preview")
+# Counts for bringing a release into the draft: what a merge would add, what is
+# already in, how many non-DICOM names collide, and both totals for replace-all.
+async def preview_release_merge(draft_id: int, compare_release_id: int,
+                                db: Database = Depends()):
+    row = await db.fetch_one(
+        """
+        with rel as (
+            select rrf.file_id, rrf.file_name, coalesce(f.is_dicom_file, false) as is_dicom
+            from recordset_release_file rrf join file f on f.file_id = rrf.file_id
+            where rrf.recordset_release_id = $2
+        ),
+        dr as (
+            select rdf.file_id, rdf.file_name, coalesce(f.is_dicom_file, false) as is_dicom
+            from recordset_draft_file rdf join file f on f.file_id = rdf.file_id
+            where rdf.recordset_draft_id = $1
+        ),
+        missing as (
+            select * from rel r
+            where not exists (select 1 from dr d where d.file_id = r.file_id
+                              and d.file_name is not distinct from r.file_name)
+        )
+        select
+            (select count(*) from missing) as to_add,
+            (select count(*) from rel) - (select count(*) from missing) as already_in,
+            (select count(distinct m.file_name) from missing m
+               where not m.is_dicom and m.file_name is not null
+                 and exists (select 1 from dr d where not d.is_dicom
+                             and d.file_name = m.file_name and d.file_id <> m.file_id))
+                as name_conflicts,
+            (select count(*) from rel) as release_total,
+            (select count(*) from dr) as draft_total
+        """,
+        [draft_id, compare_release_id],
+    )
+    return item_response(dict(row))
+
+
+@router.post("/recordsets/drafts/{draft_id}/content/merge-release")
+# Merge a release into the draft: add its memberships (with the release's
+# names) that the draft lacks. Non-DICOM name collisions need on_name_conflict.
+async def merge_release_into_draft(draft_id: int, payload: RecordsetDraftReleaseMerge,
+                                   db: Database = Depends()):
+    await _require_draft(db, draft_id)
+    _check_draft_add_args("add", payload.on_name_conflict)
+    try:
+        async with db.transaction() as conn:
+            missing = await conn.fetch(
+                """
+                select rrf.file_id, rrf.file_name from recordset_release_file rrf
+                where rrf.recordset_release_id = $2
+                  and not exists (
+                      select 1 from recordset_draft_file rdf
+                      where rdf.recordset_draft_id = $1 and rdf.file_id = rrf.file_id
+                        and rdf.file_name is not distinct from rrf.file_name)
+                """,
+                draft_id, payload.compare_release_id,
+            )
+            to_insert, removed, skipped_names = await _plan_non_dicom_names(
+                conn, draft_id, [(r["file_id"], r["file_name"]) for r in missing],
+                payload.on_name_conflict)
+            added = await _insert_draft_pairs(conn, draft_id, to_insert)
+    except HTTPException:
+        raise
+    except Exception as e:
+        db_error(e, operation="merging release into recordset draft",
+                 context={"draft_id": draft_id})
+    return item_response({
+        "draft_id": draft_id,
+        "files_added": len(added),
+        "files_removed": removed,
+        "skipped_names": skipped_names,
     })
 
 
