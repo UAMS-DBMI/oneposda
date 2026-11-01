@@ -7610,6 +7610,23 @@ def qc_modality_summary(pop_rows, samp_rows):
     ]
 
 
+# A file's identity is its name (content-identical files may differ only by
+# name); a nameless one falls back to its file_id. Same identity with a new
+# hash = changed, the series rule with the name in place of the UID.
+QC_FILE_KEY = "coalesce({t}.file_name, 'file:' || {t}.file_id)"
+
+# Compare two file sets, `a` (the old: a review's units) against `b` (the new:
+# the draft's files, or a clone's units), each a CTE of (k, h) = key, hash.
+QC_FILE_COMPARE = """
+    select
+        count(*) filter (where a.k is not null and b.k is not null and a.h = b.h) as unchanged,
+        count(*) filter (where a.k is not null and b.k is not null and a.h <> b.h) as changed,
+        count(*) filter (where a.k is null) as added,
+        count(*) filter (where b.k is null) as dropped
+    from a full outer join b on a.k = b.k
+"""
+
+
 QC_POP_PER_MOD = """
     select coalesce(modality, '(none)') as modality, count(*) as population_count
     from (
@@ -7702,8 +7719,8 @@ async def create_qc_review(
     """
     # ... or one qc_unit per non-DICOM file (all of them; hashed for staleness).
     file_insert = """
-        insert into qc_unit (qc_review_id, unit_type, recordset_draft_file_id, qc_status, unit_hash, assignment_id)
-        select $1, 'file', rdf.recordset_draft_file_id, 'pending', f.digest, $2
+        insert into qc_unit (qc_review_id, unit_type, file_id, file_name, qc_status, unit_hash, assignment_id)
+        select $1, 'file', rdf.file_id, rdf.file_name, 'pending', f.digest, $2
         from recordset_draft_file rdf
         join file f on f.file_id = rdf.file_id
         where rdf.recordset_draft_id = $3 and coalesce(f.is_dicom_file, false) = false
@@ -7893,20 +7910,22 @@ async def get_qc_review(review_id: int, db: Database = Depends()):
 
     stale_breakdown = None
     if review["review_status"] == "stale" and review["review_type"] == "non_dicom":
-        # A non-DICOM review holds every non-DICOM file, matched by content hash.
-        # Removing a file from the draft cascades its unit away, so a changed or
-        # dropped file can't be told apart once stale -- only new hashes show.
+        # A non-DICOM review holds every non-DICOM file: compare its units with
+        # the draft's current non-DICOM files.
         recon = await db.fetch(
-            """
-            select 0 as changed,
-                count(*) filter (where not exists (
-                    select 1 from qc_unit u
-                    where u.qc_review_id = $2 and u.unit_hash = f.digest
-                )) as would_add,
-                0 as would_drop
-            from recordset_draft_file rdf
-            join file f on f.file_id = rdf.file_id
-            where rdf.recordset_draft_id = $1 and coalesce(f.is_dicom_file, false) = false
+            f"""
+            with a as (
+                select {QC_FILE_KEY.format(t="u")} as k, u.unit_hash as h
+                from qc_unit u where u.qc_review_id = $2
+            ),
+            b as (
+                select {QC_FILE_KEY.format(t="rdf")} as k, f.digest as h
+                from recordset_draft_file rdf
+                join file f on f.file_id = rdf.file_id
+                where rdf.recordset_draft_id = $1 and coalesce(f.is_dicom_file, false) = false
+            ),
+            cmp as ({QC_FILE_COMPARE})
+            select changed, added as would_add, dropped as would_drop from cmp
             """,
             [review["recordset_draft_id"], review_id],
         )
@@ -8075,8 +8094,8 @@ async def clone_qc_review(
     # Non-DICOM: every current non-DICOM file, carrying a source decision when
     # the content hash is unchanged (a fixed file has a new digest -> pending).
     file_insert = """
-        insert into qc_unit (qc_review_id, unit_type, recordset_draft_file_id, qc_status, unit_hash, assignment_id)
-        select $1, 'file', rdf.recordset_draft_file_id,
+        insert into qc_unit (qc_review_id, unit_type, file_id, file_name, qc_status, unit_hash, assignment_id)
+        select $1, 'file', rdf.file_id, rdf.file_name,
             case when $5 = true then 'pending'
                  else coalesce((
                      select s.qc_status from qc_unit s
@@ -8104,18 +8123,17 @@ async def clone_qc_review(
         where n.qc_review_id = $1 and n.qc_status <> 'pending'
         order by n.qc_unit_id, s.qc_unit_id desc
     """
-    file_reconcile_q = """
-        select
-            count(*) filter (where exists (
-                select 1 from qc_unit s where s.qc_review_id = $2 and s.unit_hash = n.unit_hash
-            )) as carried_unchanged,
-            0 as changed,
-            count(*) filter (where not exists (
-                select 1 from qc_unit s where s.qc_review_id = $2 and s.unit_hash = n.unit_hash
-            )) as added,
-            (select count(*) from qc_unit s where s.qc_review_id = $2
-               and s.unit_hash not in (select unit_hash from qc_unit where qc_review_id = $1)) as dropped
-        from qc_unit n where n.qc_review_id = $1
+    file_reconcile_q = f"""
+        with a as (
+            select {QC_FILE_KEY.format(t="s")} as k, s.unit_hash as h
+            from qc_unit s where s.qc_review_id = $2
+        ),
+        b as (
+            select {QC_FILE_KEY.format(t="n")} as k, n.unit_hash as h
+            from qc_unit n where n.qc_review_id = $1
+        ),
+        cmp as ({QC_FILE_COMPARE})
+        select unchanged as carried_unchanged, changed, added, dropped from cmp
     """
     reconcile_q = """
         with newr as (
@@ -8627,6 +8645,7 @@ async def reject_assignment_units(
 # A non-DICOM review's file units with their names, optionally one slice's.
 # file_id feeds the raw download at /files/{file_id}/data. status_* come from
 # the history entry that set the current status (e.g. a rejection's reason).
+# in_draft is false once the file was removed or replaced in the draft.
 async def list_review_files(
     review_id: int,
     assignment_id: Optional[int] = Query(default=None),
@@ -8640,11 +8659,16 @@ async def list_review_files(
     try:
         rows = await db.fetch(
             f"""
-            select u.qc_unit_id, u.assignment_id, u.recordset_draft_file_id,
-                rdf.file_id, rdf.file_name, u.qc_status,
-                h.notes as status_notes, h.who_updated as status_who, h.when_updated as status_when
+            select u.qc_unit_id, u.assignment_id, u.file_id, u.file_name, u.qc_status,
+                h.notes as status_notes, h.who_updated as status_who, h.when_updated as status_when,
+                exists (
+                    select 1 from recordset_draft_file rdf
+                    where rdf.recordset_draft_id = r.recordset_draft_id
+                      and rdf.file_id = u.file_id
+                      and rdf.file_name is not distinct from u.file_name
+                ) as in_draft
             from qc_unit u
-            join recordset_draft_file rdf on rdf.recordset_draft_file_id = u.recordset_draft_file_id
+            join qc_review r on r.qc_review_id = u.qc_review_id
             left join lateral (
                 select notes, who_updated, when_updated
                 from qc_unit_history
@@ -8653,7 +8677,7 @@ async def list_review_files(
                 limit 1
             ) h on true
             where {" and ".join(where)}
-            order by rdf.file_name nulls last, rdf.file_id
+            order by u.file_name nulls last, u.file_id
             """,
             values)
     except Exception as e:
