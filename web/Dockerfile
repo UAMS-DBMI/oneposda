@@ -1,29 +1,33 @@
-FROM node:16-alpine AS dashboard-builder
+# All builder stages only emit static files, so they run on the build host's
+# native platform ($BUILDPLATFORM) regardless of the target platform. Only the
+# final nginx stage is per-platform, and it is nothing but COPYs, which makes
+# a multi-platform build (make push-multiplatform) cheap for this image.
+FROM --platform=$BUILDPLATFORM node:16-alpine AS dashboard-builder
 RUN apk --update add make
 COPY dashboard /dashboard
 RUN cd /dashboard && \
     make
 
-FROM node:16-alpine AS quince-builder
+FROM --platform=$BUILDPLATFORM node:16-alpine AS quince-builder
 RUN apk --update add make
 COPY quince /quince
 RUN cd /quince && \
 	make
 
-FROM node:16-alpine AS roots-builder
+FROM --platform=$BUILDPLATFORM node:16-alpine AS roots-builder
 RUN apk --update add make
 COPY dicom-root /roots
 RUN cd /roots && \
 	make
 
-FROM node:16-alpine AS kohlrabi-builder
+FROM --platform=$BUILDPLATFORM node:16-alpine AS kohlrabi-builder
 RUN apk --update add make
 COPY Kohlrabi /kohlrabi
 RUN cd /kohlrabi && \
   make
 
-#FROM node:16-alpine AS mirabelle-builder
-FROM oven/bun:1.3-alpine AS mirabelle-builder
+#FROM --platform=$BUILDPLATFORM node:16-alpine AS mirabelle-builder
+FROM --platform=$BUILDPLATFORM oven/bun:1.3-alpine AS mirabelle-builder
 RUN apk --update add make
 # receive commit from env and re-export to container
 ARG MIRABELLE_COMMIT=unknown
@@ -32,7 +36,7 @@ COPY mirabelle /mirabelle
 RUN cd /mirabelle && \
   make build
 
-FROM oven/bun:1.3-alpine AS release-module-builder
+FROM --platform=$BUILDPLATFORM oven/bun:1.3-alpine AS release-module-builder
 RUN apk --update add make
 COPY posda-release-module/ /posda-release-module
 RUN cd /posda-release-module && \
