@@ -390,3 +390,25 @@ def test_write_launch_csv_uses_csv_cells_when_present(tmp_path):
         ["from_sop", "to_sop", "Operation", "notify"],
         ["1", "2", "Pairs", "n"],
     ]
+
+
+def test_launch_honours_a_queue_override(tmp_path):
+    conn, rec = FakeConn(), Recorder()
+    plan = L.LaunchPlan(
+        operation=HELLO_OP,
+        params={"activity_id": "1", "notify": "n"},
+        input_lines=[],
+        user="tester",
+        queue_name_override="adhoc_big_job",
+    )
+    assert plan.queue_name == "adhoc_big_job"
+    result = L.launch(
+        conn,
+        plan,
+        import_file=rec.import_file,
+        push_work=rec.push_work,
+        temp_dir=tmp_path,
+    )
+    assert conn.executed[2][1] == [22, 102, "adhoc_big_job"]
+    assert rec.pushed == [("adhoc_big_job", 33)]
+    assert result.queue_name == "adhoc_big_job"

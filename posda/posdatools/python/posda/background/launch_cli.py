@@ -99,6 +99,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--tag", metavar="TAG", help="with --list: only operations carrying TAG"
     )
     parser.add_argument(
+        "--queue",
+        metavar="NAME",
+        help="queue the work on this Redis list / background_queue_name "
+        "instead of the operation's work_queue_<priority> (for ad hoc queues)",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="validate and show what would be queued without queuing it",
@@ -215,7 +221,7 @@ def read_csv_argument(
 def plan_as_dict(plan: LaunchPlan) -> dict[str, Any]:
     return {
         "operation_name": plan.operation.operation_name,
-        "queue_name": plan.operation.queue_name,
+        "queue_name": plan.queue_name,
         "invoking_user": plan.user,
         "parameters": plan.params,
         "command_line": plan.expanded_command,
@@ -227,7 +233,7 @@ def plan_as_dict(plan: LaunchPlan) -> dict[str, Any]:
 def format_plan(plan: LaunchPlan) -> str:
     lines = [
         f"Operation:   {plan.operation.operation_name}",
-        f"Queue:       {plan.operation.queue_name}",
+        f"Queue:       {plan.queue_name}",
         f"User:        {plan.user}",
         f"Command:     {plan.expanded_command}",
         f"Input lines: {len(plan.input_lines)}",
@@ -342,6 +348,7 @@ def run_operation(args: argparse.Namespace, params: Mapping[str, str]) -> int:
         input_lines=input_lines,
         user=args.invoking_user,
         input_cells=input_cells,
+        queue_name_override=args.queue,
     )
     if args.dry_run:
         emit(args, format_plan(plan), plan_as_dict(plan))

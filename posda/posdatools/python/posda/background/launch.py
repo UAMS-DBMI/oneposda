@@ -326,6 +326,13 @@ class LaunchPlan:
     #: field values per input line when they came from a CSV; otherwise the
     #: launch record recovers them by inverting the input line format
     input_cells: list[list[str]] | None = None
+    #: the full Redis list / work.background_queue_name to use instead of the
+    #: operation's work_queue_<priority>, for ad hoc queues
+    queue_name_override: str | None = None
+
+    @property
+    def queue_name(self) -> str:
+        return self.queue_name_override or self.operation.queue_name
 
     @property
     def expanded_command(self) -> str:
@@ -411,7 +418,7 @@ def launch(
         write_input_file(plan, directory), import_file, INPUT_FILE_COMMENT
     )
 
-    queue_name = plan.operation.queue_name
+    queue_name = plan.queue_name
     ids = _record_launch(conn, plan, spreadsheet_file_id, input_file_id, queue_name)
     spreadsheet_uploaded_id, invocation_id, work_id = ids
 

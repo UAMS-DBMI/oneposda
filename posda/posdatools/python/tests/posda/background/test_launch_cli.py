@@ -28,7 +28,7 @@ def stack(monkeypatch):
     def fake_launch(conn, plan, *, import_file, push_work):
         calls["launched"].append(plan)
         return L.LaunchResult(
-            5, 6, plan.operation.queue_name, 1, 2, 3, plan.expanded_command
+            5, 6, plan.queue_name, 1, 2, 3, plan.expanded_command
         )
 
     monkeypatch.setattr(cli, "launch", fake_launch)
@@ -212,3 +212,37 @@ def test_stdin_and_csv_are_exclusive(stack):
     with pytest.raises(SystemExit) as exc:
         cli.main(["HelloWorldPython", "--stdin", "a", "--csv", "b"])
     assert exc.value.code == 2
+
+
+def test_queue_override_reaches_the_plan(stack, capsys):
+    rc = cli.main(
+        [
+            "HelloWorldPython",
+            "-p",
+            "activity_id=1",
+            "-p",
+            "notify=n",
+            "--queue",
+            "adhoc_x",
+            "--json",
+        ]
+    )
+    assert rc == 0
+    assert stack["launched"][0].queue_name == "adhoc_x"
+    assert json.loads(capsys.readouterr().out)["queue_name"] == "adhoc_x"
+
+
+def test_dry_run_shows_the_queue_override(stack, capsys):
+    cli.main(
+        [
+            "HelloWorldPython",
+            "-p",
+            "activity_id=1",
+            "-p",
+            "notify=n",
+            "--queue",
+            "adhoc_x",
+            "--dry-run",
+        ]
+    )
+    assert "Queue:       adhoc_x" in capsys.readouterr().out
