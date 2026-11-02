@@ -180,7 +180,7 @@ def main(background_id, activity_id, notify, collection_name, visibility, site_n
     background.daemonize()
 
     print(f"Beginning import of collection {collection_name} from Public.")
-    import_comment = f"Importing {collection_name} from public (in-place)"
+    import_comment = f"In-place from public: {collection_name}//{site_name} [{background_id}]"
     import_event_id = create_import_event(import_comment)
     print(f"Import event id: {import_event_id}")
 
