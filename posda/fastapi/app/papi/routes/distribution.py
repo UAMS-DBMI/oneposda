@@ -3762,8 +3762,9 @@ async def remove_recordset_draft_files(
 
 async def _resolve_recordset_wp_download_file(draft_id: int, db: Database):
     """Walk draft -> recordset -> linked WP download object -> download_file
-    media -> source_url. Returns (source_url, file_name). Raises api_error with
-    a specific 4xx at whichever link in the chain is missing."""
+    media -> source_url. Returns (source_url, file_name, media) -- the media
+    item itself, so a pull can record which attachment the file came from.
+    Raises api_error with a specific 4xx at whichever link is missing."""
     draft = await db.fetch_one(
         "select recordset_id from recordset_draft where recordset_draft_id = $1",
         [draft_id],
@@ -3832,14 +3833,14 @@ async def _resolve_recordset_wp_download_file(draft_id: int, db: Database):
         )
 
     # The media's stored filename is the tail of its source_url.
-    return source_url, os.path.basename(source_url)
+    return source_url, os.path.basename(source_url), media
 
 
 @router.get("/recordsets/drafts/{draft_id}/files/from-wp/preview")
 # The WP download's filename and whether the draft already holds that name --
 # sizes the "replace the same-name file" option before a pull.
 async def preview_recordset_draft_file_from_wp(draft_id: int, db: Database = Depends()):
-    _source_url, file_name = await _resolve_recordset_wp_download_file(draft_id, db)
+    _source_url, file_name, _media = await _resolve_recordset_wp_download_file(draft_id, db)
     match = await db.fetch_one(
         "select 1 from recordset_draft_file rdf join file f on f.file_id = rdf.file_id "
         "where rdf.recordset_draft_id = $1 and rdf.file_name = $2 "
@@ -3860,7 +3861,7 @@ async def add_recordset_draft_file_from_wp(
     db: Database = Depends()):
 
     _check_draft_add_args(mode, on_name_conflict)
-    source_url, file_name = await _resolve_recordset_wp_download_file(draft_id, db)
+    source_url, file_name, media = await _resolve_recordset_wp_download_file(draft_id, db)
 
     # Fetch the bytes to a temp file, hashing as we go -- mirrors importer's
     # /import/file so a WP-sourced file imports and processes identically.
@@ -3905,6 +3906,29 @@ async def add_recordset_draft_file_from_wp(
                     conn, "recordset draft WP import", origin=source_url
                 )
                 await importer.create_file_import(file_id, import_event_id, file_name, conn)
+
+                # Record that this file *is* that attachment, so a WordPress
+                # transfer of the unchanged file reuses it (ensure_wp_media
+                # dedups through this map) instead of uploading a copy. Posda
+                # is content-addressed, so file_id <-> media is one-to-one;
+                # clear either side's stale mapping before writing it.
+                await conn.execute(
+                    """
+                    delete from wp_object_map
+                    where (posda_object_type = 'file' and posda_object_id = $1)
+                       or (wp_object_type = 'media' and wp_object_id = $2)
+                    """,
+                    file_id, media["id"],
+                )
+                await conn.execute(
+                    """
+                    insert into wp_object_map
+                        (posda_object_type, posda_object_id, wp_object_type, wp_object_id,
+                         wp_edit_url, wp_view_url, when_synced)
+                    values ('file', $1, 'media', $2, $3, $4, now())
+                    """,
+                    file_id, media["id"], wp_edit_url(media["id"]), media.get("link"),
+                )
 
                 removed = await _empty_draft(conn, draft_id) if mode == "replace_all" else 0
                 to_insert, replaced, skipped_names = await _plan_non_dicom_names(
