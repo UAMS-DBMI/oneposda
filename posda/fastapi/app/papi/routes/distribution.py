@@ -6889,6 +6889,8 @@ async def get_recordset_releases_by_transfer(transfer_id: int, db: Database = De
           rr.recordset_release_id,
           r.recordset_id,
           r.recordset_name,
+          d.dataset_name,
+          td.destination_abbr,
           rr.release_number,
           tr.download_file_id,
           df.downloadable_file_id,
@@ -6901,6 +6903,10 @@ async def get_recordset_releases_by_transfer(transfer_id: int, db: Database = De
             transfer_recordset tr
             join recordset_release rr on tr.recordset_release_id = rr.recordset_release_id
             join recordset r on rr.recordset_id = r.recordset_id
+            join dataset d on d.dataset_id = r.dataset_id
+            join dataset_release_transfer drt
+                on drt.dataset_release_transfer_id = tr.dataset_release_transfer_id
+            join transfer_destination td on td.destination_id = drt.destination_id
             join recordset_type rt on r.recordset_type_id = rt.recordset_type_id
             left join downloadable_file df on df.file_id = tr.download_file_id
             left join lateral (
@@ -6921,7 +6927,17 @@ async def get_recordset_releases_by_transfer(transfer_id: int, db: Database = De
         """
     try:
         records = await db.fetch(query, [transfer_id])
-        return list_response(records)
+        return list_response([
+            {
+                **dict(record),
+                "manifest_file_name": retriever_manifest_filename(
+                    record["dataset_name"],
+                    record["recordset_name"],
+                    record["destination_abbr"],
+                ),
+            }
+            for record in records
+        ])
     except Exception as e:
         db_error(
             e,
@@ -6959,6 +6975,18 @@ NBIA_DOWNLOAD_SERVER_URL = os.getenv(
 
 def manifest_format(destination_abbr: str) -> dict:
     return MANIFEST_FORMATS.get(destination_abbr, GENERAL_MANIFEST_FORMAT)
+
+
+def retriever_manifest_filename(
+    dataset_name: str, recordset_name: str, destination_abbr: str
+) -> str:
+    """One name wherever the file is saved from, Posda or the public page, so it
+    says which collection it came from. No version: the same bytes reuse one
+    attachment across releases, so a version here could go out of date. WP renames
+    colliding uploads (foo.csv -> foo-1.csv); dedup is by file_id, not this name."""
+    extension = manifest_format(destination_abbr)["extension"]
+    slug = re.sub(r"[^a-z0-9]+", "-", f"{dataset_name} {recordset_name}".lower())
+    return f"{slug.strip('-')}-retriever-manifest.{extension}"
 
 
 def build_manifest(destination_abbr: str, series_uids: list, recordset_release_id: int) -> bytes:
@@ -7244,7 +7272,7 @@ async def attach_transfer_recordset_manifest(
     manifest_q = """\
         select
             tr.download_file_id,
-            f.digest,
+            d.dataset_name,
             r.recordset_id,
             r.recordset_name,
             td.destination_abbr,
@@ -7255,7 +7283,7 @@ async def attach_transfer_recordset_manifest(
         join transfer_destination td using (destination_id)
         join recordset_release rr on rr.recordset_release_id = tr.recordset_release_id
         join recordset r on r.recordset_id = rr.recordset_id
-        left join "file" f on f.file_id = tr.download_file_id
+        join dataset d on d.dataset_id = r.dataset_id
         left join wp_object_map m
                on m.posda_object_type = 'recordset'
               and m.posda_object_id = r.recordset_id
@@ -7298,13 +7326,10 @@ async def attach_transfer_recordset_manifest(
             422,
         )
 
-    # Digest in the filename so the media library is legible to a human and two
-    # different manifests never collide on name. Not the dedup mechanism -- WP
-    # renames colliding uploads (foo.csv -> foo-1.csv), so a filename is not
-    # something to match on.
     fmt = manifest_format(row["destination_abbr"])
-    slug = re.sub(r"[^a-z0-9]+", "-", row["recordset_name"].lower()).strip("-")
-    filename = f"{slug}-manifest-{row['digest'][:8]}.{fmt['extension']}"
+    filename = retriever_manifest_filename(
+        row["dataset_name"], row["recordset_name"], row["destination_abbr"]
+    )
 
     media_id, uploaded = await ensure_wp_media(
         db, row["download_file_id"], filename, fmt["mime_type"]
