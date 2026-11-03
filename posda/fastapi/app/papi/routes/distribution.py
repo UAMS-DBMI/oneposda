@@ -2280,6 +2280,8 @@ async def create_transfer_for_dataset_release(
             context={"release_id": release_id, "destination_id": payload.destination_id},
         )
 
+    # After the commit: it reads WordPress, which shouldn't hold a transaction.
+    await ensure_idc_base_gcs_url(record[0]["dataset_release_transfer_id"], db)
     return item_response(record[0])
 
 
@@ -5588,9 +5590,60 @@ async def delete_dataset_release_transfer(transfer_id: int, db: Database = Depen
 
 # ---------------------------------------- Transfer type-specific fields -----------------------------------------------
 
+async def ensure_idc_base_gcs_url(transfer_id: int, db: Database):
+    """Fill an IDC transfer's bucket path if it has none:
+    gs://<IDC_TRANSFER_BUCKET>/<dataset WordPress slug>/v<release number> -- the
+    same rule the dataset manifest uses. Curators never type it, so it's set
+    when the transfer is created (and on read for older transfers) rather than
+    waiting for the dataset manifest. Best effort: no WordPress link or no slug
+    leaves it empty, and the dataset manifest fills it later. Never overwrites
+    a path that is already set."""
+    rows = await db.fetch(
+        """
+        select dr.dataset_id, dr.release_number, td.destination_abbr, ti.base_gcs_url,
+               m.wp_object_type, m.wp_object_id
+        from dataset_release_transfer drt
+        join dataset_release dr using (dataset_release_id)
+        join transfer_destination td using (destination_id)
+        left join transfer_idc ti using (dataset_release_transfer_id)
+        left join wp_object_map m
+               on m.posda_object_type = 'dataset' and m.posda_object_id = dr.dataset_id
+        where drt.dataset_release_transfer_id = $1
+        """,
+        [transfer_id],
+    )
+    if not rows:
+        return
+    row = rows[0]
+    if row["destination_abbr"] != "idc" or row["base_gcs_url"] or row["wp_object_id"] is None:
+        return
+    endpoint = {"collection": "Collection", "analysis_result": "Analysis Result"}.get(
+        row["wp_object_type"])
+    if endpoint is None:
+        return
+    try:
+        item = await wp_get(f"{wp_url(endpoint)}/{row['wp_object_id']}")
+    except Exception:
+        item = None
+    slug = (item or {}).get("slug")
+    if not slug:
+        return
+    await db.execute(
+        """
+        insert into transfer_idc (dataset_release_transfer_id, base_gcs_url)
+        values ($1, $2)
+        on conflict (dataset_release_transfer_id) do update set
+            base_gcs_url = coalesce(transfer_idc.base_gcs_url, excluded.base_gcs_url)
+        """,
+        [transfer_id, f"gs://{IDC_TRANSFER_BUCKET}/{slug}/v{row['release_number']}"],
+    )
+
+
 @router.get("/transfers/{transfer_id}/idc")
 # Get IDC-specific fields for a transfer
 async def get_transfer_idc(transfer_id: int, db: Database = Depends()):
+    # A transfer made before the path was set at creation gets it on first read.
+    await ensure_idc_base_gcs_url(transfer_id, db)
     query = """\
         select
             ti.dataset_release_transfer_id,
@@ -5628,6 +5681,19 @@ async def get_transfer_idc(transfer_id: int, db: Database = Depends()):
     data = {**dict(record[0]), **manifests} if record else {
         "dataset_release_transfer_id": transfer_id, **manifests
     }
+    # What the manifests are of, for naming their downloads.
+    owner = await db.fetch(
+        """
+        select d.dataset_name, dr.release_number
+        from dataset_release_transfer drt
+        join dataset_release dr using (dataset_release_id)
+        join dataset d using (dataset_id)
+        where drt.dataset_release_transfer_id = $1
+        """,
+        [transfer_id],
+    )
+    if owner:
+        data = {**data, **dict(owner[0])}
     return item_response(data)
 
 
