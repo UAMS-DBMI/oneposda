@@ -1821,6 +1821,21 @@ async def publish_dataset_release(
             422,
         )
 
+    # Transfers only stage files, and manifests are attached by hand; Disseminate
+    # points each page at its file. Publishing before that would put the previous
+    # file live.
+    stale_pages = [p for p in await wp_page_states(release_id, db) if not p["page_current"]]
+    if stale_pages:
+        names = ", ".join(p["recordset_name"] for p in stale_pages)
+        api_error(
+            "CONFLICT",
+            f"These download pages still point at the previous file: {names}. "
+            "Update their pages in Disseminate first.",
+            {"release_id": release_id,
+             "recordset_ids": [p["recordset_id"] for p in stale_pages]},
+            409,
+        )
+
     # Collection page first: the download pages are listed on it, so this is the
     # order a reader would encounter them in.
     pages = list(collection_rows) + list(download_rows)
@@ -6745,6 +6760,25 @@ async def generate_idc_clinical_manifest(transfer_id: int, db: Database = Depend
         "posda_file_id",
     ]
 
+    # download_url is the file the WordPress transfer uploaded, not CM's own
+    # download_url: the transfer only stages files (pages update at
+    # Disseminate), so CM's page still describes the previous version here --
+    # and CM's download_url is empty for an attached (not linked) file anyway.
+    # Falls back to CM's value for a file that was never staged.
+    staged_url_by_file = {}
+    for file_id in sorted({r["file_id"] for r in rows}):
+        media_id = await _staged_media_id(db, file_id)
+        if media_id is None:
+            continue
+        try:
+            media = await wp_get(f"{wp_url('Media')}/{media_id}")
+        except Exception:
+            media = None
+        if media and media.get("source_url"):
+            staged_url_by_file[file_id] = media["source_url"]
+        else:
+            wp_lookup_failures.append(media_id)
+
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
     writer.writeheader()
@@ -6763,7 +6797,8 @@ async def generate_idc_clinical_manifest(transfer_id: int, db: Database = Depend
             "file_name":          name,
             "download_size":      "" if r["size"] is None else r["size"],
             "download_size_unit": "" if r["size"] is None else "B",
-            "download_url":       _cm_value(wp, "download_url"),
+            "download_url":       staged_url_by_file.get(r["file_id"])
+                                  or _cm_value(wp, "download_url"),
             "download_type":      _cm_value(wp, "download_type"),
             "file_hash":          r["digest"] or "",
             # Same relative scheme as the imaging manifest: clinical files land
@@ -7489,18 +7524,11 @@ def wp_download_size(size_bytes: int) -> tuple[str, str]:
     return f"{size:.2f}", units[unit_index]
 
 
-async def deliver_wp_recordset(transfer_id: int, recordset_release_id: int, db: Database) -> dict:
-    """Put a recordset release's data file on its WordPress download page.
-
-    The same flow as manifest/attach with the release's own file in place of a
-    retriever manifest: upload to the media library unless those bytes are
-    already there, point download_file at the attachment, and record it in
-    transfer_recordset.download_file_id. Also refreshes the page's size fields,
-    which describe the file rather than the page.
-
-    A download page holds exactly one download_file, so a release with any
-    other file count is refused rather than guessed at. Idempotent: a re-run
-    against a page that is already current changes nothing."""
+async def _wp_recordset_target(transfer_id: int, recordset_release_id: int, db: Database):
+    """A WordPress transfer recordset and its single data file, validated: the
+    destination is WordPress, the release holds exactly one file (a download
+    page holds one download_file), and the recordset has a download page.
+    Returns (row, file); raises api_error otherwise."""
     rows = await db.fetch(
         """
         select
@@ -7566,6 +7594,21 @@ async def deliver_wp_recordset(transfer_id: int, recordset_release_id: int, db: 
         [recordset_release_id],
     )
     file = file_rows[0]
+    return row, file
+
+
+async def stage_wp_recordset(transfer_id: int, recordset_release_id: int, db: Database) -> dict:
+    """The WordPress transfer's half of delivery: upload the release's data file
+    to the media library unless those bytes are already there (ensure_wp_media
+    dedups by file_id and records the file -> media mapping), and note it in
+    transfer_recordset.download_file_id.
+
+    Deliberately leaves the download page alone. Today's WordPress can't stage
+    a page change, so every page write waits for Disseminate
+    (update_wp_download_page) and the public site changes there, together.
+    The IDC clinical manifest links the uploaded file directly, so IDC needn't
+    wait for the page. Idempotent: a re-run uploads nothing that is in place."""
+    row, file = await _wp_recordset_target(transfer_id, recordset_release_id, db)
 
     # The original name, since that is what a user downloads. Not a dedup key --
     # ensure_wp_media dedups by file_id.
@@ -7579,6 +7622,43 @@ async def deliver_wp_recordset(transfer_id: int, recordset_release_id: int, db: 
         """,
         [file["file_id"], transfer_id, recordset_release_id],
     )
+    return {
+        "recordset_id": row["recordset_id"],
+        "recordset_name": row["recordset_name"],
+        "file_id": file["file_id"],
+        "wp_media_id": media_id,
+        "download_post_id": row["download_post_id"],
+        "uploaded": uploaded,
+    }
+
+
+async def _staged_media_id(db: Database, file_id: int):
+    """The media item a staged file was uploaded as, or None if it isn't."""
+    rows = await db.fetch(
+        """
+        select wp_object_id from wp_object_map
+        where posda_object_type = 'file' and posda_object_id = $1
+          and wp_object_type = 'media'
+        """,
+        [file_id],
+    )
+    return rows[0]["wp_object_id"] if rows else None
+
+
+async def update_wp_download_page(transfer_id: int, recordset_release_id: int, db: Database) -> dict:
+    """Disseminate's half of delivery: point the recordset's WordPress download
+    page at the data file the transfer staged, and refresh the page's size
+    fields (they describe the file). Refuses if the transfer hasn't staged the
+    file yet. Idempotent: a page already current changes nothing."""
+    row, file = await _wp_recordset_target(transfer_id, recordset_release_id, db)
+    media_id = await _staged_media_id(db, file["file_id"])
+    if media_id is None:
+        api_error(
+            "CONFLICT",
+            f"'{row['recordset_name']}' hasn't been uploaded yet -- run the WordPress transfer first.",
+            {"recordset_id": row["recordset_id"]},
+            409,
+        )
 
     try:
         post = await wp_get(f"{wp_url('Download')}/{row['download_post_id']}")
@@ -7620,27 +7700,108 @@ async def deliver_wp_recordset(transfer_id: int, recordset_release_id: int, db: 
     return {
         "recordset_id": row["recordset_id"],
         "recordset_name": row["recordset_name"],
-        "file_id": file["file_id"],
         "wp_media_id": media_id,
         "download_post_id": row["download_post_id"],
-        # False/False is a success: the page already carried this file.
-        "uploaded": uploaded,
+        # False is a success: the page already carried this file.
         "attached": "download_file" in changes,
     }
 
 
+async def wp_page_states(release_id: int, db: Database) -> list[dict]:
+    """For each recordset in a dataset release, whether its download page already
+    points at the file its default destination puts there: the data file a
+    WordPress transfer staged, or a generated retriever manifest. A manifest
+    regenerated with new content has no media yet, so it reads as not current.
+    Read live from WordPress (one read per page) -- Posda can't know whether a
+    page was changed by hand. Shared by Disseminate's rows and the go-live gate."""
+    rows = await db.fetch(
+        """
+        select tr.dataset_release_transfer_id as transfer_id,
+               tr.recordset_release_id, tr.download_file_id,
+               r.recordset_id, r.recordset_name, td.destination_abbr,
+               rrf.file_name,
+               dm.wp_object_id as download_post_id,
+               fm.wp_object_id as staged_media_id
+        from dataset_release_transfer drt
+        join transfer_destination td using (destination_id)
+        join transfer_recordset tr using (dataset_release_transfer_id)
+        join recordset_release rr on rr.recordset_release_id = tr.recordset_release_id
+        join recordset r on r.recordset_id = rr.recordset_id
+        join recordset_destination rd
+          on rd.recordset_id = r.recordset_id
+         and rd.destination_id = drt.destination_id
+         and rd.default_display
+        left join recordset_release_file rrf
+               on rrf.recordset_release_id = tr.recordset_release_id
+              and rrf.file_id = tr.download_file_id
+        left join wp_object_map dm
+               on dm.posda_object_type = 'recordset' and dm.posda_object_id = r.recordset_id
+              and dm.wp_object_type = 'download'
+        left join wp_object_map fm
+               on fm.posda_object_type = 'file' and fm.posda_object_id = tr.download_file_id
+              and fm.wp_object_type = 'media'
+        where drt.dataset_release_id = $1
+        order by r.recordset_name
+        """,
+        [release_id],
+    )
+    states = []
+    for row in rows:
+        current_id = None
+        if row["download_post_id"] is not None and row["staged_media_id"] is not None:
+            try:
+                post = await wp_get(f"{wp_url('Download')}/{row['download_post_id']}")
+            except Exception:
+                post = None
+            current = (post or {}).get("download_file")
+            current_id = current.get("ID") if isinstance(current, dict) else current
+        states.append({
+            "transfer_id": row["transfer_id"],
+            "recordset_release_id": row["recordset_release_id"],
+            "recordset_id": row["recordset_id"],
+            "recordset_name": row["recordset_name"],
+            "destination_abbr": row["destination_abbr"],
+            # The data file's name on a WordPress row; a manifest has none here.
+            "file_name": row["file_name"],
+            "staged_media_id": row["staged_media_id"],
+            "current_media_id": int(current_id) if current_id not in (None, "", False) else None,
+            "page_current": row["staged_media_id"] is not None
+                            and str(current_id) == str(row["staged_media_id"]),
+        })
+    return states
+
+
 @router.post("/transfers/{transfer_id}/recordsets/{recordset_release_id}/wp/deliver")
-# Deliver one recordset of a WordPress transfer -- a retry for a single page
-# without re-running the whole transfer. Does not change transfer_status.
+# Stage one recordset of a WordPress transfer -- a retry for a single upload
+# without re-running the whole transfer. Does not change transfer_status, and
+# does not touch the download page (that's Disseminate's update-page).
 async def deliver_transfer_recordset_wp(
     transfer_id: int,
     recordset_release_id: int,
     db: Database = Depends()):
-    return item_response(await deliver_wp_recordset(transfer_id, recordset_release_id, db))
+    return item_response(await stage_wp_recordset(transfer_id, recordset_release_id, db))
+
+
+@router.post("/transfers/{transfer_id}/recordsets/{recordset_release_id}/wp/update-page")
+# Disseminate: point the recordset's WordPress download page at the data file
+# the WordPress transfer staged. This is the public change.
+async def update_transfer_recordset_wp_page(
+    transfer_id: int,
+    recordset_release_id: int,
+    db: Database = Depends()):
+    return item_response(await update_wp_download_page(transfer_id, recordset_release_id, db))
+
+
+@router.get("/datasets/releases/{release_id}/wp/pages")
+# Disseminate: whether each WordPress-delivered recordset's download page points
+# at its staged file yet.
+async def get_release_wp_page_states(release_id: int, db: Database = Depends()):
+    return list_response(await wp_page_states(release_id, db))
 
 
 async def run_wp_transfer(transfer_id: int, db: Database) -> dict:
-    """Deliver every recordset in a WordPress transfer and settle its status.
+    """Stage every recordset in a WordPress transfer (upload to the media
+    library; pages wait for Disseminate) and settle its status.
 
     In-process rather than through the transfer daemon: the API already holds
     the WordPress credentials and every helper, and one small file per
@@ -7665,7 +7826,7 @@ async def run_wp_transfer(transfer_id: int, db: Database) -> dict:
     for row in rows:
         recordset_release_id = row["recordset_release_id"]
         try:
-            delivered = await deliver_wp_recordset(transfer_id, recordset_release_id, db)
+            delivered = await stage_wp_recordset(transfer_id, recordset_release_id, db)
             results.append({"recordset_release_id": recordset_release_id, "ok": True, **delivered})
         except HTTPException as e:
             results.append({
