@@ -1,6 +1,6 @@
 from fastapi import Depends, APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 import datetime
 from starlette.responses import Response, FileResponse
 from .auth import logged_in_user, User
@@ -8,6 +8,7 @@ from ..util import Database, asynctar
 import mimetypes
 import logging
 import asyncio
+import re
 
 
 router = APIRouter(
@@ -19,6 +20,7 @@ router = APIRouter(
 async def download_file(downloadable_file_id: int,
                         hash: str,
                         process: bool = False,
+                        filename: Optional[str] = None,
                         db: Database = Depends()):
 
     query = """
@@ -77,7 +79,11 @@ async def download_file(downloadable_file_id: int,
             }
         )
 
-    return FileResponse(path, filename=f"downloaded_file_{downloadable_file_id}{ext}")
+    # A caller-chosen name for the saved file. One file can belong to several
+    # releases, so the name comes with the link rather than being stored. Reduced
+    # to safe characters: it ends up in a response header.
+    safe_name = re.sub(r"[^A-Za-z0-9._ -]", "_", (filename or "").rsplit("/", 1)[-1])[:200].strip(". ")
+    return FileResponse(path, filename=safe_name or f"downloaded_file_{downloadable_file_id}{ext}")
 
 @router.get('/dir/{downloadable_dir_id}/{hash}')
 async def download_dir(downloadable_dir_id: int, hash: str, db: Database = Depends()):
