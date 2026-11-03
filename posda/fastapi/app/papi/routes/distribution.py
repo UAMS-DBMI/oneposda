@@ -1574,6 +1574,29 @@ async def update_dataset_release(
     if not updates:
         api_error("VALIDATION_ERROR", "No dataset release fields were provided", {}, 422)
 
+    # A finalized release's contents are fixed. An unpublished (draft) member
+    # would ship nothing now, then turn up inside the finalized release once its
+    # draft is published -- so it must be published or removed first.
+    if payload.release_status == "released":
+        unpublished = await db.fetch(
+            """
+            select rs.recordset_id, rs.recordset_name
+            from dataset_release_recordset drr
+            join recordset_release rr on rr.recordset_release_id = drr.recordset_release_id
+            join recordset rs on rs.recordset_id = rr.recordset_id
+            where drr.dataset_release_id = $1 and rr.release_status = 'draft'
+            order by rs.recordset_name
+            """,
+            [release_id],
+        )
+        if unpublished:
+            api_error(
+                "UNPUBLISHED_MEMBERS",
+                "Publish or remove these recordsets before finalizing the release",
+                {"recordsets": [dict(r) for r in unpublished]},
+                409,
+            )
+
     updates.append("when_updated = now()")
     updates.append(f"who_updated = ${idx}")
     values.append(current_user.user_id)
