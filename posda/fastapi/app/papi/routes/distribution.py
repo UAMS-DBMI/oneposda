@@ -768,6 +768,9 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
             d.recordset_draft_id,
             d.draft_name,
             d.draft_status,
+            -- The draft's own (unpublished) release, so Bundle can put it back
+            -- after it has been removed from the dataset release.
+            d.recordset_release_id as draft_release_id,
             (select count(*)::int
                from recordset_draft_file f
               where f.recordset_draft_id = d.recordset_draft_id) as file_count,
@@ -970,6 +973,7 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
         od.file_count,
         od.has_dicom,
         od.has_non_dicom,
+        od.draft_release_id,
         lr.recordset_release_id,
         lr.release_number,
         lr.release_date,
@@ -1032,6 +1036,7 @@ def build_cycle_recordset(row):
             "file_count": row["file_count"],
             "has_dicom": row["has_dicom"],
             "has_non_dicom": row["has_non_dicom"],
+            "recordset_release_id": row["draft_release_id"],
         } if row["recordset_draft_id"] is not None else None,
         # The draft the QC rollup was computed from -- the open draft while one
         # exists, otherwise the published draft it became. Lets a frozen
