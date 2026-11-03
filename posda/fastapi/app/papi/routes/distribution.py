@@ -5534,6 +5534,24 @@ async def update_dataset_release_transfer(
 
     try:
         async with db.transaction() as conn:
+            # Re-pushing a finished transfer: the daemon streams only 'pending'
+            # rows, so completed ones would be skipped and a file missing from
+            # the bucket stay missing. Reset them (before the status flips) and
+            # it re-verifies everything -- HEAD-then-MD5 skips identical objects,
+            # so only missing or changed files upload. A failed transfer keeps
+            # its completed rows: the daemon retries just the failures.
+            if payload.transfer_status == "queued":
+                await conn.execute(
+                    """
+                    update transfer_file tf
+                    set status = 'pending', attempts = 0, error = null, when_updated = now()
+                    from dataset_release_transfer drt
+                    where drt.dataset_release_transfer_id = tf.dataset_release_transfer_id
+                      and tf.dataset_release_transfer_id = $1
+                      and drt.transfer_status = 'success'
+                    """,
+                    transfer_id,
+                )
             record = await conn.fetchrow(query, *values)
             if record and payload.transfer_status == "queued":
                 await _fan_out_transfer_files(transfer_id, conn)
