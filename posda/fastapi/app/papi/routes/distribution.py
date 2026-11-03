@@ -816,7 +816,13 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
             rr.recordset_id,
             rr.recordset_release_id as member_release_id,
             rr.release_number       as member_release_number,
-            rr.release_status       as member_release_status
+            rr.release_status       as member_release_status,
+            rr.release_date         as member_release_date,
+            rr.who_created          as member_who_created,
+            -- A draft release has no files yet (they sit on the draft).
+            (select count(*)::int from recordset_release_file f
+              where f.recordset_release_id = rr.recordset_release_id)
+                                    as member_file_count
         from dataset_release_recordset drr
         join recordset_release rr using (recordset_release_id)
         where drr.dataset_release_id = $2
@@ -1000,6 +1006,14 @@ DATASET_CYCLE_RECORDSETS_SQL = """\
         member.member_release_id,
         member.member_release_number,
         member.member_release_status,
+        member.member_release_date,
+        member.member_who_created,
+        member.member_file_count,
+        -- Published versions to choose from: Bundle offers "Change version"
+        -- only when there is more than one.
+        (select count(*)::int from recordset_release r
+          where r.recordset_id = rs.recordset_id and r.release_status = 'released')
+            as released_version_count,
         lb.last_bundled_release_number,
         dest.destination_ids,
         dest.destination_abbrs,
@@ -1076,7 +1090,11 @@ def build_cycle_recordset(row):
             "recordset_release_id": row["member_release_id"],
             "release_number": row["member_release_number"],
             "release_status": row["member_release_status"],
+            "release_date": row["member_release_date"],
+            "who_created": row["member_who_created"],
+            "file_count": row["member_file_count"],
         } if row["member_release_id"] is not None else None,
+        "released_version_count": row["released_version_count"],
         "last_bundled_dataset_release_number": row["last_bundled_release_number"],
         "destinations": [
             {"destination_id": dest_id, "destination_abbr": abbr, "default_display": is_default}
