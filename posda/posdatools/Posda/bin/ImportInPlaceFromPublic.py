@@ -6,6 +6,7 @@ This program will import all files in a Collection (and Site)
 from Public into Posda.
 """
 import sys
+import time
 
 import pydicom
 import requests
@@ -19,6 +20,14 @@ import argparse
 URL = Config.get("internal_api_url") + "/v1/import/"
 OLD_PATH = "/usr/local/apps/ncia/CTP-server/CTP/storage"
 NEW_PATH = "/nas/public/storage"
+
+# Retry policy for API calls: wait starts at RETRY_INITIAL_WAIT seconds
+# and doubles after every failed attempt, but never exceeds RETRY_MAX_WAIT.
+# With these values the waits are 5, 10, 20, 40, 60, 60, 60, 60, 60 seconds,
+# about six minutes in total before giving up.
+RETRY_MAX_ATTEMPTS = 10
+RETRY_INITIAL_WAIT = 5
+RETRY_MAX_WAIT = 60
 
 
 def parse_visibility(s):
@@ -40,22 +49,73 @@ def printe(*args):
     print(*args, file=sys.stderr)
 
 
-def create_import_event(import_comment):
-    r = requests.put(URL + "event", params={"source": import_comment})
+class ApiRetriesExhausted(RuntimeError):
+    """Raised when an API call keeps failing after RETRY_MAX_ATTEMPTS."""
+
+
+def is_retryable_status(status_code: int) -> bool:
+    """Server-side errors (502, 503, ...) are transient; client errors
+    such as 422 "no such file" are real failures and must not be retried."""
+    return status_code >= 500
+
+
+def request_with_retry(
+    method: str, url: str, params: dict | None = None
+) -> requests.Response:
+    """Issue an HTTP request, retrying on connection errors and 5xx responses.
+
+    The wait between attempts starts at RETRY_INITIAL_WAIT seconds and
+    doubles each time, capped at RETRY_MAX_WAIT. Any response that is not
+    a 5xx is returned to the caller as-is, so callers still have to check
+    the status code.
+    """
+    wait = RETRY_INITIAL_WAIT
+    last_error = None
+    for attempt in range(1, RETRY_MAX_ATTEMPTS + 1):
+        try:
+            r = requests.request(method, url, params=params)
+            if not is_retryable_status(r.status_code):
+                return r
+            last_error = f"HTTP {r.status_code}"
+        except requests.RequestException as e:
+            last_error = repr(e)
+
+        if attempt == RETRY_MAX_ATTEMPTS:
+            break
+        printe(
+            f"{method} {url} failed ({last_error}), attempt {attempt} of "
+            f"{RETRY_MAX_ATTEMPTS}; retrying in {wait}s"
+        )
+        time.sleep(wait)
+        wait = min(wait * 2, RETRY_MAX_WAIT)
+
+    raise ApiRetriesExhausted(
+        f"{method} {url} failed after {RETRY_MAX_ATTEMPTS} attempts: {last_error}"
+    )
+
+
+def create_import_event(import_comment: str, expected_count: int) -> int:
+    r = request_with_retry(
+        "PUT",
+        URL + "event",
+        params={"source": import_comment, "expected_count": expected_count},
+    )
+    r.raise_for_status()
 
     resp = r.json()
     return resp["import_event_id"]
 
 
-def close_import_event(import_event_id):
-    r = requests.post(URL + f"event/{import_event_id}/close")
-    resp = r.json()
+def close_import_event(import_event_id: int) -> None:
+    r = request_with_retry("POST", URL + f"event/{import_event_id}/close")
+    r.raise_for_status()
 
 
 def add_file(filename, digest, import_event_id):
     """add one file using file_in_place endpoint"""
 
-    r = requests.post(
+    r = request_with_retry(
+        "POST",
         URL + "file_in_place",
         params={
             "import_event_id": import_event_id,
@@ -70,7 +130,7 @@ def add_file(filename, digest, import_event_id):
     try:
         resp = r.json()
         return r.status_code, resp
-    except:
+    except ValueError:
         return r.status_code, r.content
 
 
@@ -181,8 +241,6 @@ def main(background_id, activity_id, notify, collection_name, visibility, site_n
 
     print(f"Beginning import of collection {collection_name} from Public.")
     import_comment = f"In-place from public: {collection_name}//{site_name} [{background_id}]"
-    import_event_id = create_import_event(import_comment)
-    print(f"Import event id: {import_event_id}")
 
     with Database("public") as conn:
         cur = conn.cursor()
@@ -195,6 +253,10 @@ def main(background_id, activity_id, notify, collection_name, visibility, site_n
             total_files_to_import = count
 
         print(f"Found {total_files_to_import} files to import.")
+
+        # The count is known up front, so record it on the import event
+        import_event_id = create_import_event(import_comment, total_files_to_import)
+        print(f"Import event id: {import_event_id}")
 
 
         execute_select_query(cur, collection_name, vis_list, site_name)
