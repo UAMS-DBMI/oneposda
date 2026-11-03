@@ -17,7 +17,7 @@ import tempfile
 from .auth import logged_in_user, User
 from . import importer
 
-from ..util import Database
+from ..util import Database, idc_bucket
 from ..util.models import File, consistent
 from ..util.wp import (
     wp_get, wp_get_paged, wp_patch, wp_url, wp_client, wp_upload_media, wp_edit_url,
@@ -1708,6 +1708,24 @@ async def publish_dataset_release(
           );
         """
 
+    idc_transfers_q = """\
+        select ti.base_gcs_url
+        from dataset_release_transfer drt
+        join transfer_destination td using (destination_id)
+        join transfer_idc ti using (dataset_release_transfer_id)
+        where drt.dataset_release_id = $1
+          and td.destination_abbr = 'idc'
+          and exists (
+              select 1
+              from dataset_release_recordset drr
+              join recordset_release rr using (recordset_release_id)
+              join recordset_destination rd using (recordset_id)
+              where drr.dataset_release_id = drt.dataset_release_id
+                and rd.destination_id = drt.destination_id
+                and rr.release_status = 'released'
+          );
+        """
+
     # A member recordset with no download page cannot be published, and a
     # half-published release is worse than an unpublished one -- so this is
     # checked up front and refuses the whole call rather than skipping rows.
@@ -1820,6 +1838,23 @@ async def publish_dataset_release(
             },
             422,
         )
+
+    # Processed is IDC's published: the release goes live with IDC, not ahead of
+    # it. Only transfers still routed to count, as in transfers_q. Refuses when
+    # the status can't be read, since it can't confirm IDC has published.
+    for idc_row in await db.fetch(idc_transfers_q, [release_id]):
+        status, reason = await asyncio.to_thread(
+            idc_bucket.status_or_unavailable, idc_row["base_gcs_url"] or ""
+        )
+        if status != idc_bucket.STATUS_PROCESSED:
+            api_error(
+                "CONFLICT",
+                "IDC hasn't published this version yet "
+                + (f"(status: {status or 'not set to Ready'})." if reason is None
+                   else "(its status couldn't be read)."),
+                {"release_id": release_id, "status": status, "reason": reason},
+                409,
+            )
 
     # Transfers only stage files, and manifests are attached by hand; Disseminate
     # points each page at its file. Publishing before that would put the previous
@@ -5511,6 +5546,21 @@ async def update_dataset_release_transfer(
                     422,
                 )
 
+            # Once IDC has started on a version, a change needs a new version.
+            # Refused here so the transfer keeps its status. An unreadable bucket
+            # doesn't block: the daemon checks again before it writes anything.
+            status, _ = await asyncio.to_thread(
+                idc_bucket.status_or_unavailable, idc["base_gcs_url"]
+            )
+            if status is not None and status not in idc_bucket.OVERWRITABLE_STATUSES:
+                api_error(
+                    "IDC_VERSION_CLOSED",
+                    f"IDC has this version at \"{status}\", so it can't be pushed "
+                    "again. A change needs a new version.",
+                    {"transfer_id": transfer_id, "status": status},
+                    409,
+                )
+
     updates = []
     values = []
     idx = 1
@@ -5935,6 +5985,77 @@ async def _transfer_licenses(transfer_id: int, db: Database) -> dict[str, str]:
         "license_long_name":  "|".join(long_names),
         "license_short_name": "|".join(short_names),
     }
+
+
+async def _idc_transfer_for_bucket(transfer_id: int, db: Database):
+    rows = await db.fetch(
+        """
+        select drt.transfer_status, ti.base_gcs_url
+        from dataset_release_transfer drt
+        join transfer_idc ti using (dataset_release_transfer_id)
+        where drt.dataset_release_transfer_id = $1
+        """,
+        [transfer_id],
+    )
+    if not rows:
+        api_error("NOT_FOUND", "IDC transfer not found", {"transfer_id": transfer_id}, 404)
+    return rows[0]
+
+
+@router.get("/transfers/{transfer_id}/idc/bucket-status")
+# What status.json says right now. Read live, because IDC changes it.
+# status is "" with no status file, and null when it can't be read.
+async def get_transfer_idc_bucket_status(transfer_id: int, db: Database = Depends()):
+    row = await _idc_transfer_for_bucket(transfer_id, db)
+    if not row["base_gcs_url"]:
+        return item_response({"status": "", "unavailable_reason": None})
+    status, reason = await asyncio.to_thread(
+        idc_bucket.status_or_unavailable, row["base_gcs_url"]
+    )
+    return item_response({"status": status, "unavailable_reason": reason})
+
+
+@router.post("/transfers/{transfer_id}/idc/set-ready")
+# The curator's hand-off: IDC may pick the version up from here on. An upload
+# leaves the version at Draft, so this can't happen before the data is there.
+async def set_transfer_idc_ready(
+    transfer_id: int, current_user: User = logged_in_user, db: Database = Depends()
+):
+    row = await _idc_transfer_for_bucket(transfer_id, db)
+    if row["transfer_status"] != "success" or not row["base_gcs_url"]:
+        api_error(
+            "CONFLICT",
+            "Only a transfer that has finished uploading can be set to Ready.",
+            {"transfer_id": transfer_id, "transfer_status": row["transfer_status"]},
+            409,
+        )
+    try:
+        await asyncio.to_thread(
+            idc_bucket.set_ready, row["base_gcs_url"], f"posda-api-transfer-{transfer_id}"
+        )
+    except idc_bucket.LockBusy:
+        api_error(
+            "CONFLICT",
+            "The version's folder is locked, probably by IDC. Try again shortly.",
+            {"transfer_id": transfer_id},
+            409,
+        )
+    except idc_bucket.StatusConflict as e:
+        api_error(
+            "CONFLICT",
+            f"IDC has this version at \"{e}\", so it can't be set to Ready. "
+            + ("Push it again to fix the errors first." if str(e) == idc_bucket.STATUS_ERRORED else ""),
+            {"transfer_id": transfer_id, "status": str(e)},
+            409,
+        )
+    except Exception as e:
+        api_error(
+            "BUCKET_UNAVAILABLE",
+            f"Could not reach the IDC bucket: {type(e).__name__}: {e}",
+            {"transfer_id": transfer_id},
+            503,
+        )
+    return item_response({"status": idc_bucket.STATUS_READY})
 
 
 @router.post("/transfers/{transfer_id}/idc/dataset-manifest/generate")

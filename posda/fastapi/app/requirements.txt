@@ -19,5 +19,6 @@ zipstream
 python-multipart
 chardet
 redis
+google-cloud-storage
 pandas
 aiomysql
