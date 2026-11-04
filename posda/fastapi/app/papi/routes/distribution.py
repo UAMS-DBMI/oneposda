@@ -24,8 +24,6 @@ from ..util.wp import (
     format_citation, format_license, WP_TYPE_MAP,
 )
 
-FILE_STORAGE_PATH = os.getenv("FILE_STORAGE_PATH", "/home/posda/cache/created")
-FILE_STORAGE_ROOT = int(os.getenv("FILE_STORAGE_ROOT_ID", "3"))
 IDC_TRANSFER_BUCKET = os.getenv("IDC_TRANSFER_BUCKET", "posda_submit")
 
 # What IDC can house, written as the file properties themselves rather than as a
@@ -3944,20 +3942,15 @@ async def add_recordset_draft_file_from_wp(
         pool = db.get_pool()
         async with pool.acquire() as conn:
             async with conn.transaction():
-                created, file_id = await importer.create_or_get_file_id(digest, size, conn)
-                if created:
-                    root_id, _root, rel_path = await importer.copy_file_into_place(
-                        fp.name, digest
-                    )
-                    await importer.create_file_location(file_id, root_id, rel_path, conn)
-                    await importer.make_ready_to_process(file_id, conn)
-                else:
-                    os.unlink(fp.name)
-
-                import_event_id = await importer.create_import_event(
-                    conn, "recordset draft WP import", origin=source_url
+                created, file_id = await importer.import_temp_file(
+                    fp.name,
+                    digest,
+                    size,
+                    conn,
+                    file_name,
+                    import_comment="recordset draft WP import",
+                    origin=source_url,
                 )
-                await importer.create_file_import(file_id, import_event_id, file_name, conn)
 
                 # Record that this file *is* that attachment, so a WordPress
                 # transfer of the unchanged file reuses it (ensure_wp_media
@@ -6058,6 +6051,30 @@ async def set_transfer_idc_ready(
     return item_response({"status": idc_bucket.STATUS_READY})
 
 
+async def store_manifest(
+    data: bytes, conn, file_name: str, import_comment: str, mime_type: str
+):
+    """Import a generated manifest and make it downloadable, in the caller's
+    transaction. Identical bytes reuse the file and its download link.
+
+    Returns (file_id, downloadable_file row)."""
+    _created, file_id = await importer.import_bytes(data, conn, file_name, import_comment)
+    rows = await conn.fetch(
+        "select downloadable_file_id, security_hash from downloadable_file where file_id = $1 limit 1",
+        file_id,
+    )
+    if not rows:
+        rows = await conn.fetch(
+            """
+            insert into downloadable_file (file_id, security_hash, mime_type)
+            values ($1, $2, $3)
+            returning downloadable_file_id, security_hash
+            """,
+            file_id, secrets.token_hex(16), mime_type,
+        )
+    return file_id, rows[0]
+
+
 @router.post("/transfers/{transfer_id}/idc/dataset-manifest/generate")
 async def generate_idc_dataset_manifest(transfer_id: int, db: Database = Depends()):
     # Resolve transfer → dataset_release → dataset
@@ -6220,58 +6237,11 @@ async def generate_idc_dataset_manifest(transfer_id: int, db: Database = Depends
     writer.writerow(manifest_row)
     csv_bytes = buf.getvalue().encode("utf-8")
 
-    digest = hashlib.md5(csv_bytes).hexdigest()
-    size   = len(csv_bytes)
-    rel_path = os.path.join(digest[:2], digest[2:4], digest[4:6], digest)
-    os.makedirs(os.path.join(FILE_STORAGE_PATH, digest[:2], digest[2:4], digest[4:6]), exist_ok=True)
-    with open(os.path.join(FILE_STORAGE_PATH, rel_path), "wb") as fh:
-        fh.write(csv_bytes)
-
-    security_hash = secrets.token_hex(16)
-
     try:
         async with db.transaction() as conn:
-            file_rows = await conn.fetch(
-                """
-                insert into file (digest, size, processing_priority)
-                values ($1, $2, 1)
-                on conflict (digest) do update set digest = excluded.digest
-                returning file_id
-                """,
-                digest, size,
+            file_id, downloadable = await store_manifest(
+                csv_bytes, conn, "dataset_manifest.csv", "IDC dataset manifest", "text/csv"
             )
-            file_id = file_rows[0]["file_id"]
-
-            await conn.execute(
-                """
-                -- Not "on conflict do nothing": file_location has no unique
-                -- constraint, so that clause has nothing to conflict against and
-                -- is inert -- every regeneration appended another identical row.
-                insert into file_location (file_id, file_storage_root_id, rel_path)
-                select $1, $2, $3
-                 where not exists (
-                       select 1 from file_location
-                        where file_id = $1
-                          and file_storage_root_id = $2
-                          and rel_path = $3
-                 )
-                """,
-                file_id, FILE_STORAGE_ROOT, rel_path,
-            )
-
-            df_rows = await conn.fetch(
-                "select downloadable_file_id, security_hash from downloadable_file where file_id = $1 limit 1",
-                file_id,
-            )
-            if not df_rows:
-                df_rows = await conn.fetch(
-                    """
-                    insert into downloadable_file (file_id, security_hash, mime_type)
-                    values ($1, $2, 'text/csv')
-                    returning downloadable_file_id, security_hash
-                    """,
-                    file_id, security_hash,
-                )
 
             await conn.execute(
                 """
@@ -6294,8 +6264,8 @@ async def generate_idc_dataset_manifest(transfer_id: int, db: Database = Depends
 
     return item_response({
         "file_id":               file_id,
-        "downloadable_file_id":  df_rows[0]["downloadable_file_id"],
-        "security_hash":         df_rows[0]["security_hash"],
+        "downloadable_file_id":  downloadable["downloadable_file_id"],
+        "security_hash":         downloadable["security_hash"],
     })
 
 
@@ -6476,58 +6446,11 @@ async def generate_idc_imaging_manifest(transfer_id: int, db: Database = Depends
         writer.writerow({k: ("" if v is None else v) for k, v in dict(row).items()})
     csv_bytes = buf.getvalue().encode("utf-8")
 
-    digest = hashlib.md5(csv_bytes).hexdigest()
-    size   = len(csv_bytes)
-    rel_path = os.path.join(digest[:2], digest[2:4], digest[4:6], digest)
-    os.makedirs(os.path.join(FILE_STORAGE_PATH, digest[:2], digest[2:4], digest[4:6]), exist_ok=True)
-    with open(os.path.join(FILE_STORAGE_PATH, rel_path), "wb") as fh:
-        fh.write(csv_bytes)
-
-    security_hash = secrets.token_hex(16)
-
     try:
         async with db.transaction() as conn:
-            file_rows = await conn.fetch(
-                """
-                insert into file (digest, size, processing_priority)
-                values ($1, $2, 1)
-                on conflict (digest) do update set digest = excluded.digest
-                returning file_id
-                """,
-                digest, size,
+            file_id, downloadable = await store_manifest(
+                csv_bytes, conn, "imaging_manifest.csv", "IDC imaging manifest", "text/csv"
             )
-            file_id = file_rows[0]["file_id"]
-
-            await conn.execute(
-                """
-                -- Not "on conflict do nothing": file_location has no unique
-                -- constraint, so that clause has nothing to conflict against and
-                -- is inert -- every regeneration appended another identical row.
-                insert into file_location (file_id, file_storage_root_id, rel_path)
-                select $1, $2, $3
-                 where not exists (
-                       select 1 from file_location
-                        where file_id = $1
-                          and file_storage_root_id = $2
-                          and rel_path = $3
-                 )
-                """,
-                file_id, FILE_STORAGE_ROOT, rel_path,
-            )
-
-            df_rows = await conn.fetch(
-                "select downloadable_file_id, security_hash from downloadable_file where file_id = $1 limit 1",
-                file_id,
-            )
-            if not df_rows:
-                df_rows = await conn.fetch(
-                    """
-                    insert into downloadable_file (file_id, security_hash, mime_type)
-                    values ($1, $2, 'text/csv')
-                    returning downloadable_file_id, security_hash
-                    """,
-                    file_id, security_hash,
-                )
 
             await conn.execute(
                 """
@@ -6543,8 +6466,8 @@ async def generate_idc_imaging_manifest(transfer_id: int, db: Database = Depends
 
     return item_response({
         "file_id":              file_id,
-        "downloadable_file_id": df_rows[0]["downloadable_file_id"],
-        "security_hash":        df_rows[0]["security_hash"],
+        "downloadable_file_id": downloadable["downloadable_file_id"],
+        "security_hash":        downloadable["security_hash"],
         "row_count":            len(rows),
         "dataset_hash":         rows[0]["dataset_hash"],
         "missing_collection_name": sum(1 for r in rows if r["collection_name"] is None),
@@ -6929,58 +6852,11 @@ async def generate_idc_clinical_manifest(transfer_id: int, db: Database = Depend
         })
     csv_bytes = buf.getvalue().encode("utf-8")
 
-    digest = hashlib.md5(csv_bytes).hexdigest()
-    size   = len(csv_bytes)
-    rel_path = os.path.join(digest[:2], digest[2:4], digest[4:6], digest)
-    os.makedirs(os.path.join(FILE_STORAGE_PATH, digest[:2], digest[2:4], digest[4:6]), exist_ok=True)
-    with open(os.path.join(FILE_STORAGE_PATH, rel_path), "wb") as fh:
-        fh.write(csv_bytes)
-
-    security_hash = secrets.token_hex(16)
-
     try:
         async with db.transaction() as conn:
-            file_rows = await conn.fetch(
-                """
-                insert into file (digest, size, processing_priority)
-                values ($1, $2, 1)
-                on conflict (digest) do update set digest = excluded.digest
-                returning file_id
-                """,
-                digest, size,
+            file_id, downloadable = await store_manifest(
+                csv_bytes, conn, "clinical_manifest.csv", "IDC clinical manifest", "text/csv"
             )
-            file_id = file_rows[0]["file_id"]
-
-            await conn.execute(
-                """
-                -- Not "on conflict do nothing": file_location has no unique
-                -- constraint, so that clause has nothing to conflict against and
-                -- is inert -- every regeneration appended another identical row.
-                insert into file_location (file_id, file_storage_root_id, rel_path)
-                select $1, $2, $3
-                 where not exists (
-                       select 1 from file_location
-                        where file_id = $1
-                          and file_storage_root_id = $2
-                          and rel_path = $3
-                 )
-                """,
-                file_id, FILE_STORAGE_ROOT, rel_path,
-            )
-
-            df_rows = await conn.fetch(
-                "select downloadable_file_id, security_hash from downloadable_file where file_id = $1 limit 1",
-                file_id,
-            )
-            if not df_rows:
-                df_rows = await conn.fetch(
-                    """
-                    insert into downloadable_file (file_id, security_hash, mime_type)
-                    values ($1, $2, 'text/csv')
-                    returning downloadable_file_id, security_hash
-                    """,
-                    file_id, security_hash,
-                )
 
             await conn.execute(
                 """
@@ -6998,8 +6874,8 @@ async def generate_idc_clinical_manifest(transfer_id: int, db: Database = Depend
 
     return item_response({
         "file_id":              file_id,
-        "downloadable_file_id": df_rows[0]["downloadable_file_id"],
-        "security_hash":        df_rows[0]["security_hash"],
+        "downloadable_file_id": downloadable["downloadable_file_id"],
+        "security_hash":        downloadable["security_hash"],
         "row_count":            len(rows),
         "wp_lookup_failures":   wp_lookup_failures,
     })
@@ -7268,10 +7144,13 @@ async def generate_transfer_recordset_manifest(
     # assumed -- and its absence means the transfer_recordset row is missing.
     tr_row = await db.fetch(
         """
-        select td.destination_abbr
+        select td.destination_abbr, d.dataset_name, r.recordset_name
         from transfer_recordset tr
         join dataset_release_transfer drt using (dataset_release_transfer_id)
         join transfer_destination td using (destination_id)
+        join recordset_release rr on rr.recordset_release_id = tr.recordset_release_id
+        join recordset r on r.recordset_id = rr.recordset_id
+        join dataset d on d.dataset_id = r.dataset_id
         where tr.dataset_release_transfer_id = $1 and tr.recordset_release_id = $2
         """,
         [transfer_id, recordset_release_id],
@@ -7308,64 +7187,19 @@ async def generate_transfer_recordset_manifest(
         recordset_release_id,
     )
 
-    # Content-addressed storage: md5 hex digest as filename
-    digest = hashlib.md5(csv_bytes).hexdigest()
-    size = len(csv_bytes)
-    rel_path = os.path.join(digest[:2], digest[2:4], digest[4:6], digest)
-    full_dir = os.path.join(FILE_STORAGE_PATH, digest[:2], digest[2:4], digest[4:6])
-    os.makedirs(full_dir, exist_ok=True)
-    with open(os.path.join(FILE_STORAGE_PATH, rel_path), "wb") as fh:
-        fh.write(csv_bytes)
-
-    security_hash = secrets.token_hex(16)
-
     try:
         async with db.transaction() as conn:
-            # Upsert file record
-            file_rows = await conn.fetch(
-                """
-                insert into file (digest, size, processing_priority)
-                values ($1, $2, 1)
-                on conflict (digest) do update set digest = excluded.digest
-                returning file_id
-                """,
-                digest, size,
+            file_id, downloadable = await store_manifest(
+                csv_bytes,
+                conn,
+                retriever_manifest_filename(
+                    tr_row[0]["dataset_name"],
+                    tr_row[0]["recordset_name"],
+                    destination_abbr,
+                ),
+                "Retriever manifest",
+                fmt["mime_type"],
             )
-            file_id = file_rows[0]["file_id"]
-
-            # Register file location (no-op if already exists)
-            await conn.execute(
-                """
-                -- Not "on conflict do nothing": file_location has no unique
-                -- constraint, so that clause has nothing to conflict against and
-                -- is inert -- every regeneration appended another identical row.
-                insert into file_location (file_id, file_storage_root_id, rel_path)
-                select $1, $2, $3
-                 where not exists (
-                       select 1 from file_location
-                        where file_id = $1
-                          and file_storage_root_id = $2
-                          and rel_path = $3
-                 )
-                """,
-                file_id, FILE_STORAGE_ROOT, rel_path,
-            )
-
-            # Reuse existing downloadable_file if one already exists for this file_id,
-            # otherwise create a new one (handles content-identical regenerations)
-            df_rows = await conn.fetch(
-                "select downloadable_file_id, security_hash from downloadable_file where file_id = $1 limit 1",
-                file_id,
-            )
-            if not df_rows:
-                df_rows = await conn.fetch(
-                    """
-                    insert into downloadable_file (file_id, security_hash, mime_type)
-                    values ($1, $2, $3)
-                    returning downloadable_file_id, security_hash
-                    """,
-                    file_id, security_hash, fmt["mime_type"],
-                )
 
             # Link manifest back to transfer_recordset
             await conn.execute(
@@ -7382,8 +7216,8 @@ async def generate_transfer_recordset_manifest(
 
     return item_response({
         "file_id": file_id,
-        "downloadable_file_id": df_rows[0]["downloadable_file_id"],
-        "security_hash": df_rows[0]["security_hash"],
+        "downloadable_file_id": downloadable["downloadable_file_id"],
+        "security_hash": downloadable["security_hash"],
         "series_count": len(series_rows),
         "destination_abbr": destination_abbr,
         "manifest_format": fmt["extension"],
@@ -7394,9 +7228,8 @@ async def generate_transfer_recordset_manifest(
 async def read_stored_file(db: Database, file_id: int) -> Optional[bytes]:
     """Reads a stored file's bytes off disk. None when it has no location row.
 
-    Resolves the path through file_storage_root rather than FILE_STORAGE_PATH:
-    the file may predate this module or live under a different root, and
-    download.py already resolves it this way."""
+    Resolves the path through file_storage_root: the file may predate this module
+    or live under a different root, and download.py already resolves it this way."""
     rows = await db.fetch(
         """
         select root_path || '/' || rel_path as path
