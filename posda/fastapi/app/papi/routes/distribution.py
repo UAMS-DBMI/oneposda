@@ -3942,20 +3942,15 @@ async def add_recordset_draft_file_from_wp(
         pool = db.get_pool()
         async with pool.acquire() as conn:
             async with conn.transaction():
-                created, file_id = await importer.create_or_get_file_id(digest, size, conn)
-                if created:
-                    root_id, _root, rel_path = await importer.copy_file_into_place(
-                        fp.name, digest
-                    )
-                    await importer.create_file_location(file_id, root_id, rel_path, conn)
-                    await importer.make_ready_to_process(file_id, conn)
-                else:
-                    os.unlink(fp.name)
-
-                import_event_id = await importer.create_import_event(
-                    conn, "recordset draft WP import", origin=source_url
+                created, file_id = await importer.import_temp_file(
+                    fp.name,
+                    digest,
+                    size,
+                    conn,
+                    file_name,
+                    import_comment="recordset draft WP import",
+                    origin=source_url,
                 )
-                await importer.create_file_import(file_id, import_event_id, file_name, conn)
 
                 # Record that this file *is* that attachment, so a WordPress
                 # transfer of the unchanged file reuses it (ensure_wp_media
