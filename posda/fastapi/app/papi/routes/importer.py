@@ -151,22 +151,9 @@ async def import_file(
     async with pool.acquire() as conn:
         async with conn.transaction():
 
-            created, file_id = await create_or_get_file_id(computed_digest, bytes_read, conn)
-
-            if created:
-                root_id, root, rel_path = await copy_file_into_place(fp.name, computed_digest)
-
-                await create_file_location(file_id, root_id, rel_path, conn)
-
-                await make_ready_to_process(file_id, conn)
-
-            else:
-                os.unlink(fp.name)
-
-            if import_event_id is None:
-                import_event_id = await create_import_event(conn, "single-file api import")
-
-            await create_file_import(file_id, int(import_event_id), localpath, conn)
+            created, file_id = await import_temp_file(
+                fp.name, computed_digest, bytes_read, conn, localpath, import_event_id
+            )
 
             if subprocess_invocation_id is not None and from_file_digest is not None:
                 await conn.execute("""\
@@ -181,6 +168,57 @@ async def import_file(
                 "file_id": file_id,
                 "created": created,
             }
+
+
+async def import_temp_file(
+    temp_path: str,
+    digest: str,
+    size: int,
+    conn,
+    localpath: str = None,
+    import_event_id: int = None,
+    import_comment: str = "single-file api import",
+    origin: str = None,
+):
+    """Move a temp file into storage and record the import.
+
+    The caller owns the transaction. The temp file is consumed either way: moved
+    into place for a new file, deleted for one Posda already has.
+
+    Returns (created, file_id).
+    """
+    created, file_id = await create_or_get_file_id(digest, size, conn)
+
+    if created:
+        root_id, root, rel_path = await copy_file_into_place(temp_path, digest)
+
+        await create_file_location(file_id, root_id, rel_path, conn)
+
+        await make_ready_to_process(file_id, conn)
+
+    else:
+        os.unlink(temp_path)
+
+    if import_event_id is None:
+        import_event_id = await create_import_event(conn, import_comment, origin=origin)
+
+    await create_file_import(file_id, int(import_event_id), localpath, conn)
+
+    return created, file_id
+
+
+async def import_bytes(data: bytes, conn, localpath: str, import_comment: str):
+    """Import bytes Posda generated itself, such as a manifest.
+
+    The caller owns the transaction. Returns (created, file_id).
+    """
+    digest = hashlib.md5(data, usedforsecurity=False).hexdigest()
+    with tempfile.NamedTemporaryFile(dir=TEMP_STORAGE_PATH, delete=False) as fp:
+        fp.write(data)
+
+    return await import_temp_file(
+        fp.name, digest, len(data), conn, localpath, import_comment=import_comment
+    )
 
 
 async def get_root_map(db: Database):
