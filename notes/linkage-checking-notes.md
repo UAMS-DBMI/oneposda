@@ -282,6 +282,32 @@ and `spreadsheet_operations/rows/`:
 Net effect: "Run Consistency Checks" is now the single place all three linkage checkers are
 triggered from.
 
+### Report buckets — External means outside the current timepoint [DONE, 2026-11-05]
+
+`create_split_reference_reports()` used to compare only the activity ID, so a reference that
+resolved only to an earlier timepoint of the same activity landed in Found. After an edit
+that changes UIDs without updating the references to them (e.g. `ProposeUIDchangeEdits.pl`
+on SEGs), most stale references therefore looked healthy, despite the "Activity / Timepoint"
+column label.
+
+| Bucket | Meaning | `note` |
+|---|---|---|
+| Missing_References | Not in Posda | blank |
+| Found_References | In the current timepoint of the current activity | `In current timepoint` |
+| External_References | In an earlier timepoint of the current activity | `In earlier timepoint of current activity` |
+| External_References | In another activity | `In external activity` |
+
+External lists earlier-timepoint rows first, then other activities, otherwise in scan order.
+
+`lookup_uids_globally()` now prefers the current activity, then the highest activity ID. It
+used to take the highest activity ID outright, so a UID also held by a later activity was
+reported there even when the same file was in an earlier timepoint of this one.
+
+How to read the report: a Found row's `found_file_id` is blank for series references, because
+only the global lookup fills it in for them.
+
+Tests: [test_linkage.py](../posda/posdatools/python/tests/posda/test_linkage.py).
+
 ## Legacy Perl scripts — porting inventory
 
 Full-codebase scan (2026-07-13) for pre-Python linkage-checking / struct-relink logic. Goal:

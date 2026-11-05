@@ -342,6 +342,7 @@ class LinkageChecker:
                         "study_instance_uid":   file.study_instance_uid,
                         "file_for_uid":         file.for_uid,
                         "patient_id":           file.patient_id,
+                        "timepoint_id":         file.activity_timepoint_id,
                         "path":                 f"<{''.join(path)}>",
                         "key_path":             f"<{''.join(key_path)}>",
                         "uid":                  val,
@@ -387,7 +388,11 @@ class LinkageChecker:
     # ------------------------------------------------------------------
 
     def lookup_uids_globally(self, category, uid_values):
-        """Find the most recent activity/timepoint for UIDs across all of Posda."""
+        """Find where UIDs live across all of Posda, preferring the current activity.
+
+        A UID in the current activity resolves to its latest timepoint there, even if
+        it's also in another activity. Otherwise it resolves to the highest activity id.
+        """
         if not uid_values:
             return {}
         queries = {
@@ -398,7 +403,8 @@ class LinkageChecker:
                 JOIN activity_timepoint_file atf ON atf.file_id = fsc.file_id
                 JOIN activity_timepoint at ON at.activity_timepoint_id = atf.activity_timepoint_id
                 WHERE fsc.sop_instance_uid = ANY(%s)
-                ORDER BY fsc.sop_instance_uid, at.activity_id DESC, at.activity_timepoint_id DESC
+                ORDER BY fsc.sop_instance_uid, at.activity_id = %s DESC,
+                         at.activity_id DESC, at.activity_timepoint_id DESC
             """,
             "series": """
                 SELECT DISTINCT ON (fs.series_instance_uid)
@@ -407,7 +413,8 @@ class LinkageChecker:
                 JOIN activity_timepoint_file atf ON atf.file_id = fs.file_id
                 JOIN activity_timepoint at ON at.activity_timepoint_id = atf.activity_timepoint_id
                 WHERE fs.series_instance_uid = ANY(%s)
-                ORDER BY fs.series_instance_uid, at.activity_id DESC, at.activity_timepoint_id DESC
+                ORDER BY fs.series_instance_uid, at.activity_id = %s DESC,
+                         at.activity_id DESC, at.activity_timepoint_id DESC
             """,
             "study": """
                 SELECT DISTINCT ON (fst.study_instance_uid)
@@ -416,7 +423,8 @@ class LinkageChecker:
                 JOIN activity_timepoint_file atf ON atf.file_id = fst.file_id
                 JOIN activity_timepoint at ON at.activity_timepoint_id = atf.activity_timepoint_id
                 WHERE fst.study_instance_uid = ANY(%s)
-                ORDER BY fst.study_instance_uid, at.activity_id DESC, at.activity_timepoint_id DESC
+                ORDER BY fst.study_instance_uid, at.activity_id = %s DESC,
+                         at.activity_id DESC, at.activity_timepoint_id DESC
             """,
             "for": """
                 SELECT DISTINCT ON (ff.for_uid)
@@ -425,14 +433,15 @@ class LinkageChecker:
                 JOIN activity_timepoint_file atf ON atf.file_id = ff.file_id
                 JOIN activity_timepoint at ON at.activity_timepoint_id = atf.activity_timepoint_id
                 WHERE ff.for_uid = ANY(%s)
-                ORDER BY ff.for_uid, at.activity_id DESC, at.activity_timepoint_id DESC
+                ORDER BY ff.for_uid, at.activity_id = %s DESC,
+                         at.activity_id DESC, at.activity_timepoint_id DESC
             """,
         }
         query = queries.get(category)
         if not query:
             return {}
         cur = self.conn.cursor()
-        cur.execute(query, (list(uid_values),))
+        cur.execute(query, (list(uid_values), self.args.activity_id))
         result = {
             row[0]: {'activity_id': row[1], 'activity_timepoint_id': row[2], 'file_id': row[3]}
             for row in cur.fetchall()
@@ -855,8 +864,10 @@ class LinkageChecker:
 
         Buckets:
           Missing_References  — not found anywhere in Posda
-          External_References — found in Posda but outside the current activity/timepoint
-          Found_References    — found within the current activity/timepoint
+          External_References — found in Posda but not in the current timepoint; earlier
+                                timepoints of the current activity are listed first,
+                                then other activities
+          Found_References    — found within the current timepoint of the current activity
         """
         activity_id = str(self.args.activity_id)
 
@@ -871,13 +882,15 @@ class LinkageChecker:
             if missing_flag:
                 bucket = buckets["missing"]
             else:
-                in_current = str(entry.get("found_activity_id")) == activity_id
-                if missing_flag is False:
-                    if in_current:
-                        entry["note"] = "In current activity"
-                    else:
-                        entry.setdefault("note", "In external activity")
-                bucket = buckets["found"] if in_current else buckets["external"]
+                in_activity = str(entry.get("found_activity_id")) == activity_id
+                in_timepoint = in_activity and entry.get("found_timepoint_id") == entry.get("timepoint_id")
+                if in_timepoint:
+                    entry["note"] = "In current timepoint"
+                elif in_activity:
+                    entry["note"] = "In earlier timepoint of current activity"
+                else:
+                    entry["note"] = "In external activity"
+                bucket = buckets["found"] if in_timepoint else buckets["external"]
 
             bucket["rows"].append(reference_to_row(entry))
             for field, key in (("patient_id", "patients"), ("study_instance_uid", "studies"),
@@ -890,6 +903,10 @@ class LinkageChecker:
         missing_rows  = buckets["missing"]["rows"]
         external_rows = buckets["external"]["rows"]
         found_rows    = buckets["found"]["rows"]
+
+        # Stable sort: earlier timepoints of this activity first, scan order otherwise kept.
+        found_activity_col = REFERENCE_REPORT_HEADER.index("found_activity_id")
+        external_rows.sort(key=lambda row: str(row[found_activity_col]) != activity_id)
 
         print(f"Missing (Not in Posda): {len(missing_rows)}")
         print(f"External (Not in current Activity / Timepoint): {len(external_rows)}")
