@@ -2,7 +2,7 @@ package Posda::Config;
 
 require Exporter;
 @ISA = 'Exporter';
-@EXPORT_OK = ('Config', 'Database', 'DatabaseName');
+@EXPORT_OK = ('Config', 'Database', 'DatabaseName', 'SubAppUrlPath');
 
 use Modern::Perl '2010';
 
@@ -25,11 +25,30 @@ my $loading_rules = {
   extraction_mgr_port => sub {
     return Config("port") + 2;
   },
+  # Number of ports reserved for sub-application (per-session) processes.
+  # Overridable with POSDA_APP_PORT_COUNT; nginx must be able to reach every
+  # port in the resulting pool (see SubAppUrlPath below).
+  app_port_count => sub {
+    my $count = $ENV{POSDA_APP_PORT_COUNT};
+    return (defined $count && $count =~ /^\d+$/ && $count > 0) ? $count : 16;
+  },
   port_pool => sub {
     my $main_port = Config("port");
-    return [($main_port+5)..($main_port+20)];
+    my $first = $main_port + 5;
+    my $last = $first + Config("app_port_count") - 1;
+    return [$first..$last];
   },
 };
+
+# URL path prefix (no leading slash) under which nginx proxies a
+# sub-application listening on $port. nginx matches it with a single
+# regex location, so the pool can grow without touching the proxy config:
+#
+#   location ~ ^/pa/(646\d\d)/(.*)$ { proxy_pass http://posda:$1/$2$is_args$args; }
+sub SubAppUrlPath {
+  my ($port) = @_;
+  return "pa/$port";
+}
 
 sub _get {
   my ($var) = @_;

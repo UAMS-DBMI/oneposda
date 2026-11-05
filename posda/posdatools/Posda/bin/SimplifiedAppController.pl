@@ -8,6 +8,7 @@ use Dispatch::Http;
 use Dispatch::Select;
 use Posda::ConfigRead;
 use Posda::Permissions;
+use Posda::Config ('SubAppUrlPath');
 use Cwd;
 use JSON;
 use Debug;
@@ -23,23 +24,6 @@ my $port = $ARGV[1];
 my $dir = $ARGV[2];
 my $hashed_token = $ARGV[3];
 my $user = $ARGV[4];
-my $port_mapper = {
-  64615 => 'pa1',
-  64616 => 'pa2',
-  64617 => 'pa3',
-  64618 => 'pa4',
-  64619 => 'pa5',
-  64620 => 'pa6',
-  64621 => 'pa7',
-  64622 => 'pa8',
-  64623 => 'pa9',
-  64624 => 'pa10',
-  64625 => 'pa11',
-  64626 => 'pa12',
-  64627 => 'pa13',
-  64628 => 'pa14',
-  64629 => 'pa15',
-};
 
 my $TheProtocol = "http:";
 if(exists($ENV{POSDA_SECURE_ONLY}) && $ENV{POSDA_SECURE_ONLY}){
@@ -86,7 +70,7 @@ sub RandString{
   my $app_inst = $class->new($session_id, $app_name);
   $HTTP_APP_SINGLETON->Serve($port, $int, $ttl);
 
-  my $base_url = "$TheProtocol//$host/$port_mapper->{$port}";
+  my $base_url = "$TheProtocol//$host/" . SubAppUrlPath($port);
   $HTTP_APP_SINGLETON->{base_url} = $base_url;
 
   $ref_type = ref($main::HTTP_APP_SINGLETON);

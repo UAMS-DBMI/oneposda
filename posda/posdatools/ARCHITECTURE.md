@@ -155,7 +155,7 @@ the running code is the working tree, not what was baked into the image.
 | Path | Upstream |
 |---|---|
 | `/posda/` | `posda:64610` (main controller) |
-| `/pa1/` … `/pa15/` | `posda:64615` … `posda:64629` (sub-app processes) |
+| `/pa/<port>/` | `posda:<port>` (sub-app processes; one regex location, port restricted to 646xx) |
 | `/papi/` | `posda-api:8087` (FastAPI) |
 | `/files/` | `/home/posda/cache/`, gated by `auth_request` |
 | `/k`, `/viewer`, `/ohif`, `/mira`, `/kohlrabi`, `/dashboard`, `/roots` | static SPAs |
@@ -215,15 +215,18 @@ The controller on 64610 is primarily a launcher.
 `SimplifiedAppController.pl` process** for that app, with its own config
 directory and a hashed token.
 
-`$port_mapper` in both controllers maps 64615–64629 to `pa1`…`pa15`, which is
-what nginx proxies. Consequently each user's each app session is its own OS
-process — hence `Restart=always` and the `error_page 502 /posda-error.html`
-fallback in nginx.
+Both controllers build the redirect URL with `Posda::Config::SubAppUrlPath`,
+which yields `pa/<port>`; nginx proxies `^/pa/(646\d\d)/` to that port on the
+posda host with a single regex location. Consequently each user's each app
+session is its own OS process — hence `Restart=always` and the
+`error_page 502 /posda-error.html` fallback in nginx.
 
 **Config gotcha:** the `SocketPool` array in
 `Config/AppConfig/Applications.json` (64665+) is **ignored**. The pool actually
-used is `Posda::Config`'s computed `port_pool` (64615–64630), which is what
-`$port_mapper` and nginx agree on.
+used is `Posda::Config`'s computed `port_pool`: `POSDA_PORT+5` onwards,
+`POSDA_APP_PORT_COUNT` ports long (default 16, i.e. 64615–64630). Every port in
+the pool must be reachable from the nginx container; in k8s that means the
+`posda` Service must list them, or nginx must target a headless Service.
 
 ### 4.4 Registered apps
 
