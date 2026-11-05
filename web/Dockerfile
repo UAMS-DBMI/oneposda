@@ -51,7 +51,7 @@ FROM nginxinc/nginx-unprivileged:1.31-alpine3.23
 ARG MIRABELLE_COMMIT=unknown
 LABEL org.opencontainers.image.revision=$MIRABELLE_COMMIT
 
-COPY default.conf /opt/bitnami/nginx/conf/server_blocks/
+COPY default.conf /etc/nginx/conf.d/default.conf
 COPY www /www
 
 
