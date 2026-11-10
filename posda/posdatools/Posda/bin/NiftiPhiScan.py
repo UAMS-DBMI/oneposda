@@ -64,6 +64,8 @@ def create_nifti_phi_scan(args):
             ext_name = f'ext_{i}'
             report_files[file_id][ext_name] = f'<{extension}>'
             #print(f'{ext_name} : {extension}')
+
+        nifti.close()
               
     #print(report_files)
 
@@ -89,7 +91,7 @@ def saveNiftiMetaData(nifti, report_files, activity_id, phi_scan_id):
                     value_seen_id = Query("InsertNiftiValueSeen").get_single_value(value = str(value))
                 Query("InsertNiftiValueOccurrence").execute(nifti_tag_seen_id = tag_seen_id, nifti_value_seen_id = value_seen_id, nifti_phi_scan_instance_id = phi_scan_id, file_id = file_id)
             else:
-                print(f'*** Tag: {tag.name} has data too large to save. ***'.format())
+                print(f'*** File {file_id} Tag: {tag} has data too large to save. ***')
 
 
 def createCSVReports(report_files, phi_scan_id, background):
