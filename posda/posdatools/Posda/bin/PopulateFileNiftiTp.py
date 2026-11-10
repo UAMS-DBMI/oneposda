@@ -114,20 +114,16 @@ def main(args):
             num_not_parsed += 1
             continue
 
-        back.print_to_email(f"Nifti File: {file_id}")
-
         nifti_file_type = "Nifti Image (gzipped)" if nifti.is_zipped else "Nifti Image"
         
         if nifti_file_type != file_type:
             change_file_type.execute(nifti_file_type, file_id)
             
         if existing_row:
-            back.print_to_email(f"Existing Row for {file_id}")
             parms = set_update_parms(nifti, file_id)
             update_file_nifti.execute(*parms)
             num_updated += 1
         else:
-            back.print_to_email(f"No Existing Row for {file_id}")
             parms = set_insert_parms(nifti, file_id)
             create_file_nifti.execute(*parms)
             num_inserted += 1
