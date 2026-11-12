@@ -17,7 +17,7 @@ import tempfile
 from .auth import logged_in_user, User
 from . import importer
 
-from ..util import Database, idc_bucket
+from ..util import Database, asynczip, idc_bucket
 from ..util.models import File, consistent
 from ..util.wp import (
     wp_get, wp_get_paged, wp_patch, wp_url, wp_client, wp_upload_media, wp_edit_url,
@@ -9283,13 +9283,9 @@ def sort_series_files(rows):
     return sorted(rows, key=lambda r: position[r["file_id"]])
 
 
-@router.get("/qc/assignments/{assignment_id}/series/{series_instance_uid}/files")
-# Files for a single series in an assignment, ordered by instance number
-async def list_assignment_series_files(
-    assignment_id: int,
-    series_instance_uid: str,
-    db: Database = Depends()):
-
+async def fetch_assignment_series_files(db, assignment_id, series_instance_uid):
+    """The files of one series in an assignment, in display order. Shared by the
+    file list and the download, so the zip holds exactly what QC shows."""
     series = await db.fetch_one(
         "select qc_review_id from qc_unit where assignment_id = $1 and series_instance_uid = $2",
         [assignment_id, series_instance_uid])
@@ -9319,6 +9315,7 @@ async def list_assignment_series_files(
             coalesce(i.number_of_frames, 1) as num_of_frames,
             fsc.instance_number,
             fsc.sop_instance_uid,
+            fsr.root_path || '/' || fl.rel_path              as full_path,
             ig.iop,
             ig.ipp
         from qc_unit qs
@@ -9327,6 +9324,7 @@ async def list_assignment_series_files(
         join file_series fs          on fs.file_id         = rdf.file_id
                                     and fs.series_instance_uid = qs.series_instance_uid
         left join file_location fl      on fl.file_id             = rdf.file_id
+        left join file_storage_root fsr on fsr.file_storage_root_id = fl.file_storage_root_id
         left join file_image fi         on fi.file_id             = rdf.file_id
         left join image i               on i.image_id             = fi.image_id
         left join image_geometry ig     on ig.image_id            = fi.image_id
@@ -9344,7 +9342,17 @@ async def list_assignment_series_files(
         """,
         [assignment_id, series_instance_uid])
 
-    ordered = sort_series_files(rows)
+    return sort_series_files(rows)
+
+
+@router.get("/qc/assignments/{assignment_id}/series/{series_instance_uid}/files")
+# Files for a single series in an assignment, in display order
+async def list_assignment_series_files(
+    assignment_id: int,
+    series_instance_uid: str,
+    db: Database = Depends()):
+
+    ordered = await fetch_assignment_series_files(db, assignment_id, series_instance_uid)
     data = [
         {
             "file_id": r["file_id"],
@@ -9361,6 +9369,37 @@ async def list_assignment_series_files(
             "series_instance_uid": series_instance_uid,
         },
     }
+
+
+def safe_entry_name(text):
+    """Reduce a UID (or anything else) to characters safe in a zip entry name
+    and a Content-Disposition header."""
+    return re.sub(r"[^A-Za-z0-9._-]", "_", str(text))[:200]
+
+
+@router.get("/qc/assignments/{assignment_id}/series/{series_instance_uid}/download")
+# A zip of the series' files, exactly as QC shows them. Entries are named by
+# display position and SOP Instance UID, never by server path.
+async def download_assignment_series_files(
+    assignment_id: int,
+    series_instance_uid: str,
+    db: Database = Depends()):
+
+    ordered = await fetch_assignment_series_files(db, assignment_id, series_instance_uid)
+    files = [r for r in ordered if r["full_path"] is not None]
+    if not files:
+        api_error("NOT_FOUND", "No stored files for this series",
+                  {"assignment_id": assignment_id, "series_instance_uid": series_instance_uid}, 404)
+
+    width = max(4, len(str(len(files))))
+    entries = []
+    for position, r in enumerate(files, start=1):
+        uid = r["sop_instance_uid"] or "file{}".format(r["file_id"])
+        name = "{:0{}d}_{}.dcm".format(position, width, safe_entry_name(uid))
+        entries.append((r["full_path"], name))
+
+    zip_name = "qc{}_{}.zip".format(assignment_id, safe_entry_name(series_instance_uid))
+    return await asynczip.stream_named_files(entries, zip_name)
 
 
 @router.put("/qc/assignments/{assignment_id}/series/{series_instance_uid}/status")
