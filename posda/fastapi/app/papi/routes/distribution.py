@@ -7946,6 +7946,14 @@ class QCSplitRequest(BaseModel):
     count: Optional[int] = None                     # N unclaimed pickup slices
     force: bool = False
 
+class QCSliceSplit(BaseModel):
+    count: int                                      # slices after the split, original included
+    assignees: Optional[list[Optional[int]]] = None # one per new slice (count - 1); null = unclaimed
+
+class QCSliceCombine(BaseModel):
+    target_assignment_id: int
+    include_decided: bool = False                   # also move approved / rejected / flagged series
+
 class QCAssignmentUpdate(BaseModel):
     assigned_to: Optional[int] = None
     assignment_status: Optional[str] = None
@@ -8015,6 +8023,37 @@ def page_clause(page: Optional[int], limit: Optional[int]):
     p = page if page and page > 0 else 1
     l = limit if limit and limit > 0 else 1
     return f"limit {int(l)} offset {int((p - 1) * l)}"
+
+
+# Each slice's share of the review, from unit counts ($1 = review).
+QC_SHARE_UPDATE = """
+    update qc_review_assignment a
+    set share_percentage = round(100.0 * c.n / t.total, 4)
+    from (select assignment_id, count(*) as n from qc_unit
+          where qc_review_id = $1 group by assignment_id) c,
+         (select count(*) as total from qc_unit where qc_review_id = $1) t
+    where a.assignment_id = c.assignment_id
+"""
+
+
+def qc_allocate_even(unit_ids_by_modality: dict, n: int) -> list[list[int]]:
+    # Even per-modality allocation into n contiguous chunks; round-robin each
+    # modality's leftover with a running pointer (not the modality index) so
+    # totals stay balanced to within 1 across all modalities.
+    alloc = [[] for _ in range(n)]
+    leftover = 0
+    for unit_ids in unit_ids_by_modality.values():
+        c = len(unit_ids)
+        counts = [c // n] * n
+        rem = c % n
+        for k in range(rem):
+            counts[(leftover + k) % n] += 1
+        leftover = (leftover + rem) % n
+        idx = 0
+        for si in range(n):
+            alloc[si].extend(unit_ids[idx:idx + counts[si]])
+            idx += counts[si]
+    return alloc
 
 
 async def qc_sync_assignment_status(conn, assignment_id: int):
@@ -8818,14 +8857,6 @@ async def sync_qc_review(
             as c(id, h, m, fid, fname)
         where u.qc_unit_id = c.id
     """
-    share_update = """
-        update qc_review_assignment a
-        set share_percentage = round(100.0 * c.n / t.total, 4)
-        from (select assignment_id, count(*) as n from qc_unit
-              where qc_review_id = $1 group by assignment_id) c,
-             (select count(*) as total from qc_unit where qc_review_id = $1) t
-        where a.assignment_id = c.assignment_id
-    """
 
     try:
         async with db.transaction() as conn:
@@ -8892,7 +8923,7 @@ async def sync_qc_review(
                 returning assignment_id
                 """,
                 review_id)
-            await conn.execute(share_update, review_id)
+            await conn.execute(QC_SHARE_UPDATE, review_id)
 
             # Out of stale; the status syncs then settle each slice and the
             # review (they only move open <-> complete).
@@ -8991,22 +9022,7 @@ async def split_qc_review(
             for r in units:
                 groups.setdefault(r["modality"], []).append(r["qc_unit_id"])
 
-            # Even per-modality allocation; round-robin each modality's leftover
-            # with a running pointer (not the modality index) so slice totals
-            # stay balanced to within 1 across the whole review.
-            alloc = [[] for _ in range(n)]
-            leftover = 0
-            for unit_ids in groups.values():
-                c = len(unit_ids)
-                counts = [c // n] * n
-                rem = c % n
-                for k in range(rem):
-                    counts[(leftover + k) % n] += 1
-                leftover = (leftover + rem) % n
-                idx = 0
-                for si in range(n):
-                    alloc[si].extend(unit_ids[idx:idx + counts[si]])
-                    idx += counts[si]
+            alloc = qc_allocate_even(groups, n)
 
             new_ids = []
             for si in range(n):
@@ -9051,6 +9067,180 @@ async def split_qc_review(
 
 
 # ----------------------------------- QC ASSIGNMENTS ----------------------------------
+
+QC_SLICES_WITH_TOTALS = """
+    select a.*, coalesce(c.total, 0) as series_total
+    from qc_review_assignment a
+    left join (select assignment_id, count(*) as total from qc_unit group by assignment_id) c
+        on c.assignment_id = a.assignment_id
+    where a.qc_review_id = $1
+    order by a.assignment_id
+"""
+
+
+async def qc_lock_slice_review(conn, assignment_id: int) -> dict:
+    # The slice joined to its review, with the review row locked so a split,
+    # combine or sync on the same review runs one at a time. 404 / 409 for a
+    # missing slice, a finished slice, or a review that can't change.
+    rows = await conn.fetch(
+        """
+        select a.assignment_id, a.qc_review_id, a.assignment_status, r.review_status
+        from qc_review_assignment a
+        join qc_review r on r.qc_review_id = a.qc_review_id
+        where a.assignment_id = $1
+        for update of r
+        """,
+        assignment_id)
+    if not rows:
+        api_error("NOT_FOUND", "Assignment not found", {"assignment_id": assignment_id}, 404)
+    slice_ = dict(rows[0])
+    if slice_["review_status"] in ("cancelled", "complete", "replaced"):
+        api_error("CONFLICT", f"Slices on a {slice_['review_status']} review can't change",
+                  {"assignment_id": assignment_id, "review_status": slice_["review_status"]}, 409)
+    if slice_["assignment_status"] == "complete":
+        api_error("CONFLICT", "A finished slice can't be split or combined",
+                  {"assignment_id": assignment_id}, 409)
+    return slice_
+
+
+async def qc_settle_review_slices(conn, review_id: int):
+    # After units move: recompute shares, then settle every slice and the review.
+    await conn.execute(QC_SHARE_UPDATE, review_id)
+    slices = await conn.fetch(
+        "select assignment_id from qc_review_assignment where qc_review_id = $1", review_id)
+    for s in slices:
+        await qc_sync_assignment_status(conn, s["assignment_id"])
+    await qc_sync_review_status(conn, review_id)
+
+
+@router.post("/qc/assignments/{assignment_id}/split")
+# Split one unfinished slice: it keeps its decided series, reviewer and link plus an
+# even share of its pending series; count - 1 new slices take the rest.
+async def split_qc_assignment(
+    assignment_id: int,
+    payload: QCSliceSplit,
+    current_user: User = logged_in_user,
+    db: Database = Depends()) -> dict:
+
+    n = payload.count
+    if n < 2:
+        api_error("VALIDATION_ERROR", "count must be >= 2", {}, 422)
+    assignees = payload.assignees if payload.assignees is not None else [None] * (n - 1)
+    if len(assignees) != n - 1:
+        api_error("VALIDATION_ERROR", f"assignees must list {n - 1} entries (one per new slice)",
+                  {"count": n, "assignees": len(assignees)}, 422)
+
+    new_slice_insert = """
+        insert into qc_review_assignment (qc_review_id, assigned_to, assignment_status, share_percentage,
+                                          when_created, who_created, when_updated, who_updated)
+        values ($1, $2, 'needs_qc', 0, now(), $3, now(), $3)
+        returning assignment_id
+    """
+
+    try:
+        async with db.transaction() as conn:
+            slice_ = await qc_lock_slice_review(conn, assignment_id)
+            review_id = slice_["qc_review_id"]
+
+            pending = await conn.fetch(
+                "select qc_unit_id, modality from qc_unit "
+                "where assignment_id = $1 and qc_status = 'pending' "
+                "order by modality nulls first, qc_unit_id",
+                assignment_id)
+            if n > len(pending):
+                api_error("VALIDATION_ERROR",
+                          f"Cannot split {len(pending)} pending series into {n} slices",
+                          {"assignment_id": assignment_id, "pending": len(pending),
+                           "requested_slices": n}, 422)
+
+            groups = {}
+            for r in pending:
+                groups.setdefault(r["modality"], []).append(r["qc_unit_id"])
+            # Chunk 0 stays in the original slice.
+            alloc = qc_allocate_even(groups, n)
+
+            new_ids = []
+            for si in range(1, n):
+                aid = (await conn.fetch(
+                    new_slice_insert, review_id, assignees[si - 1], current_user.user_id)
+                )[0]["assignment_id"]
+                new_ids.append(aid)
+                await conn.execute(
+                    "update qc_unit set assignment_id = $1 where qc_unit_id = any($2::int[])",
+                    aid, alloc[si])
+
+            await qc_settle_review_slices(conn, review_id)
+            result = await conn.fetch(QC_SLICES_WITH_TOTALS, review_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        db_error(e, operation="splitting qc slice", context={"assignment_id": assignment_id})
+
+    return item_response({
+        "assignments": [dict(r) for r in result],
+        "new_assignment_ids": new_ids,
+    })
+
+
+@router.post("/qc/assignments/{assignment_id}/combine")
+# Move one unfinished slice's pending series (and, if asked, its decided ones) into
+# another unfinished slice of the same review; the source is deleted if left empty.
+async def combine_qc_assignment(
+    assignment_id: int,
+    payload: QCSliceCombine,
+    current_user: User = logged_in_user,
+    db: Database = Depends()) -> dict:
+
+    target_id = payload.target_assignment_id
+    if target_id == assignment_id:
+        api_error("VALIDATION_ERROR", "A slice can't be combined into itself",
+                  {"assignment_id": assignment_id}, 422)
+
+    try:
+        async with db.transaction() as conn:
+            source = await qc_lock_slice_review(conn, assignment_id)
+            review_id = source["qc_review_id"]
+            target = await conn.fetch(
+                "select qc_review_id, assignment_status from qc_review_assignment "
+                "where assignment_id = $1",
+                target_id)
+            if not target or target[0]["qc_review_id"] != review_id:
+                api_error("CONFLICT", "Target slice is not part of this review",
+                          {"assignment_id": assignment_id, "target_assignment_id": target_id}, 409)
+            if target[0]["assignment_status"] == "complete":
+                api_error("CONFLICT", "A finished slice can't take more series",
+                          {"target_assignment_id": target_id}, 409)
+
+            moved = await conn.fetch(
+                """
+                update qc_unit set assignment_id = $2
+                where assignment_id = $1 and ($3 or qc_status = 'pending')
+                returning qc_unit_id
+                """,
+                assignment_id, target_id, payload.include_decided)
+            deleted = await conn.fetch(
+                """
+                delete from qc_review_assignment a
+                where a.assignment_id = $1
+                  and not exists (select 1 from qc_unit u where u.assignment_id = a.assignment_id)
+                returning assignment_id
+                """,
+                assignment_id)
+
+            await qc_settle_review_slices(conn, review_id)
+            result = await conn.fetch(QC_SLICES_WITH_TOTALS, review_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        db_error(e, operation="combining qc slices",
+                 context={"assignment_id": assignment_id, "target_assignment_id": target_id})
+
+    return item_response({
+        "assignments": [dict(r) for r in result],
+        "moved": len(moved),
+        "deleted_assignment_ids": [r["assignment_id"] for r in deleted],
+    })
+
 
 @router.get("/qc/reviews/{review_id}/assignments")
 # List a review's assignment slices (with series counts)
