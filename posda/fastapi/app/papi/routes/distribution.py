@@ -7938,6 +7938,9 @@ class QCReviewClone(BaseModel):
     mode: Optional[str] = "carry_forward"           # carry_forward | resample
     review_notes: Optional[str] = None
 
+class QCReviewSync(BaseModel):
+    target_assignment_id: Optional[int] = None      # null = a new slice
+
 class QCSplitRequest(BaseModel):
     user_ids: Optional[list[int]] = None            # one assigned slice per user
     count: Optional[int] = None                     # N unclaimed pickup slices
@@ -8136,6 +8139,111 @@ QC_SAMPLED_PER_MOD = """
     from qc_unit where qc_review_id = $1
     group by coalesce(modality, '(none)')
 """
+
+
+# Sync plan, DICOM: one row per unit to add / re-review / delete.
+#   $1 draft, $2 seed, $3 is_full, $4 percentage, $5 review
+# Added = what the review's own draw selects today that has no unit. Nothing
+# records the draft as it was when the review was drawn, so for a partial
+# review this re-draw is how "draw only the added series" is approximated
+# (notes/LUSCIDA.md §5). Changed / removed compare every unit with the whole
+# draft, so a unit is never dropped for falling out of the re-draw.
+QC_SYNC_SERIES = f"""
+    with {QC_DRAW_CTE},
+    u as (
+        select qc_unit_id, assignment_id, series_instance_uid, unit_hash
+        from qc_unit where qc_review_id = $5
+    )
+    select 'added' as change, null::int as qc_unit_id, null::int as assignment_id,
+           d.suid as series_instance_uid, d.modality, d.series_file_hash as unit_hash,
+           null::int as file_id, null::text as file_name
+    from drawn d
+    where ($3 = true or d.rn <= ceil($4::numeric / 100 * d.mcount))
+      and not exists (select 1 from u where u.series_instance_uid = d.suid)
+    union all
+    select 'changed', u.qc_unit_id, u.assignment_id, u.series_instance_uid,
+           p.modality, p.series_file_hash, null, null
+    from u join pop p on p.suid = u.series_instance_uid
+    where p.series_file_hash <> u.unit_hash
+    union all
+    select 'removed', u.qc_unit_id, u.assignment_id, u.series_instance_uid,
+           null, null, null, null
+    from u
+    where not exists (select 1 from pop p where p.suid = u.series_instance_uid)
+"""
+
+# Sync plan, non-DICOM: the same rows, matched by file name (QC_FILE_KEY).
+#   $1 draft, $2 review
+QC_SYNC_FILES = f"""
+    with u as (
+        select qc_unit_id, assignment_id, {QC_FILE_KEY.format(t="qu")} as k, unit_hash as h
+        from qc_unit qu where qu.qc_review_id = $2
+    ),
+    d as (
+        select rdf.file_id, rdf.file_name, {QC_FILE_KEY.format(t="rdf")} as k, f.digest as h
+        from recordset_draft_file rdf
+        join file f on f.file_id = rdf.file_id
+        where rdf.recordset_draft_id = $1 and coalesce(f.is_dicom_file, false) = false
+    )
+    select case when u.k is null then 'added'
+                when d.k is null then 'removed'
+                else 'changed' end as change,
+           u.qc_unit_id, u.assignment_id, null::text as series_instance_uid,
+           null::text as modality, d.h as unit_hash, d.file_id, d.file_name
+    from u full outer join d on u.k = d.k
+    where u.k is null or d.k is null or u.h <> d.h
+"""
+
+
+async def qc_sync_plan(conn: asyncpg.Connection, review: asyncpg.Record) -> dict:
+    """What a sync would do to `review` against its draft's current files.
+
+    `emptied` lists the slices left with no units if the added / changed units
+    go to a new slice; a combine target receives them and is kept instead.
+    """
+    review_id = review["qc_review_id"]
+    draft_id = review["recordset_draft_id"]
+    if review["review_type"] == "non_dicom":
+        rows = await conn.fetch(QC_SYNC_FILES, draft_id, review_id)
+    else:
+        seed_text = str(review["sample_seed"]) if review["sample_seed"] is not None else "0"
+        rows = await conn.fetch(
+            QC_SYNC_SERIES, draft_id, seed_text, review["review_type"] == "full",
+            review["sample_percentage"], review_id)
+
+    plan = {"added": [], "changed": [], "removed": []}
+    for r in rows:
+        plan[r["change"]].append(r)
+
+    slices = await conn.fetch(
+        """
+        select a.assignment_id, a.assigned_to, a.assignment_status,
+               count(u.qc_unit_id) as unit_count
+        from qc_review_assignment a
+        left join qc_unit u on u.assignment_id = a.assignment_id
+        where a.qc_review_id = $1
+        group by a.assignment_id
+        order by a.assignment_id
+        """,
+        review_id)
+    leaving: dict[int, int] = {}
+    for r in plan["changed"] + plan["removed"]:
+        leaving[r["assignment_id"]] = leaving.get(r["assignment_id"], 0) + 1
+    plan["slices"] = slices
+    plan["emptied"] = [
+        s["assignment_id"] for s in slices
+        if s["unit_count"] == leaving.get(s["assignment_id"], 0)
+    ]
+    return plan
+
+
+def qc_sync_counts(plan: dict) -> dict:
+    # The stale breakdown's shape (QcStaleBreakdown in the release module).
+    return {
+        "changed": len(plan["changed"]),
+        "would_add": len(plan["added"]),
+        "would_drop": len(plan["removed"]),
+    }
 
 
 # ------------------------------------- QC REVIEWS -------------------------------------
@@ -8400,55 +8508,11 @@ async def get_qc_review(review_id: int, db: Database = Depends()):
         [review_id],
     )
 
+    # What a sync would do: the same plan the sync endpoints use.
     stale_breakdown = None
-    if review["review_status"] == "stale" and review["review_type"] == "non_dicom":
-        # A non-DICOM review holds every non-DICOM file: compare its units with
-        # the draft's current non-DICOM files.
-        recon = await db.fetch(
-            f"""
-            with a as (
-                select {QC_FILE_KEY.format(t="u")} as k, u.unit_hash as h
-                from qc_unit u where u.qc_review_id = $2
-            ),
-            b as (
-                select {QC_FILE_KEY.format(t="rdf")} as k, f.digest as h
-                from recordset_draft_file rdf
-                join file f on f.file_id = rdf.file_id
-                where rdf.recordset_draft_id = $1 and coalesce(f.is_dicom_file, false) = false
-            ),
-            cmp as ({QC_FILE_COMPARE})
-            select changed, added as would_add, dropped as would_drop from cmp
-            """,
-            [review["recordset_draft_id"], review_id],
-        )
-        stale_breakdown = dict(recon[0]) if recon else None
-    # A DICOM (sampled) review replays its draw to reconstruct what changed.
-    elif review["review_status"] == "stale":
-        is_full = review["review_type"] == "full"
-        seed_text = str(review["sample_seed"]) if review["sample_seed"] is not None else "0"
-        recon_q = f"""
-            with {QC_DRAW_CTE},
-            t as (
-                select suid, series_file_hash from drawn
-                where ($3 = true or rn <= ceil($4::numeric / 100 * mcount))
-            ),
-            cur as (
-                select series_instance_uid as suid, unit_hash as series_file_hash
-                from qc_unit where qc_review_id = $5
-            )
-            select
-                count(*) filter (where t.suid is not null and cur.suid is not null
-                                 and t.series_file_hash <> cur.series_file_hash) as changed,
-                count(*) filter (where t.suid is not null and cur.suid is null) as would_add,
-                count(*) filter (where t.suid is null and cur.suid is not null) as would_drop
-            from t full outer join cur on t.suid = cur.suid
-        """
-        recon = await db.fetch(
-            recon_q,
-            [review["recordset_draft_id"], seed_text, is_full,
-             review["sample_percentage"], review_id],
-        )
-        stale_breakdown = dict(recon[0]) if recon else None
+    if review["review_status"] == "stale":
+        async with db.transaction() as conn:
+            stale_breakdown = qc_sync_counts(await qc_sync_plan(conn, review))
 
     return item_response({
         "review": dict(review),
@@ -8690,6 +8754,170 @@ async def clone_qc_review(
         "assignment": dict(assignment),
         "summary": qc_modality_summary(pop_rows, samp_rows),
         "reconcile": dict(recon[0]) if recon else None,
+    })
+
+
+@router.get("/qc/reviews/{review_id}/sync-preview")
+# What a sync would do: counts, the slices it can combine into, the slices it would delete
+async def preview_qc_review_sync(review_id: int, db: Database = Depends()) -> dict:
+    review = await db.fetch_one("select * from qc_review where qc_review_id = $1", [review_id])
+    if not review:
+        api_error("NOT_FOUND", "QC review not found", {"qc_review_id": review_id}, 404)
+
+    try:
+        async with db.transaction() as conn:
+            plan = await qc_sync_plan(conn, review)
+    except Exception as e:
+        db_error(e, operation="previewing qc review sync", context={"qc_review_id": review_id})
+
+    return item_response({
+        **qc_sync_counts(plan),
+        "targets": [dict(s) for s in plan["slices"] if s["assignment_status"] != "complete"],
+        "emptied_assignment_ids": plan["emptied"],
+    })
+
+
+@router.post("/qc/reviews/{review_id}/sync")
+# Bring a stale review in line with its draft in place (notes/LUSCIDA.md §4): added
+# units and changed ones (back to pending) go to the target slice, removed units
+# and slices left empty are deleted, finished slices are otherwise untouched.
+async def sync_qc_review(
+    review_id: int,
+    payload: QCReviewSync,
+    current_user: User = logged_in_user,
+    db: Database = Depends()) -> dict:
+
+    user_id = current_user.user_id
+    target_id = payload.target_assignment_id
+    unit_type = "series"
+
+    new_slice_insert = """
+        insert into qc_review_assignment (qc_review_id, assigned_to, assignment_status, share_percentage,
+                                          when_created, who_created, when_updated, who_updated)
+        values ($1, null, 'needs_qc', 0, now(), $2, now(), $2)
+        returning assignment_id
+    """
+    unit_insert = """
+        insert into qc_unit (qc_review_id, unit_type, series_instance_uid, file_id, file_name,
+                             qc_status, unit_hash, modality, assignment_id)
+        values ($1, $2, $3, $4, $5, 'pending', $6, $7, $8)
+    """
+    # History first, while qc_status still holds the decision being reset.
+    changed_history = """
+        insert into qc_unit_history (qc_unit_id, previous_status, new_status, who_updated, notes)
+        select qc_unit_id, qc_status, 'pending', $2, 'content changed, re-review (sync)'
+        from qc_unit where qc_unit_id = any($1::int[])
+    """
+    # Series units carry modality, file units file_id / file_name; the other
+    # side of each is null in the plan, as the unit-type check requires.
+    changed_update = """
+        update qc_unit u set
+            qc_status = 'pending', unit_hash = c.h, modality = c.m,
+            file_id = c.fid, file_name = c.fname, assignment_id = $6
+        from unnest($1::int[], $2::text[], $3::text[], $4::int[], $5::text[])
+            as c(id, h, m, fid, fname)
+        where u.qc_unit_id = c.id
+    """
+    share_update = """
+        update qc_review_assignment a
+        set share_percentage = round(100.0 * c.n / t.total, 4)
+        from (select assignment_id, count(*) as n from qc_unit
+              where qc_review_id = $1 group by assignment_id) c,
+             (select count(*) as total from qc_unit where qc_review_id = $1) t
+        where a.assignment_id = c.assignment_id
+    """
+
+    try:
+        async with db.transaction() as conn:
+            rows = await conn.fetch(
+                "select * from qc_review where qc_review_id = $1 for update", review_id)
+            if not rows:
+                api_error("NOT_FOUND", "QC review not found", {"qc_review_id": review_id}, 404)
+            review = rows[0]
+            if review["review_status"] != "stale":
+                api_error("CONFLICT", f"Only a stale review can be synced; this one is "
+                          f"{review['review_status']}", {"qc_review_id": review_id}, 409)
+            if review["review_type"] == "non_dicom":
+                unit_type = "file"
+
+            plan = await qc_sync_plan(conn, review)
+
+            if target_id is not None:
+                target = next(
+                    (s for s in plan["slices"] if s["assignment_id"] == target_id), None)
+                if target is None:
+                    api_error("CONFLICT", "Target slice is not part of this review",
+                              {"qc_review_id": review_id, "target_assignment_id": target_id}, 409)
+                if target["assignment_status"] == "complete":
+                    api_error("CONFLICT", "A finished slice can't take new series",
+                              {"qc_review_id": review_id, "target_assignment_id": target_id}, 409)
+
+            unit_total = (await conn.fetch(
+                "select count(*) as n from qc_unit where qc_review_id = $1", review_id))[0]["n"]
+            if unit_total - len(plan["removed"]) + len(plan["added"]) == 0:
+                api_error("VALIDATION_ERROR",
+                          "Nothing this review covers is left in the draft; cancel it instead",
+                          {"qc_review_id": review_id}, 422)
+
+            moving = plan["added"] + plan["changed"]
+            if not moving:
+                target_id = None
+            elif target_id is None:
+                target_id = (await conn.fetch(new_slice_insert, review_id, user_id))[0]["assignment_id"]
+
+            if plan["added"]:
+                await conn.executemany(unit_insert, [
+                    (review_id, unit_type, r["series_instance_uid"], r["file_id"], r["file_name"],
+                     r["unit_hash"], r["modality"], target_id)
+                    for r in plan["added"]
+                ])
+            if plan["changed"]:
+                changed = plan["changed"]
+                await conn.execute(changed_history, [r["qc_unit_id"] for r in changed], user_id)
+                await conn.execute(
+                    changed_update,
+                    [r["qc_unit_id"] for r in changed], [r["unit_hash"] for r in changed],
+                    [r["modality"] for r in changed], [r["file_id"] for r in changed],
+                    [r["file_name"] for r in changed], target_id)
+            if plan["removed"]:
+                await conn.execute(
+                    "delete from qc_unit where qc_unit_id = any($1::int[])",
+                    [r["qc_unit_id"] for r in plan["removed"]])
+
+            deleted = await conn.fetch(
+                """
+                delete from qc_review_assignment a
+                where a.qc_review_id = $1
+                  and not exists (select 1 from qc_unit u where u.assignment_id = a.assignment_id)
+                returning assignment_id
+                """,
+                review_id)
+            await conn.execute(share_update, review_id)
+
+            # Out of stale; the status syncs then settle each slice and the
+            # review (they only move open <-> complete).
+            await conn.execute(
+                "update qc_review set review_status = 'open', when_updated = now(), "
+                "who_updated = $2 where qc_review_id = $1",
+                review_id, user_id)
+            remaining = await conn.fetch(
+                "select assignment_id from qc_review_assignment where qc_review_id = $1", review_id)
+            for s in remaining:
+                await qc_sync_assignment_status(conn, s["assignment_id"])
+            await qc_sync_review_status(conn, review_id)
+
+            updated = (await conn.fetch(
+                "select * from qc_review where qc_review_id = $1", review_id))[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        db_error(e, operation="syncing qc review", context={"qc_review_id": review_id})
+
+    return item_response({
+        "review": dict(updated),
+        **qc_sync_counts(plan),
+        "target_assignment_id": target_id,
+        "deleted_assignment_ids": [r["assignment_id"] for r in deleted],
     })
 
 
