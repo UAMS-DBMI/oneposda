@@ -9708,7 +9708,9 @@ async def fetch_assignment_series_files(db, assignment_id, series_instance_uid):
     """The files of one series in an assignment, in display order. Shared by the
     file list and the download, so the zip holds exactly what QC shows."""
     series = await db.fetch_one(
-        "select qc_review_id from qc_unit where assignment_id = $1 and series_instance_uid = $2",
+        "select qs.qc_review_id, qr.recordset_draft_id from qc_unit qs "
+        "join qc_review qr on qr.qc_review_id = qs.qc_review_id "
+        "where qs.assignment_id = $1 and qs.series_instance_uid = $2",
         [assignment_id, series_instance_uid])
     if not series:
         api_error("NOT_FOUND", "Series not found in this assignment",
@@ -9735,7 +9737,10 @@ async def fetch_assignment_series_files(db, assignment_id, series_instance_uid):
     # full scan of it on every call (232k rows for LUSCIDA), and under a cached
     # generic plan, which can't see the UID, a file_series lookup for each of
     # those rows: seconds per series. "materialized" fixes that order; a plain
-    # join or exists lets the planner start from the draft again.
+    # join or exists lets the planner start from the draft again. The draft id
+    # goes in as a value ($3): correlated through qc_review, the exists was
+    # planned as a hash of the whole recordset_draft_file table (every draft's
+    # files, 23 s on production).
     rows = await db.fetch(
         """
         with series_files as materialized (
@@ -9762,7 +9767,7 @@ async def fetch_assignment_series_files(db, assignment_id, series_instance_uid):
         where qs.assignment_id = $1 and qs.series_instance_uid = $2
           and exists (
               select 1 from recordset_draft_file rdf
-              where rdf.recordset_draft_id = qr.recordset_draft_id
+              where rdf.recordset_draft_id = $3
                 and rdf.file_id = fs.file_id)
         -- Prefer a row that actually carries geometry and a path. Picking the
         -- lowest image_id blindly can keep a duplicate image that has no
@@ -9774,7 +9779,7 @@ async def fetch_assignment_series_files(db, assignment_id, series_instance_uid):
                  (ig.ipp is null), (ig.iop is null), (fl.rel_path is null),
                  fl.file_storage_root_id, fl.rel_path, fi.image_id
         """,
-        [assignment_id, series_instance_uid])
+        [assignment_id, series_instance_uid, series["recordset_draft_id"]])
 
     return sort_series_files(rows)
 
