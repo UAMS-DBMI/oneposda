@@ -9728,10 +9728,21 @@ async def fetch_assignment_series_files(db, assignment_id, series_instance_uid):
     # here at all -- it requires ORDER BY to lead with the distinct key.
     #
     # Still a workaround. The fix is to dedupe those tables and constrain them.
+    #
+    # Driven from the series, not the draft: the materialized CTE takes the
+    # series' files from file_series by UID, and only those are checked
+    # against the draft. Joining the draft's whole file list first meant a
+    # full scan of it on every call (232k rows for LUSCIDA), and under a cached
+    # generic plan, which can't see the UID, a file_series lookup for each of
+    # those rows: seconds per series. "materialized" fixes that order; a plain
+    # join or exists lets the planner start from the draft again.
     rows = await db.fetch(
         """
-        select distinct on (rdf.file_id)
-            rdf.file_id,
+        with series_files as materialized (
+            select file_id from file_series where series_instance_uid = $2
+        )
+        select distinct on (fs.file_id)
+            fs.file_id,
             fl.file_storage_root_id || '/' || fl.rel_path     as file_path,
             coalesce(i.number_of_frames, 1) as num_of_frames,
             fsc.instance_number,
@@ -9741,23 +9752,25 @@ async def fetch_assignment_series_files(db, assignment_id, series_instance_uid):
             ig.ipp
         from qc_unit qs
         join qc_review qr           on qr.qc_review_id    = qs.qc_review_id
-        join recordset_draft_file rdf on rdf.recordset_draft_id = qr.recordset_draft_id
-        join file_series fs          on fs.file_id         = rdf.file_id
-                                    and fs.series_instance_uid = qs.series_instance_uid
-        left join file_location fl      on fl.file_id             = rdf.file_id
+        join series_files fs         on true
+        left join file_location fl      on fl.file_id             = fs.file_id
         left join file_storage_root fsr on fsr.file_storage_root_id = fl.file_storage_root_id
-        left join file_image fi         on fi.file_id             = rdf.file_id
+        left join file_image fi         on fi.file_id             = fs.file_id
         left join image i               on i.image_id             = fi.image_id
         left join image_geometry ig     on ig.image_id            = fi.image_id
-        left join file_sop_common fsc   on fsc.file_id            = rdf.file_id
+        left join file_sop_common fsc   on fsc.file_id            = fs.file_id
         where qs.assignment_id = $1 and qs.series_instance_uid = $2
+          and exists (
+              select 1 from recordset_draft_file rdf
+              where rdf.recordset_draft_id = qr.recordset_draft_id
+                and rdf.file_id = fs.file_id)
         -- Prefer a row that actually carries geometry and a path. Picking the
         -- lowest image_id blindly can keep a duplicate image that has no
         -- image_geometry row, and consistent() gives up on the *whole series*
         -- if any one slice lacks iop/ipp -- so one bad pick would silently
         -- demote every file to instance_number ordering. false sorts before
         -- true, so "is null" puts the populated row first.
-        order by rdf.file_id,
+        order by fs.file_id,
                  (ig.ipp is null), (ig.iop is null), (fl.rel_path is null),
                  fl.file_storage_root_id, fl.rel_path, fi.image_id
         """,
