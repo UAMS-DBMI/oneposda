@@ -86,9 +86,9 @@ sub digest_file {
 
 # Retry policy for insert_file. Transient failures (the API being briefly
 # unreachable or returning a server error) are retried with an exponentially
-# increasing delay: 1s, 2s, 4s, 8s for the default of five attempts. These
-# mirror insert_file_via_api in python/posda/main/file.py.
-our $MAX_ATTEMPTS = 5;
+# increasing delay: 1s, 2s, 4s, 8s, 16s, 32s for the default of seven
+# attempts (about a minute in total before giving up).
+our $MAX_ATTEMPTS = 7;
 our $BASE_DELAY_SECONDS = 1;
 
 sub retry_delay {
