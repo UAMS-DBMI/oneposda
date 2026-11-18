@@ -57,7 +57,7 @@ router = APIRouter(
 class DatasetInsert(BaseModel):
     dataset_type_id: int
     dataset_name: str
-    dataset_doi: str
+    dataset_doi: Optional[str] = None               # optional; blank is stored as null
     active: bool = True
 
 class DatasetUpdate(BaseModel):
@@ -501,7 +501,7 @@ async def create_dataset(
     current_user: User = logged_in_user,
     db: Database = Depends()):
 
-    if payload.dataset_type_id <= 0 or not payload.dataset_name.strip() or not payload.dataset_doi.strip():
+    if payload.dataset_type_id <= 0 or not payload.dataset_name.strip():
         api_error(
             "VALIDATION_ERROR",
             "Required dataset fields must be non-empty",
@@ -509,7 +509,6 @@ async def create_dataset(
                 "required": [
                     "dataset_type_id",
                     "dataset_name",
-                    "dataset_doi",
                 ]
             },
             422,
@@ -557,7 +556,7 @@ async def create_dataset(
     values = [
         payload.dataset_type_id,
         payload.dataset_name,
-        payload.dataset_doi,
+        (payload.dataset_doi or "").strip() or None,
         payload.active,
         current_user.user_id,
     ]
@@ -632,7 +631,11 @@ async def update_dataset(
         idx += 1
 
     add_text_field("dataset_name", payload.dataset_name)
-    add_text_field("dataset_doi", payload.dataset_doi)
+    # The DOI is optional: a blank value clears it.
+    if payload.dataset_doi is not None:
+        updates.append(f"dataset_doi = ${idx}")
+        values.append(payload.dataset_doi.strip() or None)
+        idx += 1
 
     if payload.active is not None:
         updates.append(f"active = ${idx}")
