@@ -17,7 +17,7 @@ import tempfile
 from .auth import logged_in_user, User
 from . import importer
 
-from ..util import Database, idc_bucket
+from ..util import Database, asynczip, idc_bucket
 from ..util.models import File, consistent
 from ..util.wp import (
     wp_get, wp_get_paged, wp_patch, wp_url, wp_client, wp_upload_media, wp_edit_url,
@@ -57,7 +57,7 @@ router = APIRouter(
 class DatasetInsert(BaseModel):
     dataset_type_id: int
     dataset_name: str
-    dataset_doi: str
+    dataset_doi: Optional[str] = None               # optional; blank is stored as null
     active: bool = True
 
 class DatasetUpdate(BaseModel):
@@ -501,7 +501,7 @@ async def create_dataset(
     current_user: User = logged_in_user,
     db: Database = Depends()):
 
-    if payload.dataset_type_id <= 0 or not payload.dataset_name.strip() or not payload.dataset_doi.strip():
+    if payload.dataset_type_id <= 0 or not payload.dataset_name.strip():
         api_error(
             "VALIDATION_ERROR",
             "Required dataset fields must be non-empty",
@@ -509,7 +509,6 @@ async def create_dataset(
                 "required": [
                     "dataset_type_id",
                     "dataset_name",
-                    "dataset_doi",
                 ]
             },
             422,
@@ -557,7 +556,7 @@ async def create_dataset(
     values = [
         payload.dataset_type_id,
         payload.dataset_name,
-        payload.dataset_doi,
+        (payload.dataset_doi or "").strip() or None,
         payload.active,
         current_user.user_id,
     ]
@@ -632,7 +631,11 @@ async def update_dataset(
         idx += 1
 
     add_text_field("dataset_name", payload.dataset_name)
-    add_text_field("dataset_doi", payload.dataset_doi)
+    # The DOI is optional: a blank value clears it.
+    if payload.dataset_doi is not None:
+        updates.append(f"dataset_doi = ${idx}")
+        values.append(payload.dataset_doi.strip() or None)
+        idx += 1
 
     if payload.active is not None:
         updates.append(f"active = ${idx}")
@@ -7938,10 +7941,21 @@ class QCReviewClone(BaseModel):
     mode: Optional[str] = "carry_forward"           # carry_forward | resample
     review_notes: Optional[str] = None
 
+class QCReviewSync(BaseModel):
+    target_assignment_id: Optional[int] = None      # null = a new slice
+
 class QCSplitRequest(BaseModel):
     user_ids: Optional[list[int]] = None            # one assigned slice per user
     count: Optional[int] = None                     # N unclaimed pickup slices
     force: bool = False
+
+class QCSliceSplit(BaseModel):
+    count: int                                      # slices after the split, original included
+    assignees: Optional[list[Optional[int]]] = None # one per new slice (count - 1); null = unclaimed
+
+class QCSliceCombine(BaseModel):
+    target_assignment_id: int
+    include_decided: bool = False                   # also move approved / rejected / flagged series
 
 class QCAssignmentUpdate(BaseModel):
     assigned_to: Optional[int] = None
@@ -8012,6 +8026,37 @@ def page_clause(page: Optional[int], limit: Optional[int]):
     p = page if page and page > 0 else 1
     l = limit if limit and limit > 0 else 1
     return f"limit {int(l)} offset {int((p - 1) * l)}"
+
+
+# Each slice's share of the review, from unit counts ($1 = review).
+QC_SHARE_UPDATE = """
+    update qc_review_assignment a
+    set share_percentage = round(100.0 * c.n / t.total, 4)
+    from (select assignment_id, count(*) as n from qc_unit
+          where qc_review_id = $1 group by assignment_id) c,
+         (select count(*) as total from qc_unit where qc_review_id = $1) t
+    where a.assignment_id = c.assignment_id
+"""
+
+
+def qc_allocate_even(unit_ids_by_modality: dict, n: int) -> list[list[int]]:
+    # Even per-modality allocation into n contiguous chunks; round-robin each
+    # modality's leftover with a running pointer (not the modality index) so
+    # totals stay balanced to within 1 across all modalities.
+    alloc = [[] for _ in range(n)]
+    leftover = 0
+    for unit_ids in unit_ids_by_modality.values():
+        c = len(unit_ids)
+        counts = [c // n] * n
+        rem = c % n
+        for k in range(rem):
+            counts[(leftover + k) % n] += 1
+        leftover = (leftover + rem) % n
+        idx = 0
+        for si in range(n):
+            alloc[si].extend(unit_ids[idx:idx + counts[si]])
+            idx += counts[si]
+    return alloc
 
 
 async def qc_sync_assignment_status(conn, assignment_id: int):
@@ -8136,6 +8181,111 @@ QC_SAMPLED_PER_MOD = """
     from qc_unit where qc_review_id = $1
     group by coalesce(modality, '(none)')
 """
+
+
+# Sync plan, DICOM: one row per unit to add / re-review / delete.
+#   $1 draft, $2 seed, $3 is_full, $4 percentage, $5 review
+# Added = what the review's own draw selects today that has no unit. Nothing
+# records the draft as it was when the review was drawn, so for a partial
+# review this re-draw is how "draw only the added series" is approximated
+# (notes/LUSCIDA.md §5). Changed / removed compare every unit with the whole
+# draft, so a unit is never dropped for falling out of the re-draw.
+QC_SYNC_SERIES = f"""
+    with {QC_DRAW_CTE},
+    u as (
+        select qc_unit_id, assignment_id, series_instance_uid, unit_hash
+        from qc_unit where qc_review_id = $5
+    )
+    select 'added' as change, null::int as qc_unit_id, null::int as assignment_id,
+           d.suid as series_instance_uid, d.modality, d.series_file_hash as unit_hash,
+           null::int as file_id, null::text as file_name
+    from drawn d
+    where ($3 = true or d.rn <= ceil($4::numeric / 100 * d.mcount))
+      and not exists (select 1 from u where u.series_instance_uid = d.suid)
+    union all
+    select 'changed', u.qc_unit_id, u.assignment_id, u.series_instance_uid,
+           p.modality, p.series_file_hash, null, null
+    from u join pop p on p.suid = u.series_instance_uid
+    where p.series_file_hash <> u.unit_hash
+    union all
+    select 'removed', u.qc_unit_id, u.assignment_id, u.series_instance_uid,
+           null, null, null, null
+    from u
+    where not exists (select 1 from pop p where p.suid = u.series_instance_uid)
+"""
+
+# Sync plan, non-DICOM: the same rows, matched by file name (QC_FILE_KEY).
+#   $1 draft, $2 review
+QC_SYNC_FILES = f"""
+    with u as (
+        select qc_unit_id, assignment_id, {QC_FILE_KEY.format(t="qu")} as k, unit_hash as h
+        from qc_unit qu where qu.qc_review_id = $2
+    ),
+    d as (
+        select rdf.file_id, rdf.file_name, {QC_FILE_KEY.format(t="rdf")} as k, f.digest as h
+        from recordset_draft_file rdf
+        join file f on f.file_id = rdf.file_id
+        where rdf.recordset_draft_id = $1 and coalesce(f.is_dicom_file, false) = false
+    )
+    select case when u.k is null then 'added'
+                when d.k is null then 'removed'
+                else 'changed' end as change,
+           u.qc_unit_id, u.assignment_id, null::text as series_instance_uid,
+           null::text as modality, d.h as unit_hash, d.file_id, d.file_name
+    from u full outer join d on u.k = d.k
+    where u.k is null or d.k is null or u.h <> d.h
+"""
+
+
+async def qc_sync_plan(conn: asyncpg.Connection, review: asyncpg.Record) -> dict:
+    """What a sync would do to `review` against its draft's current files.
+
+    `emptied` lists the slices left with no units if the added / changed units
+    go to a new slice; a combine target receives them and is kept instead.
+    """
+    review_id = review["qc_review_id"]
+    draft_id = review["recordset_draft_id"]
+    if review["review_type"] == "non_dicom":
+        rows = await conn.fetch(QC_SYNC_FILES, draft_id, review_id)
+    else:
+        seed_text = str(review["sample_seed"]) if review["sample_seed"] is not None else "0"
+        rows = await conn.fetch(
+            QC_SYNC_SERIES, draft_id, seed_text, review["review_type"] == "full",
+            review["sample_percentage"], review_id)
+
+    plan = {"added": [], "changed": [], "removed": []}
+    for r in rows:
+        plan[r["change"]].append(r)
+
+    slices = await conn.fetch(
+        """
+        select a.assignment_id, a.assigned_to, a.assignment_status,
+               count(u.qc_unit_id) as unit_count
+        from qc_review_assignment a
+        left join qc_unit u on u.assignment_id = a.assignment_id
+        where a.qc_review_id = $1
+        group by a.assignment_id
+        order by a.assignment_id
+        """,
+        review_id)
+    leaving: dict[int, int] = {}
+    for r in plan["changed"] + plan["removed"]:
+        leaving[r["assignment_id"]] = leaving.get(r["assignment_id"], 0) + 1
+    plan["slices"] = slices
+    plan["emptied"] = [
+        s["assignment_id"] for s in slices
+        if s["unit_count"] == leaving.get(s["assignment_id"], 0)
+    ]
+    return plan
+
+
+def qc_sync_counts(plan: dict) -> dict:
+    # The stale breakdown's shape (QcStaleBreakdown in the release module).
+    return {
+        "changed": len(plan["changed"]),
+        "would_add": len(plan["added"]),
+        "would_drop": len(plan["removed"]),
+    }
 
 
 # ------------------------------------- QC REVIEWS -------------------------------------
@@ -8400,55 +8550,11 @@ async def get_qc_review(review_id: int, db: Database = Depends()):
         [review_id],
     )
 
+    # What a sync would do: the same plan the sync endpoints use.
     stale_breakdown = None
-    if review["review_status"] == "stale" and review["review_type"] == "non_dicom":
-        # A non-DICOM review holds every non-DICOM file: compare its units with
-        # the draft's current non-DICOM files.
-        recon = await db.fetch(
-            f"""
-            with a as (
-                select {QC_FILE_KEY.format(t="u")} as k, u.unit_hash as h
-                from qc_unit u where u.qc_review_id = $2
-            ),
-            b as (
-                select {QC_FILE_KEY.format(t="rdf")} as k, f.digest as h
-                from recordset_draft_file rdf
-                join file f on f.file_id = rdf.file_id
-                where rdf.recordset_draft_id = $1 and coalesce(f.is_dicom_file, false) = false
-            ),
-            cmp as ({QC_FILE_COMPARE})
-            select changed, added as would_add, dropped as would_drop from cmp
-            """,
-            [review["recordset_draft_id"], review_id],
-        )
-        stale_breakdown = dict(recon[0]) if recon else None
-    # A DICOM (sampled) review replays its draw to reconstruct what changed.
-    elif review["review_status"] == "stale":
-        is_full = review["review_type"] == "full"
-        seed_text = str(review["sample_seed"]) if review["sample_seed"] is not None else "0"
-        recon_q = f"""
-            with {QC_DRAW_CTE},
-            t as (
-                select suid, series_file_hash from drawn
-                where ($3 = true or rn <= ceil($4::numeric / 100 * mcount))
-            ),
-            cur as (
-                select series_instance_uid as suid, unit_hash as series_file_hash
-                from qc_unit where qc_review_id = $5
-            )
-            select
-                count(*) filter (where t.suid is not null and cur.suid is not null
-                                 and t.series_file_hash <> cur.series_file_hash) as changed,
-                count(*) filter (where t.suid is not null and cur.suid is null) as would_add,
-                count(*) filter (where t.suid is null and cur.suid is not null) as would_drop
-            from t full outer join cur on t.suid = cur.suid
-        """
-        recon = await db.fetch(
-            recon_q,
-            [review["recordset_draft_id"], seed_text, is_full,
-             review["sample_percentage"], review_id],
-        )
-        stale_breakdown = dict(recon[0]) if recon else None
+    if review["review_status"] == "stale":
+        async with db.transaction() as conn:
+            stale_breakdown = qc_sync_counts(await qc_sync_plan(conn, review))
 
     return item_response({
         "review": dict(review),
@@ -8693,6 +8799,162 @@ async def clone_qc_review(
     })
 
 
+@router.get("/qc/reviews/{review_id}/sync-preview")
+# What a sync would do: counts, the slices it can combine into, the slices it would delete
+async def preview_qc_review_sync(review_id: int, db: Database = Depends()) -> dict:
+    review = await db.fetch_one("select * from qc_review where qc_review_id = $1", [review_id])
+    if not review:
+        api_error("NOT_FOUND", "QC review not found", {"qc_review_id": review_id}, 404)
+
+    try:
+        async with db.transaction() as conn:
+            plan = await qc_sync_plan(conn, review)
+    except Exception as e:
+        db_error(e, operation="previewing qc review sync", context={"qc_review_id": review_id})
+
+    return item_response({
+        **qc_sync_counts(plan),
+        "targets": [dict(s) for s in plan["slices"] if s["assignment_status"] != "complete"],
+        "emptied_assignment_ids": plan["emptied"],
+    })
+
+
+@router.post("/qc/reviews/{review_id}/sync")
+# Bring a stale review in line with its draft in place (notes/LUSCIDA.md §4): added
+# units and changed ones (back to pending) go to the target slice, removed units
+# and slices left empty are deleted, finished slices are otherwise untouched.
+async def sync_qc_review(
+    review_id: int,
+    payload: QCReviewSync,
+    current_user: User = logged_in_user,
+    db: Database = Depends()) -> dict:
+
+    user_id = current_user.user_id
+    target_id = payload.target_assignment_id
+    unit_type = "series"
+
+    new_slice_insert = """
+        insert into qc_review_assignment (qc_review_id, assigned_to, assignment_status, share_percentage,
+                                          when_created, who_created, when_updated, who_updated)
+        values ($1, null, 'needs_qc', 0, now(), $2, now(), $2)
+        returning assignment_id
+    """
+    unit_insert = """
+        insert into qc_unit (qc_review_id, unit_type, series_instance_uid, file_id, file_name,
+                             qc_status, unit_hash, modality, assignment_id)
+        values ($1, $2, $3, $4, $5, 'pending', $6, $7, $8)
+    """
+    # History first, while qc_status still holds the decision being reset.
+    changed_history = """
+        insert into qc_unit_history (qc_unit_id, previous_status, new_status, who_updated, notes)
+        select qc_unit_id, qc_status, 'pending', $2, 'content changed, re-review (sync)'
+        from qc_unit where qc_unit_id = any($1::int[])
+    """
+    # Series units carry modality, file units file_id / file_name; the other
+    # side of each is null in the plan, as the unit-type check requires.
+    changed_update = """
+        update qc_unit u set
+            qc_status = 'pending', unit_hash = c.h, modality = c.m,
+            file_id = c.fid, file_name = c.fname, assignment_id = $6
+        from unnest($1::int[], $2::text[], $3::text[], $4::int[], $5::text[])
+            as c(id, h, m, fid, fname)
+        where u.qc_unit_id = c.id
+    """
+
+    try:
+        async with db.transaction() as conn:
+            rows = await conn.fetch(
+                "select * from qc_review where qc_review_id = $1 for update", review_id)
+            if not rows:
+                api_error("NOT_FOUND", "QC review not found", {"qc_review_id": review_id}, 404)
+            review = rows[0]
+            if review["review_status"] != "stale":
+                api_error("CONFLICT", f"Only a stale review can be synced; this one is "
+                          f"{review['review_status']}", {"qc_review_id": review_id}, 409)
+            if review["review_type"] == "non_dicom":
+                unit_type = "file"
+
+            plan = await qc_sync_plan(conn, review)
+
+            if target_id is not None:
+                target = next(
+                    (s for s in plan["slices"] if s["assignment_id"] == target_id), None)
+                if target is None:
+                    api_error("CONFLICT", "Target slice is not part of this review",
+                              {"qc_review_id": review_id, "target_assignment_id": target_id}, 409)
+                if target["assignment_status"] == "complete":
+                    api_error("CONFLICT", "A finished slice can't take new series",
+                              {"qc_review_id": review_id, "target_assignment_id": target_id}, 409)
+
+            unit_total = (await conn.fetch(
+                "select count(*) as n from qc_unit where qc_review_id = $1", review_id))[0]["n"]
+            if unit_total - len(plan["removed"]) + len(plan["added"]) == 0:
+                api_error("VALIDATION_ERROR",
+                          "Nothing this review covers is left in the draft; cancel it instead",
+                          {"qc_review_id": review_id}, 422)
+
+            moving = plan["added"] + plan["changed"]
+            if not moving:
+                target_id = None
+            elif target_id is None:
+                target_id = (await conn.fetch(new_slice_insert, review_id, user_id))[0]["assignment_id"]
+
+            if plan["added"]:
+                await conn.executemany(unit_insert, [
+                    (review_id, unit_type, r["series_instance_uid"], r["file_id"], r["file_name"],
+                     r["unit_hash"], r["modality"], target_id)
+                    for r in plan["added"]
+                ])
+            if plan["changed"]:
+                changed = plan["changed"]
+                await conn.execute(changed_history, [r["qc_unit_id"] for r in changed], user_id)
+                await conn.execute(
+                    changed_update,
+                    [r["qc_unit_id"] for r in changed], [r["unit_hash"] for r in changed],
+                    [r["modality"] for r in changed], [r["file_id"] for r in changed],
+                    [r["file_name"] for r in changed], target_id)
+            if plan["removed"]:
+                await conn.execute(
+                    "delete from qc_unit where qc_unit_id = any($1::int[])",
+                    [r["qc_unit_id"] for r in plan["removed"]])
+
+            deleted = await conn.fetch(
+                """
+                delete from qc_review_assignment a
+                where a.qc_review_id = $1
+                  and not exists (select 1 from qc_unit u where u.assignment_id = a.assignment_id)
+                returning assignment_id
+                """,
+                review_id)
+            await conn.execute(QC_SHARE_UPDATE, review_id)
+
+            # Out of stale; the status syncs then settle each slice and the
+            # review (they only move open <-> complete).
+            await conn.execute(
+                "update qc_review set review_status = 'open', when_updated = now(), "
+                "who_updated = $2 where qc_review_id = $1",
+                review_id, user_id)
+            remaining = await conn.fetch(
+                "select assignment_id from qc_review_assignment where qc_review_id = $1", review_id)
+            for s in remaining:
+                await qc_sync_assignment_status(conn, s["assignment_id"])
+            await qc_sync_review_status(conn, review_id)
+
+            updated = (await conn.fetch(
+                "select * from qc_review where qc_review_id = $1", review_id))[0]
+    except HTTPException:
+        raise
+    except Exception as e:
+        db_error(e, operation="syncing qc review", context={"qc_review_id": review_id})
+
+    return item_response({
+        "review": dict(updated),
+        **qc_sync_counts(plan),
+        "target_assignment_id": target_id,
+        "deleted_assignment_ids": [r["assignment_id"] for r in deleted],
+    })
+
+
 @router.post("/qc/reviews/{review_id}/split")
 # Rebalance a review across N slices, stratified evenly per modality (contiguous chunks)
 async def split_qc_review(
@@ -8763,22 +9025,7 @@ async def split_qc_review(
             for r in units:
                 groups.setdefault(r["modality"], []).append(r["qc_unit_id"])
 
-            # Even per-modality allocation; round-robin each modality's leftover
-            # with a running pointer (not the modality index) so slice totals
-            # stay balanced to within 1 across the whole review.
-            alloc = [[] for _ in range(n)]
-            leftover = 0
-            for unit_ids in groups.values():
-                c = len(unit_ids)
-                counts = [c // n] * n
-                rem = c % n
-                for k in range(rem):
-                    counts[(leftover + k) % n] += 1
-                leftover = (leftover + rem) % n
-                idx = 0
-                for si in range(n):
-                    alloc[si].extend(unit_ids[idx:idx + counts[si]])
-                    idx += counts[si]
+            alloc = qc_allocate_even(groups, n)
 
             new_ids = []
             for si in range(n):
@@ -8823,6 +9070,180 @@ async def split_qc_review(
 
 
 # ----------------------------------- QC ASSIGNMENTS ----------------------------------
+
+QC_SLICES_WITH_TOTALS = """
+    select a.*, coalesce(c.total, 0) as series_total
+    from qc_review_assignment a
+    left join (select assignment_id, count(*) as total from qc_unit group by assignment_id) c
+        on c.assignment_id = a.assignment_id
+    where a.qc_review_id = $1
+    order by a.assignment_id
+"""
+
+
+async def qc_lock_slice_review(conn, assignment_id: int) -> dict:
+    # The slice joined to its review, with the review row locked so a split,
+    # combine or sync on the same review runs one at a time. 404 / 409 for a
+    # missing slice, a finished slice, or a review that can't change.
+    rows = await conn.fetch(
+        """
+        select a.assignment_id, a.qc_review_id, a.assignment_status, r.review_status
+        from qc_review_assignment a
+        join qc_review r on r.qc_review_id = a.qc_review_id
+        where a.assignment_id = $1
+        for update of r
+        """,
+        assignment_id)
+    if not rows:
+        api_error("NOT_FOUND", "Assignment not found", {"assignment_id": assignment_id}, 404)
+    slice_ = dict(rows[0])
+    if slice_["review_status"] in ("cancelled", "complete", "replaced"):
+        api_error("CONFLICT", f"Slices on a {slice_['review_status']} review can't change",
+                  {"assignment_id": assignment_id, "review_status": slice_["review_status"]}, 409)
+    if slice_["assignment_status"] == "complete":
+        api_error("CONFLICT", "A finished slice can't be split or combined",
+                  {"assignment_id": assignment_id}, 409)
+    return slice_
+
+
+async def qc_settle_review_slices(conn, review_id: int):
+    # After units move: recompute shares, then settle every slice and the review.
+    await conn.execute(QC_SHARE_UPDATE, review_id)
+    slices = await conn.fetch(
+        "select assignment_id from qc_review_assignment where qc_review_id = $1", review_id)
+    for s in slices:
+        await qc_sync_assignment_status(conn, s["assignment_id"])
+    await qc_sync_review_status(conn, review_id)
+
+
+@router.post("/qc/assignments/{assignment_id}/split")
+# Split one unfinished slice: it keeps its decided series, reviewer and link plus an
+# even share of its pending series; count - 1 new slices take the rest.
+async def split_qc_assignment(
+    assignment_id: int,
+    payload: QCSliceSplit,
+    current_user: User = logged_in_user,
+    db: Database = Depends()) -> dict:
+
+    n = payload.count
+    if n < 2:
+        api_error("VALIDATION_ERROR", "count must be >= 2", {}, 422)
+    assignees = payload.assignees if payload.assignees is not None else [None] * (n - 1)
+    if len(assignees) != n - 1:
+        api_error("VALIDATION_ERROR", f"assignees must list {n - 1} entries (one per new slice)",
+                  {"count": n, "assignees": len(assignees)}, 422)
+
+    new_slice_insert = """
+        insert into qc_review_assignment (qc_review_id, assigned_to, assignment_status, share_percentage,
+                                          when_created, who_created, when_updated, who_updated)
+        values ($1, $2, 'needs_qc', 0, now(), $3, now(), $3)
+        returning assignment_id
+    """
+
+    try:
+        async with db.transaction() as conn:
+            slice_ = await qc_lock_slice_review(conn, assignment_id)
+            review_id = slice_["qc_review_id"]
+
+            pending = await conn.fetch(
+                "select qc_unit_id, modality from qc_unit "
+                "where assignment_id = $1 and qc_status = 'pending' "
+                "order by modality nulls first, qc_unit_id",
+                assignment_id)
+            if n > len(pending):
+                api_error("VALIDATION_ERROR",
+                          f"Cannot split {len(pending)} pending series into {n} slices",
+                          {"assignment_id": assignment_id, "pending": len(pending),
+                           "requested_slices": n}, 422)
+
+            groups = {}
+            for r in pending:
+                groups.setdefault(r["modality"], []).append(r["qc_unit_id"])
+            # Chunk 0 stays in the original slice.
+            alloc = qc_allocate_even(groups, n)
+
+            new_ids = []
+            for si in range(1, n):
+                aid = (await conn.fetch(
+                    new_slice_insert, review_id, assignees[si - 1], current_user.user_id)
+                )[0]["assignment_id"]
+                new_ids.append(aid)
+                await conn.execute(
+                    "update qc_unit set assignment_id = $1 where qc_unit_id = any($2::int[])",
+                    aid, alloc[si])
+
+            await qc_settle_review_slices(conn, review_id)
+            result = await conn.fetch(QC_SLICES_WITH_TOTALS, review_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        db_error(e, operation="splitting qc slice", context={"assignment_id": assignment_id})
+
+    return item_response({
+        "assignments": [dict(r) for r in result],
+        "new_assignment_ids": new_ids,
+    })
+
+
+@router.post("/qc/assignments/{assignment_id}/combine")
+# Move one unfinished slice's pending series (and, if asked, its decided ones) into
+# another unfinished slice of the same review; the source is deleted if left empty.
+async def combine_qc_assignment(
+    assignment_id: int,
+    payload: QCSliceCombine,
+    current_user: User = logged_in_user,
+    db: Database = Depends()) -> dict:
+
+    target_id = payload.target_assignment_id
+    if target_id == assignment_id:
+        api_error("VALIDATION_ERROR", "A slice can't be combined into itself",
+                  {"assignment_id": assignment_id}, 422)
+
+    try:
+        async with db.transaction() as conn:
+            source = await qc_lock_slice_review(conn, assignment_id)
+            review_id = source["qc_review_id"]
+            target = await conn.fetch(
+                "select qc_review_id, assignment_status from qc_review_assignment "
+                "where assignment_id = $1",
+                target_id)
+            if not target or target[0]["qc_review_id"] != review_id:
+                api_error("CONFLICT", "Target slice is not part of this review",
+                          {"assignment_id": assignment_id, "target_assignment_id": target_id}, 409)
+            if target[0]["assignment_status"] == "complete":
+                api_error("CONFLICT", "A finished slice can't take more series",
+                          {"target_assignment_id": target_id}, 409)
+
+            moved = await conn.fetch(
+                """
+                update qc_unit set assignment_id = $2
+                where assignment_id = $1 and ($3 or qc_status = 'pending')
+                returning qc_unit_id
+                """,
+                assignment_id, target_id, payload.include_decided)
+            deleted = await conn.fetch(
+                """
+                delete from qc_review_assignment a
+                where a.assignment_id = $1
+                  and not exists (select 1 from qc_unit u where u.assignment_id = a.assignment_id)
+                returning assignment_id
+                """,
+                assignment_id)
+
+            await qc_settle_review_slices(conn, review_id)
+            result = await conn.fetch(QC_SLICES_WITH_TOTALS, review_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        db_error(e, operation="combining qc slices",
+                 context={"assignment_id": assignment_id, "target_assignment_id": target_id})
+
+    return item_response({
+        "assignments": [dict(r) for r in result],
+        "moved": len(moved),
+        "deleted_assignment_ids": [r["assignment_id"] for r in deleted],
+    })
+
 
 @router.get("/qc/reviews/{review_id}/assignments")
 # List a review's assignment slices (with series counts)
@@ -9283,13 +9704,9 @@ def sort_series_files(rows):
     return sorted(rows, key=lambda r: position[r["file_id"]])
 
 
-@router.get("/qc/assignments/{assignment_id}/series/{series_instance_uid}/files")
-# Files for a single series in an assignment, ordered by instance number
-async def list_assignment_series_files(
-    assignment_id: int,
-    series_instance_uid: str,
-    db: Database = Depends()):
-
+async def fetch_assignment_series_files(db, assignment_id, series_instance_uid):
+    """The files of one series in an assignment, in display order. Shared by the
+    file list and the download, so the zip holds exactly what QC shows."""
     series = await db.fetch_one(
         "select qc_review_id from qc_unit where assignment_id = $1 and series_instance_uid = $2",
         [assignment_id, series_instance_uid])
@@ -9319,6 +9736,7 @@ async def list_assignment_series_files(
             coalesce(i.number_of_frames, 1) as num_of_frames,
             fsc.instance_number,
             fsc.sop_instance_uid,
+            fsr.root_path || '/' || fl.rel_path              as full_path,
             ig.iop,
             ig.ipp
         from qc_unit qs
@@ -9327,6 +9745,7 @@ async def list_assignment_series_files(
         join file_series fs          on fs.file_id         = rdf.file_id
                                     and fs.series_instance_uid = qs.series_instance_uid
         left join file_location fl      on fl.file_id             = rdf.file_id
+        left join file_storage_root fsr on fsr.file_storage_root_id = fl.file_storage_root_id
         left join file_image fi         on fi.file_id             = rdf.file_id
         left join image i               on i.image_id             = fi.image_id
         left join image_geometry ig     on ig.image_id            = fi.image_id
@@ -9344,7 +9763,17 @@ async def list_assignment_series_files(
         """,
         [assignment_id, series_instance_uid])
 
-    ordered = sort_series_files(rows)
+    return sort_series_files(rows)
+
+
+@router.get("/qc/assignments/{assignment_id}/series/{series_instance_uid}/files")
+# Files for a single series in an assignment, in display order
+async def list_assignment_series_files(
+    assignment_id: int,
+    series_instance_uid: str,
+    db: Database = Depends()):
+
+    ordered = await fetch_assignment_series_files(db, assignment_id, series_instance_uid)
     data = [
         {
             "file_id": r["file_id"],
@@ -9361,6 +9790,37 @@ async def list_assignment_series_files(
             "series_instance_uid": series_instance_uid,
         },
     }
+
+
+def safe_entry_name(text):
+    """Reduce a UID (or anything else) to characters safe in a zip entry name
+    and a Content-Disposition header."""
+    return re.sub(r"[^A-Za-z0-9._-]", "_", str(text))[:200]
+
+
+@router.get("/qc/assignments/{assignment_id}/series/{series_instance_uid}/download")
+# A zip of the series' files, exactly as QC shows them. Entries are named by
+# display position and SOP Instance UID, never by server path.
+async def download_assignment_series_files(
+    assignment_id: int,
+    series_instance_uid: str,
+    db: Database = Depends()):
+
+    ordered = await fetch_assignment_series_files(db, assignment_id, series_instance_uid)
+    files = [r for r in ordered if r["full_path"] is not None]
+    if not files:
+        api_error("NOT_FOUND", "No stored files for this series",
+                  {"assignment_id": assignment_id, "series_instance_uid": series_instance_uid}, 404)
+
+    width = max(4, len(str(len(files))))
+    entries = []
+    for position, r in enumerate(files, start=1):
+        uid = r["sop_instance_uid"] or "file{}".format(r["file_id"])
+        name = "{:0{}d}_{}.dcm".format(position, width, safe_entry_name(uid))
+        entries.append((r["full_path"], name))
+
+    zip_name = "qc{}_{}.zip".format(assignment_id, safe_entry_name(series_instance_uid))
+    return await asynczip.stream_named_files(entries, zip_name)
 
 
 @router.put("/qc/assignments/{assignment_id}/series/{series_instance_uid}/status")
