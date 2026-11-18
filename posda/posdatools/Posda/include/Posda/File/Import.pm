@@ -14,7 +14,7 @@ our @EXPORT_OK = ('insert_file');
     if ($response->is_success) {
       return new_from_success($class, $response->decoded_content);
     } else {
-      print STDERR "API response failure: $response->decoded_content\n";
+      print STDERR "API response failure: " . $response->decoded_content . "\n";
       return new_from_error($class, $response->decoded_content);
     }
   }
@@ -84,23 +84,30 @@ sub digest_file {
   return $md5;
 }
 
-sub insert_file {
-  my ($filename, $comment, $import_event_id) = @_;
+# Retry policy for insert_file. Transient failures (the API being briefly
+# unreachable or returning a server error) are retried with an exponentially
+# increasing delay: 1s, 2s, 4s, 8s for the default of five attempts. These
+# mirror insert_file_via_api in python/posda/main/file.py.
+our $MAX_ATTEMPTS = 5;
+our $BASE_DELAY_SECONDS = 1;
 
-  # print STDERR "========= Posda::File::Import::insert_file called!\n";
-  # print STDERR "API_KEY=$API_TOKEN\n";
+sub retry_delay {
+  my ($failed_attempt) = @_;
+  return $BASE_DELAY_SECONDS * (2 ** ($failed_attempt - 1));
+}
 
-  if (not defined $comment) {
-    $comment = "Added by Perl Job";
-  }
+# Connection failures surface from LWP as a synthetic 500 response, so they
+# are covered by the 5xx check. Client errors (e.g. the API's 422 for a bad
+# digest) are deterministic and are not worth retrying.
+sub is_retryable {
+  my ($response) = @_;
+  my $code = $response->code;
+  return $code >= 500 || $code == 408 || $code == 429;
+}
 
-  if (not -e $filename) {
-      return Posda::File::Import::Response->new_from_error(
-        "$filename does not exist!"
-      );
-  }
+sub build_import_url {
+  my ($filename, $digest, $comment, $import_event_id) = @_;
 
-  my $digest = digest_file($filename);
   my $url = URI->new($API_URL . '/v1/import/file');
   if(defined $import_event_id){
     $url->query_form(
@@ -116,7 +123,15 @@ sub insert_file {
     );
   }
 
-  my $req = HTTP::Request::StreamingUpload->new(
+  return $url;
+}
+
+# A streaming upload reads the file as it is sent, so the request cannot be
+# re-sent; a fresh one is built for every attempt.
+sub build_import_request {
+  my ($filename, $url) = @_;
+
+  return HTTP::Request::StreamingUpload->new(
       PUT     => $url,
       path    => $filename,
       headers => HTTP::Headers->new(
@@ -124,7 +139,38 @@ sub insert_file {
           'Content-Length' => -s $filename,
       ),
   );
-  my $response = LWP::UserAgent->new->request($req);
+}
+
+sub insert_file {
+  my ($filename, $comment, $import_event_id) = @_;
+
+  if (not defined $comment) {
+    $comment = "Added by Perl Job";
+  }
+
+  if (not -e $filename) {
+      return Posda::File::Import::Response->new_from_error(
+        "$filename does not exist!"
+      );
+  }
+
+  my $digest = digest_file($filename);
+  my $url = build_import_url($filename, $digest, $comment, $import_event_id);
+  my $ua = LWP::UserAgent->new;
+
+  my $response;
+  for my $attempt (1 .. $MAX_ATTEMPTS) {
+    $response = $ua->request(build_import_request($filename, $url));
+
+    last if $response->is_success;
+    last if not is_retryable($response);
+    last if $attempt == $MAX_ATTEMPTS;
+
+    my $delay = retry_delay($attempt);
+    print STDERR "insert_file: attempt $attempt/$MAX_ATTEMPTS failed for "
+      . "$filename (" . $response->status_line . "), retrying in ${delay}s\n";
+    sleep $delay;
+  }
 
   return Posda::File::Import::Response->new_from_response($response);
 }
