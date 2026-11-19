@@ -239,6 +239,10 @@ This step should not be needed if your data was imported through CTP",
         action =>  "PhiReviewFromTimepoint",
       },
       {
+        caption => "Schedule PHI Scan ALL",
+        action =>  "PhiReviewAllFromTimepoint",
+      },
+      {
         caption => "Schedule Structured Report PHI Scan",
         action =>  "SRPhiScanOp",
       },
