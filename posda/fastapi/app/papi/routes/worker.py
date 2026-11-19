@@ -49,8 +49,8 @@ async def set_work_status_running(details: RunningDetails, work_id: int, db: Dat
     return await db.fetch_one(query, [details.node_hostname, work_id])
 
 class ErrorFiles(BaseModel):
-    stderr_file_id: int = None
-    stdout_file_id: int = None
+    stderr_file_id: int | None = None
+    stdout_file_id: int | None = None
 
 @router.post("/status/{work_id}/finished")
 async def set_work_status_finished(request: Request, error_files: ErrorFiles, work_id: int, db: Database = Depends()):
