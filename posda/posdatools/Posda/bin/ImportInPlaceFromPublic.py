@@ -5,8 +5,11 @@ Import-in-place from Public
 This program will import all files in a Collection (and Site)
 from Public into Posda.
 """
+import json
 import sys
+import tempfile
 import time
+from typing import IO, Iterator
 
 import pydicom
 import requests
@@ -235,6 +238,36 @@ def execute_select_query(cur, collection_name, vis, site_name):
         )
 
 
+def spool_rows_to_tempfile(cur) -> IO[str]:
+    """Drain an open cursor into a temporary file, one JSON row per line.
+
+    The import loop makes a slow HTTP call per file, so iterating the
+    (unbuffered) MySQL cursor directly stalls the server's socket write
+    and MySQL drops the connection once net_write_timeout (60s by
+    default) is exceeded. Calling fetchall() avoids that but holds the
+    whole collection in memory. Writing the rows to disk as fast as the
+    server can send them sidesteps both problems: memory use is flat and
+    the connection is released long before any timeout could fire.
+
+    JSON lines are used (rather than tab-separated text) so NULL digests
+    and any unusual characters in paths round-trip exactly.
+    """
+    spool = tempfile.TemporaryFile(mode="w+", encoding="utf-8")
+    for row in cur:
+        spool.write(json.dumps(row))
+        spool.write("\n")
+    spool.flush()
+    spool.seek(0)
+    return spool
+
+
+def iter_spooled_rows(spool: IO[str]) -> Iterator[tuple[str, str | None]]:
+    """Yield (uri, digest) tuples from a file written by spool_rows_to_tempfile."""
+    for line in spool:
+        uri, digest = json.loads(line)
+        yield uri, digest
+
+
 def main(background_id, activity_id, notify, collection_name, visibility, site_name):
     background = BackgroundProcess(background_id, notify, activity_id)
     background.daemonize()
@@ -261,15 +294,17 @@ def main(background_id, activity_id, notify, collection_name, visibility, site_n
 
         execute_select_query(cur, collection_name, vis_list, site_name)
 
-        # collect all of the filenames into memory
-        # NOTE: This is done because, for larger collections
-        # some MySQL timeout is exceeded if we step over them
+        # Spool the result set to disk rather than fetchall() into memory;
+        # see spool_rows_to_tempfile for why neither streaming the cursor
+        # nor fetchall() is acceptable here.
         background.set_activity_status(
             "Selecting filenames from database, this might take a long time.."
         )
-        all_records = cur.fetchall()
-        error_count = 0
-        for i, (uri, digest) in enumerate(all_records):
+        spool = spool_rows_to_tempfile(cur)
+
+    error_count = 0
+    with spool:
+        for i, (uri, digest) in enumerate(iter_spooled_rows(spool)):
             if i % 1000 == 0:
                 background.set_activity_status(
                     f"Imported {i} of {total_files_to_import}"
