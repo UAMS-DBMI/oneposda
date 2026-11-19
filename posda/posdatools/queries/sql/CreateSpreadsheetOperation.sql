@@ -3,11 +3,13 @@
 -- Columns: []
 -- Args: ['operation_name', 'command_line', 'operation_type', 'input_line_format', 'tags', 'can_chain']
 -- Tags: ['queries']
--- Description: Create a new spreadsheet_operation
+-- Description: Create a new spreadsheet_operation (new operations run on the high-priority worker queue)
 
 
 insert into spreadsheet_operation(
-  operation_name, command_line, operation_type, input_line_format, tags, can_chain
+  operation_name, command_line, operation_type, input_line_format, tags, can_chain,
+  worker_priority
 ) values (
-  ?, ?, ?, ?, ?, ?
+  ?, ?, ?, ?, ?, ?,
+  1
 )
