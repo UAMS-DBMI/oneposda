@@ -405,17 +405,24 @@ def _resolve_vr(
     (public or private) and only ever recasts ``UN`` -- an explicit VR that
     is merely *different* from the dictionary's is kept as written.
     Without a dictionary entry the raw ``UN`` (or None) stands.
+
+    A dictionary VR with alternatives ("US or SS", "OB or OW") resolves to
+    the first one, as Posda::Parser does.
     """
     vr = getattr(raw, "VR", None)
     if vr not in (None, "UN", ""):
         return str(vr)
     try:
-        return dictionary_VR(tag)
+        return _first_alternative(dictionary_VR(tag))
     except KeyError:
         pass
     if declared is not None:
-        return declared[1]
+        return _first_alternative(declared[1])
     return vr if vr else None
+
+
+def _first_alternative(vr: str) -> str:
+    return vr.split(" or ")[0]
 
 
 def raw_item(

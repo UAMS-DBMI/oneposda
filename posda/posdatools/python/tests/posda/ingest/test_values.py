@@ -181,6 +181,37 @@ class TestZeroLengthImplicitVR:
         assert implicit_errors == explicit_errors
 
 
+class TestAmbiguousDictionaryVR:
+    """An implicit-VR element whose dictionary VR is ambiguous ("US or SS").
+
+    Posda::Parser takes the first alternative ("US or SS" -> "US"). Without
+    that, an implicit-VR file carrying any such tag -- Smallest/Largest Image
+    Pixel Value is common in DX/CR -- failed import with "No type in VRDesc
+    for US or SS" and was rolled back.
+    """
+
+    def test_implicit_us_or_ss_decodes_as_us(self):
+        ds = build_implicit(PixelRepresentation=0, SmallestImagePixelValue=7)
+        errors: list[str] = []
+        assert ParsedValues(ds, errors=errors).get("(0028,0106)") == 7
+        assert errors == []
+
+    def test_implicit_matches_explicit(self):
+        implicit = ParsedValues(
+            build_implicit(PixelRepresentation=0, LargestImagePixelValue=4095)
+        ).get("(0028,0107)")
+        explicit = values_for(
+            PixelRepresentation=0, LargestImagePixelValue=4095
+        ).get("(0028,0107)")
+        assert implicit == explicit == 4095
+
+    def test_signed_bytes_still_read_as_us(self):
+        # Posda always takes the first alternative, so a signed -1 written
+        # into a "US or SS" tag reads back as unsigned 65535, as in Perl.
+        ds = build_implicit(PixelRepresentation=1, SmallestImagePixelValue=-1)
+        assert ParsedValues(ds).get("(0028,0106)") == 65535
+
+
 class TestZeroLengthNumeric:
     """A binary element that is present but empty reads as no value.
 
