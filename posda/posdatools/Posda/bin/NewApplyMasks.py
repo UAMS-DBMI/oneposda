@@ -331,6 +331,55 @@ def get_orphaned_sops(visual_review_instance_id, conn):
     return {row.sop_instance_uid for row in cur}
 
 
+def get_uid_roots(visual_review_instance_id, conn):
+    """
+    Map each SOP and Series UID in the VR's masked series to the UID root
+    Masker (nopperabo) hashed that series with.
+
+    nopperabo gets the root for each IEC from the masking API: the site_id
+    of the IEC's input files (ctp_file), matched to submissions on
+    site_code || collection_code, falling back to the default TCIA root.
+    Every SOP in a masked series (masked files and orphans) gets that
+    series' root, so orphans end up in the same new series as Masker's
+    outputs.
+    """
+    cur = conn.cursor()
+    cur.execute(
+        """
+        with series_roots as (
+            select
+                iec.series_instance_uid,
+                coalesce(min(s.uid_root), %(default_root)s) as uid_root
+            from image_equivalence_class iec
+            join masking using (image_equivalence_class_id)
+            join image_equivalence_class_input_image using (image_equivalence_class_id)
+            left join ctp_file cf using (file_id)
+            left join submissions s on s.site_code || s.collection_code = cf.site_id
+            where iec.visual_review_instance_id = %(vr)s
+            group by iec.series_instance_uid
+        )
+        select distinct
+            fsc.sop_instance_uid,
+            sr.series_instance_uid,
+            sr.uid_root
+        from series_roots sr
+        join image_equivalence_class iec using (series_instance_uid)
+        join image_equivalence_class_input_image ii using (image_equivalence_class_id)
+        join file_sop_common fsc using (file_id)
+        where iec.visual_review_instance_id = %(vr)s
+        """,
+        {"vr": visual_review_instance_id, "default_root": TCIA_UID_ROOT},
+    )
+
+    uid_roots = {}
+    for row in cur:
+        uid_roots[row.series_instance_uid] = row.uid_root
+        uid_roots[row.sop_instance_uid] = row.uid_root
+
+    print("UID roots used:", ", ".join(sorted(set(uid_roots.values()))))
+    return uid_roots
+
+
 def get_referencing_segs(visual_review_instance_id, activity_id, function, conn):
     cur = conn.cursor()
     cur.execute(
@@ -1051,6 +1100,9 @@ def main2(args, temp_dir, background):
         args.visual_review_instance_id, function_list, conn
     )
 
+    ## Hash with the same UID root Masker (nopperabo) used for each series
+    background.set_activity_status("Looking up UID roots...")
+    uid_roots = get_uid_roots(args.visual_review_instance_id, conn)
 
     background.set_activity_status(f"{len(premasked_sops)} SOPs being processed...")
     print(len(premasked_sops), "SOPs to be processed")
@@ -1093,7 +1145,10 @@ def main2(args, temp_dir, background):
         else:
             # instead of adding it, we want to add the corresponding file from the postmasked_files list
             # the post-masked map is keyed by the hashed SOP Instance UID, not the original one
-            hashed_sop_instance_uid = hash_uid(file.sop_instance_uid, TCIA_UID_ROOT)
+            hashed_sop_instance_uid = hash_uid(
+                file.sop_instance_uid,
+                uid_roots.get(file.sop_instance_uid, TCIA_UID_ROOT),
+            )
             if hashed_sop_instance_uid in postmasked_map:
                 postmasked_file = postmasked_map[hashed_sop_instance_uid]
                 files_to_process.append(postmasked_file)
@@ -1122,14 +1177,18 @@ def main2(args, temp_dir, background):
             # if file_content:
             #     ds = pydicom.dcmread(BytesIO(file_content))
         
+        # root of the first masked UID this file references, used for its own UIDs
+        ref_root = None
         for depth, ele in walk_dataset_for_referencing(ds):
             if (
-                ele.value in premasked_sops 
+                ele.value in premasked_sops
                 or ele.value in premasked_series
                 or ele.value in orphan_sops
             ):  # only needs changed if we edited it!
                 edited = True
-                ele.value = hash_uid(ele.value, TCIA_UID_ROOT)
+                root = uid_roots.get(ele.value, TCIA_UID_ROOT)
+                ref_root = ref_root or root
+                ele.value = hash_uid(ele.value, root)
                 # class_name = uid.UID(file.media_storage_sop_class).keyword
                 #print(file.file_id, ele.keyword, ele.value)
 
@@ -1143,8 +1202,11 @@ def main2(args, temp_dir, background):
             # Hash series and sop uids
             # If this SOP is in the premasked set, it has already been hashed by Masker, so skip it
             if file.sop_instance_uid not in postmasked_map:
-                ds.SeriesInstanceUID = hash_uid(ds.SeriesInstanceUID, TCIA_UID_ROOT)
-                ds.SOPInstanceUID = hash_uid(ds.SOPInstanceUID, TCIA_UID_ROOT)
+                # Orphans use their masked series' root; files edited for
+                # their references use the root of the volume they reference.
+                own_root = uid_roots.get(file.sop_instance_uid) or ref_root or TCIA_UID_ROOT
+                ds.SeriesInstanceUID = hash_uid(ds.SeriesInstanceUID, own_root)
+                ds.SOPInstanceUID = hash_uid(ds.SOPInstanceUID, own_root)
 
                 # Add pre-edit file to move list
                 move_list.append(file.file_id)
