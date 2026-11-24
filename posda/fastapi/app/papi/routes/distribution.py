@@ -8,6 +8,7 @@ import csv
 import hashlib
 import httpx
 import io
+import json
 import mimetypes
 from html.parser import HTMLParser
 import os
@@ -19,9 +20,10 @@ from . import importer
 
 from ..util import Database, asynczip, idc_bucket
 from ..util.models import File, consistent
+from ..util.croissant import ReleaseInfo, build_croissant
 from ..util.wp import (
     wp_get, wp_get_paged, wp_patch, wp_url, wp_client, wp_upload_media, wp_edit_url,
-    format_citation, format_license, WP_TYPE_MAP,
+    format_citation, format_download, format_license, WP_TYPE_MAP,
 )
 
 IDC_TRANSFER_BUCKET = os.getenv("IDC_TRANSFER_BUCKET", "posda_submit")
@@ -7899,6 +7901,205 @@ async def update_transfer_recordset_wp_page(
 # at its staged file yet.
 async def get_release_wp_page_states(release_id: int, db: Database = Depends()):
     return list_response(await wp_page_states(release_id, db))
+
+
+# --------------------------------CROISSANT (DISSEMINATE)--------------------------------------------
+
+CROISSANT_MIME_TYPE = "application/ld+json"
+
+
+def croissant_filename(dataset_name: str) -> str:
+    """No version, for the reason retriever_manifest_filename gives: identical
+    bytes reuse one attachment across releases."""
+    slug = re.sub(r"[^a-z0-9]+", "-", dataset_name.lower()).strip("-")
+    return f"{slug}-croissant.jsonld"
+
+
+async def wp_media_url(media_id) -> str:
+    """The public URL of a media attachment; "" when there is none."""
+    if media_id in (None, "", False):
+        return ""
+    item = await wp_get(f"{wp_url('Media')}/{media_id}")
+    return (item or {}).get("source_url") or ""
+
+
+async def croissant_download_page(post_id: int) -> dict:
+    """A download page as the Croissant builder takes it: formatted, with the
+    attached files' URLs resolved."""
+    post = await wp_get(f"{wp_url('Download')}/{post_id}")
+    if post is None:
+        api_error(
+            "NOT_FOUND",
+            f"The WordPress download page (id={post_id}) listed on the dataset page "
+            "no longer exists.",
+            {"download_post_id": post_id},
+            404,
+        )
+    page = format_download(post)
+    page["download_file_url"] = await wp_media_url(page["download_file"])
+    page["download_metadata_url"] = await wp_media_url(page["download_metadata"])
+    return page
+
+
+@router.post("/datasets/releases/{release_id}/croissant")
+# Disseminate: build the release's Croissant JSON-LD from its WordPress pages,
+# store it, and put it on the dataset page's croissant_manifest.
+#
+# Built from WordPress, not from Posda's recordsets: the file describes the
+# public page, which can list downloads Posda does not manage. So it waits until
+# every download page points at this release's file -- the same check go-live
+# makes -- or it would describe the previous release's files.
+async def generate_release_croissant(
+    release_id: int,
+    current_user: User = logged_in_user,
+    db: Database = Depends()):
+
+    release_rows = await db.fetch(
+        """
+        select dr.dataset_id, dr.release_number, dr.release_date, dr.release_status,
+               d.dataset_name,
+               (select first.release_date from dataset_release first
+                where first.dataset_id = dr.dataset_id and first.release_number = 1
+               ) as first_release_date,
+               m.wp_object_type, m.wp_object_id
+        from dataset_release dr
+        join dataset d using (dataset_id)
+        left join wp_object_map m
+               on m.posda_object_type = 'dataset' and m.posda_object_id = d.dataset_id
+              and m.wp_object_type in ('collection', 'analysis_result')
+        where dr.dataset_release_id = $1
+        """,
+        [release_id],
+    )
+    if not release_rows:
+        api_error("NOT_FOUND", "Dataset release not found", {"release_id": release_id}, 404)
+    release = release_rows[0]
+
+    if release["release_status"] != "released":
+        api_error(
+            "CONFLICT",
+            "The Croissant file is built for a finalized release that is not live yet "
+            f"-- this one is '{release['release_status']}'.",
+            {"release_id": release_id, "release_status": release["release_status"]},
+            409,
+        )
+    if release["wp_object_id"] is None:
+        api_error(
+            "VALIDATION_ERROR",
+            "The dataset has no WordPress page linked -- link it in Setup first.",
+            {"release_id": release_id, "dataset_id": release["dataset_id"]},
+            422,
+        )
+
+    stale_pages = [p for p in await wp_page_states(release_id, db) if not p["page_current"]]
+    if stale_pages:
+        names = ", ".join(p["recordset_name"] for p in stale_pages)
+        api_error(
+            "CONFLICT",
+            f"These download pages still point at the previous file: {names}. "
+            "Update their pages first.",
+            {"release_id": release_id,
+             "recordset_ids": [p["recordset_id"] for p in stale_pages]},
+            409,
+        )
+
+    page_type = release["wp_object_type"]
+    endpoint_key, formatter = WP_TYPE_MAP[page_type]
+    page_path = f"{wp_url(endpoint_key)}/{release['wp_object_id']}"
+    downloads_field = (
+        "collection_downloads" if page_type == "collection" else "result_downloads"
+    )
+
+    try:
+        post = await wp_get(page_path)
+        if post is None:
+            api_error(
+                "NOT_FOUND",
+                f"The dataset's WordPress page (id={release['wp_object_id']}) no "
+                "longer exists.",
+                {"release_id": release_id},
+                404,
+            )
+        page = formatter(post)
+        downloads = [
+            await croissant_download_page(post_id)
+            for post_id in page.get(downloads_field) or []
+        ]
+        # An analysis result's collection_downloads are its source images.
+        source_downloads = [
+            await croissant_download_page(post_id)
+            for post_id in (page.get("collection_downloads") or [])
+            if page_type == "analysis_result"
+        ]
+    except httpx.HTTPStatusError as e:
+        api_error("WP_ERROR", f"WordPress rejected the read: {e.response.text}", {}, e.response.status_code)
+    except httpx.HTTPError as e:
+        api_error("WP_ERROR", f"Could not reach WordPress: {type(e).__name__}: {e}", {}, 500)
+
+    document = build_croissant(
+        page,
+        page_type,
+        downloads,
+        ReleaseInfo(
+            release_number=release["release_number"],
+            release_date=release["release_date"].date() if release["release_date"] else None,
+            first_release_date=(
+                release["first_release_date"].date()
+                if release["first_release_date"] else None
+            ),
+        ),
+        source_downloads=source_downloads,
+    )
+    # Deterministic bytes, so an unchanged document dedups to the same file and
+    # the same attachment.
+    data = (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    filename = croissant_filename(release["dataset_name"])
+
+    try:
+        async with db.transaction() as conn:
+            file_id, _downloadable = await store_manifest(
+                data, conn, filename, "Croissant metadata", CROISSANT_MIME_TYPE
+            )
+            await conn.execute(
+                """
+                update dataset_release
+                set croissant_file_id = $1, when_updated = now(), who_updated = $2
+                where dataset_release_id = $3
+                """,
+                file_id, current_user.user_id, release_id,
+            )
+    except Exception as e:
+        db_error(e, operation="storing the Croissant file", context={"release_id": release_id})
+
+    media_id, uploaded = await ensure_wp_media(db, file_id, filename, CROISSANT_MIME_TYPE)
+
+    # Read gives the attachment post ({"ID": "6589"}), write takes a bare int --
+    # the same as download_file in attach_transfer_recordset_manifest.
+    current = post.get("croissant_manifest")
+    current_id = current.get("ID") if isinstance(current, dict) else current
+    attached = False
+    if str(current_id) != str(media_id):
+        try:
+            await wp_patch(page_path, {"croissant_manifest": media_id})
+        except httpx.HTTPStatusError as e:
+            api_error("WP_ERROR", f"WordPress rejected the change: {e.response.text}", {}, e.response.status_code)
+        except httpx.HTTPError as e:
+            api_error("WP_ERROR", f"Could not reach WordPress: {type(e).__name__}: {e}", {}, 500)
+        attached = True
+
+    return item_response({
+        "release_id": release_id,
+        "file_id": file_id,
+        "wp_media_id": media_id,
+        "wp_object_type": page_type,
+        "wp_object_id": release["wp_object_id"],
+        "download_count": len(downloads),
+        "source_download_count": len(source_downloads),
+        # False/False is a success: the identical file was already uploaded and
+        # already on the page.
+        "uploaded": uploaded,
+        "attached": attached,
+    })
 
 
 async def run_wp_transfer(transfer_id: int, db: Database) -> dict:
