@@ -19,6 +19,8 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from pydicom.multival import MultiValue
+
 from posda.ingest import fixes, modules, sopclasses, specs
 from posda.ingest.values import ParsedValues
 
@@ -1030,7 +1032,9 @@ def _insert_ctp(db: "Database", values: ParsedValues, file_id: int) -> None:
 def _sop_common_params(values: ParsedValues, errors: list[str]) -> dict:
     parms = {key: values.get(sig) for key, sig in specs.SOP_COMMON.params.items()}
 
-    if isinstance(parms.get("spec_char_set"), list):
+    # pydicom converts Specific Character Set up front, so a multi-valued
+    # one arrives as a MultiValue rather than the list decode_value builds.
+    if isinstance(parms.get("spec_char_set"), (list, MultiValue)):
         parms["spec_char_set"] = "\\".join(parms["spec_char_set"])
 
     parms["creation_time"] = _creation_time(parms.get("creation_time"), errors)
