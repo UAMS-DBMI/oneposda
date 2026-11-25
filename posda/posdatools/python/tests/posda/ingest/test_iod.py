@@ -149,6 +149,23 @@ class TestCtpFile:
         assert params[1] == "MyProject"
 
 
+class TestSopCommonParams:
+    @pytest.mark.parametrize(
+        "charsets,expected",
+        [
+            ("ISO_IR 100", "ISO_IR 100"),
+            (["ISO 2022 IR 101", "ISO 2022 IR 100"], "ISO 2022 IR 101\\ISO 2022 IR 100"),
+            (["", "ISO 2022 IR 100"], "\\ISO 2022 IR 100"),
+        ],
+    )
+    def test_specific_character_set_is_joined(self, charsets, expected):
+        # pydicom converts (0008,0005) while reading, so a multi-valued one
+        # reaches the handler as a MultiValue, which psycopg2 can't adapt.
+        values = build(SpecificCharacterSet=charsets)
+        parms = iod._sop_common_params(values, [])
+        assert parms["spec_char_set"] == expected
+
+
 class TestCreationDateTime:
     @pytest.mark.parametrize(
         "value,expected",
