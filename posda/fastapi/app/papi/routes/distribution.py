@@ -174,6 +174,8 @@ class DatasetReleaseTransferUpdate(BaseModel):
     transfer_name: Optional[str] = None
     transfer_status: Optional[str] = None
     transfer_notes: Optional[str] = None
+    # Required to queue a transfer on a live release (see _live_correction).
+    correction_note: Optional[str] = None
 
 class TransferIdcUpdate(BaseModel):
     base_gcs_url: Optional[str] = None
@@ -5468,6 +5470,86 @@ async def get_release_diff(release_id: int, other_release_id: int, db: Database 
 
 # ----------------------------------------Dataset release transfers-----------------------------------------------
 
+class CorrectionNote(BaseModel):
+    correction_note: Optional[str] = None
+
+
+async def _live_correction(transfer_id: int, note: Optional[str], db: Database) -> Optional[str]:
+    """A live release is finished. An action that changes what it shipped or
+    what its public pages show is a correction, and needs a note saying why.
+    Returns the note, or None when the release isn't live; refuses a live
+    release without one."""
+    row = await db.fetch_one(
+        """select dr.release_status, dr.release_number
+           from dataset_release_transfer drt
+           join dataset_release dr using (dataset_release_id)
+           where drt.dataset_release_transfer_id = $1""",
+        [transfer_id],
+    )
+    if not row or row["release_status"] != "live":
+        return None
+    note = (note or "").strip()
+    if not note:
+        api_error(
+            "RELEASE_LIVE",
+            f"v{row['release_number']} is live. Make a correction from the dataset's "
+            "release cycle page, or start a new cycle.",
+            {"transfer_id": transfer_id},
+            409,
+        )
+    return note
+
+
+async def _record_correction(
+    transfer_id: int, note: Optional[str], action: str, user: User, db: Database
+) -> None:
+    """Add a correction to the transfer's notes, so every change to a live
+    release is on record. No-op when there was no correction."""
+    if note is None:
+        return
+    entry = f"Correction after go-live ({datetime.now().date().isoformat()}, {user.username}, {action}): {note}"
+    await db.execute(
+        """update dataset_release_transfer
+           set transfer_notes = case when coalesce(transfer_notes, '') = '' then $1
+                                     else transfer_notes || E'\\n' || $1 end,
+               when_updated = now(), who_updated = $2
+           where dataset_release_transfer_id = $3""",
+        [entry, user.user_id, transfer_id],
+    )
+
+
+async def _idc_recorded_only(transfer_id: int, db: Database) -> bool:
+    """An IDC transfer recorded as done rather than delivered from Posda (the
+    release ETL records releases from before the Release Module this way). IDC
+    already has that data and Posda has nothing in the bucket for the version,
+    so pushing or setting it to Ready would act on a path IDC isn't using.
+    Recognized as success with no transfer_file rows: those are only made when
+    a transfer is queued."""
+    row = await db.fetch_one(
+        """select td.destination_abbr = 'idc'
+                  and drt.transfer_status = 'success'
+                  and not exists (
+                      select 1 from transfer_file tf
+                      where tf.dataset_release_transfer_id = drt.dataset_release_transfer_id
+                  ) as recorded_only
+           from dataset_release_transfer drt
+           join transfer_destination td using (destination_id)
+           where drt.dataset_release_transfer_id = $1""",
+        [transfer_id],
+    )
+    return bool(row and row["recorded_only"])
+
+
+def _refuse_idc_recorded_only(transfer_id: int) -> None:
+    api_error(
+        "RECORDED_ONLY",
+        "This IDC transfer was recorded, not delivered from Posda: IDC already has "
+        "this data, and Posda has nothing in the bucket for this version.",
+        {"transfer_id": transfer_id},
+        409,
+    )
+
+
 @router.get("/transfers/{transfer_id}")
 # Get details for a dataset release transfer
 async def get_dataset_release_transfer_by_id(transfer_id: int,  db: Database = Depends()):
@@ -5537,6 +5619,9 @@ async def update_dataset_release_transfer(
                 {"transfer_id": transfer_id, "release_status": "draft"},
                 422,
             )
+        if await _idc_recorded_only(transfer_id, db):
+            _refuse_idc_recorded_only(transfer_id)
+        correction = await _live_correction(transfer_id, payload.correction_note, db)
 
         # IDC reads a submission from its manifests, so queueing without them
         # ships a package it cannot interpret -- and the upload cannot be
@@ -5655,6 +5740,9 @@ async def update_dataset_release_transfer(
 
     if not record:
         api_error("NOT_FOUND", "Dataset release transfer not found", {"transfer_id": transfer_id}, 404)
+
+    if payload.transfer_status == "queued":
+        await _record_correction(transfer_id, correction, "queued", current_user, db)
 
     # WordPress has no daemon: queueing it does the work here, after the commit
     # above, and settles the status to success or failed before returning.
@@ -6044,9 +6132,15 @@ async def get_transfer_idc_bucket_status(transfer_id: int, db: Database = Depend
 # The curator's hand-off: IDC may pick the version up from here on. An upload
 # leaves the version at Draft, so this can't happen before the data is there.
 async def set_transfer_idc_ready(
-    transfer_id: int, current_user: User = logged_in_user, db: Database = Depends()
+    transfer_id: int,
+    payload: Optional[CorrectionNote] = None,
+    current_user: User = logged_in_user,
+    db: Database = Depends(),
 ):
     row = await _idc_transfer_for_bucket(transfer_id, db)
+    if await _idc_recorded_only(transfer_id, db):
+        _refuse_idc_recorded_only(transfer_id)
+    correction = await _live_correction(transfer_id, payload and payload.correction_note, db)
     if row["transfer_status"] != "success" or not row["base_gcs_url"]:
         api_error(
             "CONFLICT",
@@ -6080,6 +6174,7 @@ async def set_transfer_idc_ready(
             {"transfer_id": transfer_id},
             503,
         )
+    await _record_correction(transfer_id, correction, "set IDC to Ready", current_user, db)
     return item_response({"status": idc_bucket.STATUS_READY})
 
 
@@ -7372,7 +7467,11 @@ async def ensure_wp_media(db: Database, file_id: int, filename: str, content_typ
 async def attach_transfer_recordset_manifest(
     transfer_id: int,
     recordset_release_id: int,
+    payload: Optional[CorrectionNote] = None,
+    current_user: User = logged_in_user,
     db: Database = Depends()):
+
+    correction = await _live_correction(transfer_id, payload and payload.correction_note, db)
 
     manifest_q = """\
         select
@@ -7479,6 +7578,9 @@ async def attach_transfer_recordset_manifest(
             [row["map_id"]],
         )
 
+    await _record_correction(
+        transfer_id, correction, f"attached the manifest to '{row['recordset_name']}'", current_user, db
+    )
     return item_response({
         "recordset_id": row["recordset_id"],
         "recordset_name": row["recordset_name"],
@@ -7764,8 +7866,15 @@ async def wp_page_states(release_id: int, db: Database) -> list[dict]:
 async def deliver_transfer_recordset_wp(
     transfer_id: int,
     recordset_release_id: int,
+    payload: Optional[CorrectionNote] = None,
+    current_user: User = logged_in_user,
     db: Database = Depends()):
-    return item_response(await stage_wp_recordset(transfer_id, recordset_release_id, db))
+    correction = await _live_correction(transfer_id, payload and payload.correction_note, db)
+    result = await stage_wp_recordset(transfer_id, recordset_release_id, db)
+    await _record_correction(
+        transfer_id, correction, f"staged '{result['recordset_name']}'", current_user, db
+    )
+    return item_response(result)
 
 
 @router.post("/transfers/{transfer_id}/recordsets/{recordset_release_id}/wp/update-page")
@@ -7774,8 +7883,15 @@ async def deliver_transfer_recordset_wp(
 async def update_transfer_recordset_wp_page(
     transfer_id: int,
     recordset_release_id: int,
+    payload: Optional[CorrectionNote] = None,
+    current_user: User = logged_in_user,
     db: Database = Depends()):
-    return item_response(await update_wp_download_page(transfer_id, recordset_release_id, db))
+    correction = await _live_correction(transfer_id, payload and payload.correction_note, db)
+    result = await update_wp_download_page(transfer_id, recordset_release_id, db)
+    await _record_correction(
+        transfer_id, correction, f"updated the page for '{result['recordset_name']}'", current_user, db
+    )
+    return item_response(result)
 
 
 @router.get("/datasets/releases/{release_id}/wp/pages")
