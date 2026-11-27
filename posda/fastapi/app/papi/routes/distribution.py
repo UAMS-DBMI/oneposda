@@ -165,6 +165,10 @@ class RecordsetReleaseInsert(BaseModel):
     release_date: Optional[datetime] = None
     release_notes: Optional[str] = None
     release_doi: Optional[str] = None
+    # Publish without the QC gate, for recording a release that went out before
+    # the Release Module (the release ETL). System user only; the reason is
+    # kept in the release notes.
+    qc_exempt_reason: Optional[str] = None
 
 class DatasetReleaseTransferUpdate(BaseModel):
     transfer_name: Optional[str] = None
@@ -5131,6 +5135,30 @@ async def create_recordset_release(
         where recordset_draft_id = $1;
     """
 
+    # A QC exemption records a release made before the Release Module, so only
+    # the system user (the ETL's token) may skip the gate, and it must say why.
+    # The reason lands in the release notes, the release's own record of it.
+    release_notes = payload.release_notes
+    qc_exempt = payload.qc_exempt_reason is not None
+    if qc_exempt:
+        if current_user.username != "system":
+            api_error(
+                "FORBIDDEN",
+                "Only the system user can publish without QC",
+                {"draft_id": draft_id, "username": current_user.username},
+                403,
+            )
+        reason = payload.qc_exempt_reason.strip()
+        if not reason:
+            api_error(
+                "VALIDATION_ERROR",
+                "qc_exempt_reason must not be blank",
+                {"draft_id": draft_id},
+                422,
+            )
+        exempt_note = f"QC exempt: {reason}"
+        release_notes = f"{release_notes}\n\n{exempt_note}" if release_notes else exempt_note
+
     try:
         async with db.transaction() as conn:
             # 1. Get recordset_id from draft
@@ -5154,7 +5182,8 @@ async def create_recordset_release(
 
             # QC gate -- the same rule as the cycle UI's isPublishable: at least
             # one complete review, none open or stale (cancelled ones don't
-            # count). Enforced here so nothing publishes around the UI.
+            # count). Enforced here so nothing publishes around the UI. A QC
+            # exemption (checked above) skips it.
             qc = await conn.fetchrow(
                 """
                 select
@@ -5166,7 +5195,7 @@ async def create_recordset_release(
                 """,
                 draft_id,
             )
-            if qc["complete"] == 0 or qc["open"] > 0 or qc["stale"] > 0:
+            if not qc_exempt and (qc["complete"] == 0 or qc["open"] > 0 or qc["stale"] > 0):
                 api_error(
                     "QC_INCOMPLETE",
                     "Draft cannot be published until QC is complete: it needs at "
@@ -5190,7 +5219,7 @@ async def create_recordset_release(
                     payload.release_number,
                     recordset_id,
                     payload.release_date,
-                    payload.release_notes,
+                    release_notes,
                     payload.release_doi,
                     current_user.user_id,
                 )
@@ -5200,7 +5229,7 @@ async def create_recordset_release(
                     recordset_id,
                     payload.release_number,
                     payload.release_date,
-                    payload.release_notes,
+                    release_notes,
                     payload.release_doi,
                     current_user.user_id,
                 )
