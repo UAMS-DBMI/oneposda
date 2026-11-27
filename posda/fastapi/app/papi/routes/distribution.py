@@ -7975,10 +7975,13 @@ async def generate_release_croissant(
         api_error("NOT_FOUND", "Dataset release not found", {"release_id": release_id}, 404)
     release = release_rows[0]
 
-    if release["release_status"] != "released":
+    # Live too, with no correction note: the file only describes the public
+    # page, so regenerating it after a page correction adds nothing to record --
+    # that correction is already on its transfer.
+    if release["release_status"] not in ("released", "live"):
         api_error(
             "CONFLICT",
-            "The Croissant file is built for a finalized release that is not live yet "
+            "The Croissant file is built for a finalized release "
             f"-- this one is '{release['release_status']}'.",
             {"release_id": release_id, "release_status": release["release_status"]},
             409,
