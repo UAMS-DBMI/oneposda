@@ -1880,6 +1880,17 @@ async def publish_dataset_release(
             409,
         )
 
+    # The Croissant file describes the download pages just checked, so it is
+    # generated after them and must be on the dataset page before going live.
+    if not (await croissant_state(release_id, db))["page_current"]:
+        api_error(
+            "CONFLICT",
+            "The dataset page doesn't have this release's Croissant file yet. "
+            "Generate it in Disseminate first.",
+            {"release_id": release_id},
+            409,
+        )
+
     # Collection page first: the download pages are listed on it, so this is the
     # order a reader would encounter them in.
     pages = list(collection_rows) + list(download_rows)
@@ -7939,6 +7950,59 @@ async def croissant_download_page(post_id: int) -> dict:
     page["download_file_url"] = await wp_media_url(page["download_file"])
     page["download_metadata_url"] = await wp_media_url(page["download_metadata"])
     return page
+
+
+async def croissant_state(release_id: int, db: Database) -> dict:
+    """Whether the dataset page's croissant_manifest holds this release's
+    generated Croissant file. Read live from WordPress, like wp_page_states --
+    the field can be changed by hand. Shared by Disseminate and the go-live
+    gate."""
+    row = await db.fetch_one(
+        """
+        select dr.croissant_file_id,
+               fm.wp_object_id as media_id,
+               pm.wp_object_type as page_type, pm.wp_object_id as page_id
+        from dataset_release dr
+        left join wp_object_map fm
+               on fm.posda_object_type = 'file' and fm.posda_object_id = dr.croissant_file_id
+              and fm.wp_object_type = 'media'
+        left join wp_object_map pm
+               on pm.posda_object_type = 'dataset' and pm.posda_object_id = dr.dataset_id
+              and pm.wp_object_type in ('collection', 'analysis_result')
+        where dr.dataset_release_id = $1
+        """,
+        [release_id],
+    )
+    if not row:
+        api_error("NOT_FOUND", "Dataset release not found", {"release_id": release_id}, 404)
+
+    current_id = None
+    media_url = ""
+    if row["media_id"] is not None and row["page_id"] is not None:
+        endpoint_key, _formatter = WP_TYPE_MAP[row["page_type"]]
+        try:
+            post = await wp_get(f"{wp_url(endpoint_key)}/{row['page_id']}")
+            media_url = await wp_media_url(row["media_id"])
+        except Exception:
+            post = None
+        current = (post or {}).get("croissant_manifest")
+        current_id = current.get("ID") if isinstance(current, dict) else current
+
+    return {
+        "release_id": release_id,
+        "file_id": row["croissant_file_id"],
+        "media_id": row["media_id"],
+        "media_url": media_url,
+        "current_media_id": int(current_id) if current_id not in (None, "", False) else None,
+        "page_current": row["media_id"] is not None
+                        and str(current_id) == str(row["media_id"]),
+    }
+
+
+@router.get("/datasets/releases/{release_id}/croissant")
+# Disseminate: whether the dataset page carries this release's Croissant file.
+async def get_release_croissant(release_id: int, db: Database = Depends()):
+    return item_response(await croissant_state(release_id, db))
 
 
 @router.post("/datasets/releases/{release_id}/croissant")
